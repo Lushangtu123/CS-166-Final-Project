@@ -11,10 +11,11 @@ Routes:
   POST /api/predict           → raw feature dict prediction (legacy)
 """
 
+from __future__ import annotations
+
 import os
 import re
 import math
-import sys
 import socket
 import smtplib
 import warnings
@@ -26,8 +27,8 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
-from typing import Optional
+from pydantic import BaseModel, Field
+from contextlib import asynccontextmanager
 
 BASE_DIR = Path(__file__).parent
 DATA_DIR = BASE_DIR.parent / "phishing-detection" / "data"
@@ -35,8 +36,6 @@ DATA_DIR = BASE_DIR.parent / "phishing-detection" / "data"
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
-
-app = FastAPI(title="Phishing Email Detector", version="2.0.0")
 
 # ── Feature definitions (UCI Phishing Websites Dataset mapping) ───────────────
 FEATURE_INFO = [
@@ -480,8 +479,33 @@ DISPOSABLE_DOMAINS = {
     'zep.it', 'zetmail.com', 'zippymail.info',
     'zoaxe.com', 'zoemail.net', 'zoemail.org',
     'zomail.org', 'zombos.com', 'zooglemail.com',
-    'zopqwhgqdn.com', 'zxcvbnm.co', 'zzi.us',
+    'zopqwhgqdn.com', 'zxcvbnm.co',     'zzi.us',
 }
+
+# Substrings that strongly suggest a disposable/temp-mail provider (checked against domain label)
+DISPOSABLE_DOMAIN_SUBSTRINGS = (
+    'tempmail', 'temp-mail', 'tempemail', 'tempinbox', 'tempbox',
+    'temporary', 'temporaryemail', 'tempr', 'tempsky',
+    'trashmail', 'trash-mail', 'trashcan', 'trashme', 'trashy',
+    'discardmail', 'discard', 'dispos',
+    'throwaway', 'throwam', 'throw-mail', 'throwamail',
+    'burnermail', 'burn-mail', 'burnmail', 'burnmy',
+    'spammail', 'spambox', 'spamgourmet', 'spamfree', 'spamkill',
+    'spamevader', 'spamnot', 'spamoff', 'spamthis', 'fakemail',
+    'fakeinbox', 'fake-inbox', 'fakeemail',
+    'guerrilla', 'sharklaser',
+    'dropmail', 'maildrop', 'getnada', 'nada.email', 'voidmail',
+    'mailinator', 'mailnull', 'mailnesia', 'mailinater',
+    'mailzilla', 'mailslap', 'mailsac', 'mailtemp', 'mailfort',
+    'disposable', 'anonbox', 'anonymbox', 'anonymail',
+    'incognitomail', 'selfdestructing', 'willselfdestruct',
+    'wegwerf', 'zehnminuten',
+    '10minute', 'tenminute', 'minutemail', '20minute', '30minute',
+    'harakiri', 'mailexpire', 'suicidemail',
+    'yopmail', 'jetable',
+    'lastmail', 'mohmal', 'emailwarden', 'inboxkitten',
+    'tmailinator', 'mailtothis', 'spammotel',
+)
 
 # ── Pre-computed model metrics ────────────────────────────────────────────────
 MODEL_METRICS = {
@@ -523,10 +547,10 @@ def _shannon_entropy(s: str) -> float:
     return -sum((f / len(s)) * math.log2(f / len(s)) for f in freq.values())
 
 
-def extract_email_features(email: str) -> tuple[dict, list]:
+def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | None]:
     """
     Extract 30 phishing-indicator features from an email address.
-    Returns (feature_dict, risk_indicators).
+    Returns (feature_dict, risk_indicators, is_disposable, auto_gen_disposable, disposable_service_or_None).
     Each feature value ∈ {-1 (phishing), 0 (suspicious), 1 (legitimate)}.
     """
     email = email.strip().lower()
@@ -967,43 +991,7 @@ def extract_email_features(email: str) -> tuple[dict, list]:
     # 3. Pattern-based detection for unlisted providers
     if not is_disposable and domain_label:
         dl = domain_label.lower()
-        DISPOSABLE_PATTERNS = [
-            # Temp / temporary
-            'tempmail', 'temp-mail', 'tempemail', 'tempinbox', 'tempbox',
-            'temporary', 'temporaryemail', 'tempr', 'tempsky',
-            # Trash / discard
-            'trashmail', 'trash-mail', 'trashcan', 'trashme', 'trashy',
-            'discardmail', 'discard', 'dispos',
-            # Throwaway / burn
-            'throwaway', 'throwam', 'throw-mail', 'throwamail',
-            'burnermail', 'burn-mail', 'burnmail', 'burnmy',
-            # Spam / fake
-            'spammail', 'spambox', 'spamgourmet', 'spamfree', 'spamkill',
-            'spamevader', 'spamnot', 'spamoff', 'spamthis', 'fakemail',
-            'fakeinbox', 'fake-inbox', 'fakeemail',
-            # Guerrilla / sharklaser
-            'guerrilla', 'sharklaser',
-            # Drop / nada / void
-            'dropmail', 'maildrop', 'getnada', 'nada.email', 'voidmail',
-            # Mailinator / mailnull
-            'mailinator', 'mailnull', 'mailnesia', 'mailinater',
-            'mailzilla', 'mailslap', 'mailsac', 'mailtemp', 'mailfort',
-            # Disposable / anon / incognito
-            'disposable', 'anonbox', 'anonymbox', 'anonymail',
-            'incognitomail', 'selfdestructing', 'willselfdestruct',
-            # Wegwerf (German "throw away")
-            'wegwerf', 'zehnminuten',
-            # Minute mail
-            '10minute', 'tenminute', 'minutemail', '20minute', '30minute',
-            # Harakiri / expire
-            'harakiri', 'mailexpire', 'suicidemail',
-            # Yopmail / jetable
-            'yopmail', 'jetable',
-            # Other
-            'lastmail', 'mohmal', 'emailwarden', 'inboxkitten',
-            'tmailinator', 'mailinator', 'mailtothis', 'spammotel',
-        ]
-        is_disposable = any(pat in dl for pat in DISPOSABLE_PATTERNS)
+        is_disposable = any(pat in dl for pat in DISPOSABLE_DOMAIN_SUBSTRINGS)
 
     disposable_service = base_domain if is_disposable else None
     if is_disposable:
@@ -1046,10 +1034,13 @@ def _load_and_train():
     print("Model trained and ready.")
 
 
-# ── Startup ───────────────────────────────────────────────────────────────────
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
     _load_and_train()
+    yield
+
+
+app = FastAPI(title="Phishing Email Detector", version="2.0.0", lifespan=lifespan)
 
 
 # ── Static files ──────────────────────────────────────────────────────────────
@@ -1059,6 +1050,16 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="stat
 @app.get("/")
 async def serve_index():
     return FileResponse(str(BASE_DIR / "static" / "index.html"))
+
+
+@app.get("/health")
+async def health():
+    """Liveness/readiness probe for deployments and load balancers."""
+    ok = _model is not None and _scaler is not None
+    return JSONResponse(
+        status_code=200 if ok else 503,
+        content={"status": "ok" if ok else "starting", "model_loaded": ok},
+    )
 
 
 # ── API ───────────────────────────────────────────────────────────────────────
@@ -1073,7 +1074,7 @@ async def get_features():
 
 
 class EmailRequest(BaseModel):
-    email: str
+    email: str = Field(..., min_length=1, max_length=254)
 
 
 @app.post("/api/analyze-email")
@@ -1649,8 +1650,8 @@ def analyze_email_content(subject: str, body: str) -> dict:
 
 
 class ContentRequest(BaseModel):
-    subject: str = ""
-    body: str = ""
+    subject: str = Field(default="", max_length=500)
+    body: str = Field(default="", max_length=50_000)
 
 
 @app.post("/api/analyze-content")
@@ -1669,7 +1670,7 @@ from concurrent.futures import ThreadPoolExecutor, wait as futures_wait
 
 
 class VerifyRequest(BaseModel):
-    email: str
+    email: str = Field(..., min_length=1, max_length=254)
 
 
 # ── Helper: SMTP mailbox probe ────────────────────────────────────────────────

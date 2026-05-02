@@ -125,8 +125,14 @@ def plot_confusion_matrices(results: dict, y_test: pd.Series,
     colors = _assign_colors(list(results.keys()))
     for ax, (name, data) in zip(axes, results.items()):
         cm = confusion_matrix(y_test, data["y_pred"])
-        # Normalise to percentage
-        cm_pct = cm.astype(float) / cm.sum(axis=1, keepdims=True)
+        # Normalise to percentage (guard empty rows for degenerate splits)
+        row_sums = cm.sum(axis=1, keepdims=True)
+        cm_pct = np.divide(
+            cm.astype(float),
+            row_sums,
+            out=np.zeros_like(cm.astype(float), dtype=float),
+            where=row_sums != 0,
+        )
         annot = np.array([
             [f"{cm[r,c]}\n({cm_pct[r,c]*100:.1f}%)" for c in range(cm.shape[1])]
             for r in range(cm.shape[0])
