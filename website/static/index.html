@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PhishGuard – Phishing Email Detector</title>
+  <link rel="stylesheet" href="/static/style.css?v=7" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<!-- ── Navigation ──────────────────────────────────────────────────────────── -->
+<nav class="navbar">
+  <div class="nav-inner">
+    <div class="nav-brand">
+      <span class="shield-icon">🛡</span>
+      <span class="brand-text">PhishGuard</span>
+    </div>
+    <ul class="nav-links">
+      <li><a href="#demo">Live Demo</a></li>
+      <li><a href="#performance">Performance</a></li>
+      <li><a href="#features">Features</a></li>
+      <li><a href="#about">How It Works</a></li>
+    </ul>
+  </div>
+</nav>
+
+<!-- ── Hero ────────────────────────────────────────────────────────────────── -->
+<section class="hero">
+  <div class="hero-content">
+    <div class="hero-badge">CS 166 · Information Security · Final Project</div>
+    <h1 class="hero-title">
+      Phishing Email<br>
+      <span class="gradient-text">Detection</span>
+    </h1>
+    <p class="hero-subtitle">
+      An ML-powered phishing email detector that automatically extracts 30 structural
+      features from any email address and uses a Random Forest classifier to determine
+      whether it is a phishing or scam email.
+    </p>
+    <div class="hero-stats">
+      <div class="stat-card">
+        <div class="stat-value">97.47%</div>
+        <div class="stat-label">Accuracy</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">0.9977</div>
+        <div class="stat-label">ROC AUC</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">11,055</div>
+        <div class="stat-label">Training Samples</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">30</div>
+        <div class="stat-label">Extracted Features</div>
+      </div>
+    </div>
+    <a href="#demo" class="btn btn-primary">Check an Email Address</a>
+  </div>
+  <div class="hero-visual">
+    <div class="orbit-ring">
+      <div class="orbit-center">
+        <span>🛡</span>
+        <div class="orbit-label">Random Forest</div>
+      </div>
+      <div class="orbit-dot dot-1">Domain</div>
+      <div class="orbit-dot dot-2">SSL</div>
+      <div class="orbit-dot dot-3">Keywords</div>
+      <div class="orbit-dot dot-4">Structure</div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Live Demo ───────────────────────────────────────────────────────────── -->
+<section class="section" id="demo">
+  <div class="container">
+    <div class="section-header">
+      <h2>Live Demo</h2>
+      <p>Enter any email address. The system will automatically extract 30 features and run them through the trained Random Forest model to classify it as phishing or legitimate.</p>
+    </div>
+
+    <!-- Email Input -->
+    <div class="email-input-card">
+      <div class="email-input-row">
+        <div class="email-input-wrap">
+          <span class="email-icon">✉</span>
+          <input
+            type="text"
+            id="email-input"
+            class="email-input"
+            placeholder="Enter an email address, e.g. support@paypa1-verify.xyz"
+            autocomplete="off"
+            spellcheck="false"
+            onkeydown="if(event.key==='Enter') runEmailAnalysis()"
+          />
+          <button class="btn-clear" id="btn-clear" onclick="clearEmail()" title="Clear">✕</button>
+        </div>
+        <button class="btn btn-primary btn-analyze" id="analyze-btn" onclick="runEmailAnalysis()">
+          <span id="analyze-btn-text">Analyze</span>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        </button>
+      </div>
+
+      <div class="quick-examples">
+        <span class="examples-label">Quick examples:</span>
+        <button class="example-tag legit-tag" onclick="setExample('user@gmail.com')">user@gmail.com</button>
+        <button class="example-tag legit-tag" onclick="setExample('john.doe@microsoft.com')">john.doe@microsoft.com</button>
+        <button class="example-tag phish-tag" onclick="setExample('security-alert@paypa1-verify.xyz')">security-alert@paypa1-verify.xyz</button>
+        <button class="example-tag phish-tag" onclick="setExample('support@apple-id-locked.tk')">support@apple-id-locked.tk</button>
+        <button class="example-tag phish-tag" onclick="setExample('admin99@192.168.1.1')">admin99@192.168.1.1</button>
+        <button class="example-tag disp-tag" onclick="setExample('user@mailinator.com')" title="Confirmed disposable">🗑 mailinator.com</button>
+        <button class="example-tag susp-tag" onclick="setExample('oncw3kjobqxb@randominbox.net')" title="Suspected disposable (auto-generated username)">⚠️ Suspected disposable</button>
+      </div>
+    </div>
+
+    <!-- Result Area -->
+    <div id="result-area" class="result-area hidden">
+
+      <div class="verdict-banner" id="verdict-banner">
+        <div class="vb-left">
+          <div class="vb-icon" id="vb-icon"></div>
+          <div>
+            <div class="vb-title" id="vb-title"></div>
+            <div class="vb-email" id="vb-email"></div>
+          </div>
+        </div>
+        <div class="vb-right">
+          <div class="vb-prob-label">Phishing Probability</div>
+          <div class="vb-prob" id="vb-prob"></div>
+        </div>
+      </div>
+
+      <div class="result-cols">
+
+        <!-- Col 1: Probability Bars + Risk Pills + Disposable Check -->
+        <div class="result-col">
+          <div class="col-card">
+            <h4 class="col-title">Probability</h4>
+            <div class="prob-bars">
+              <div class="prob-row">
+                <span class="prob-label phish-label">Phishing</span>
+                <div class="prob-bar-track">
+                  <div class="prob-bar phish-bar" id="phish-bar"></div>
+                </div>
+                <span class="prob-pct" id="phish-pct"></span>
+              </div>
+              <div class="prob-row">
+                <span class="prob-label legit-label">Legit</span>
+                <div class="prob-bar-track">
+                  <div class="prob-bar legit-bar" id="legit-bar"></div>
+                </div>
+                <span class="prob-pct" id="legit-pct"></span>
+              </div>
+            </div>
+            <div class="risk-summary" id="risk-summary"></div>
+          </div>
+
+          <!-- Disposable Check Card — always visible -->
+          <div class="col-card disposable-check-card" id="disposable-check-card">
+            <h4 class="col-title">Disposable Email Check</h4>
+            <div class="disp-check-row" id="disp-check-row">
+              <div class="disp-check-icon" id="disp-check-icon"></div>
+              <div class="disp-check-body">
+                <div class="disp-check-label" id="disp-check-label"></div>
+                <div class="disp-check-detail" id="disp-check-detail"></div>
+              </div>
+            </div>
+            <a href="#disposable-info" class="disp-learn-sm">Learn about disposable emails →</a>
+          </div>
+        </div>
+
+        <!-- Col 2: Risk Indicators -->
+        <div class="result-col">
+          <div class="col-card">
+            <h4 class="col-title">Risk Indicators <span class="col-count" id="risk-count"></span></h4>
+            <div id="risk-indicators-list" class="risk-list">
+              <div class="no-risk">No risk indicators found ✓</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Col 3: Feature Breakdown -->
+        <div class="result-col">
+          <div class="col-card">
+            <h4 class="col-title">Top Features (by importance)</h4>
+            <div id="feature-breakdown-list" class="feature-breakdown"></div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Disposable email info card (always visible, anchor target) -->
+    <div class="disposable-info-card" id="disposable-info">
+      <div class="di-header">
+        <span class="di-icon">🗑</span>
+        <div>
+          <div class="di-title">What Are Disposable Email Addresses?</div>
+          <div class="di-sub">And why are they a security concern?</div>
+        </div>
+      </div>
+      <div class="di-body">
+        <div class="di-col">
+          <h4>Definition</h4>
+          <p>Disposable (temporary) email addresses are self-destructing inboxes
+          created by services like Mailinator, Guerrilla Mail, and 10 Minute Mail.
+          They require no registration and expire after a short period.</p>
+        </div>
+        <div class="di-col">
+          <h4>Why They Are Risky</h4>
+          <ul>
+            <li>Cannot be traced back to a real identity</li>
+            <li>Commonly used to bypass email verification</li>
+            <li>Frequently seen in spam and phishing campaigns</li>
+            <li>No way to follow up or revoke access</li>
+          </ul>
+        </div>
+        <div class="di-col">
+          <h4>Common Providers (500+ detected)</h4>
+          <div class="di-domains">
+            <code>mailinator.com</code>
+            <code>guerrillamail.com</code>
+            <code>10minutemail.com</code>
+            <code>tempmail.com</code>
+            <code>yopmail.com</code>
+            <code>maildrop.cc</code>
+            <code>trashmail.com</code>
+            <code>getnada.com</code>
+          </div>
+        </div>
+      </div>
+      <div class="di-quick-test">
+        <span class="di-test-label">Test a disposable address:</span>
+        <button class="example-tag phish-tag" onclick="setExample('user@mailinator.com')">user@mailinator.com</button>
+        <button class="example-tag phish-tag" onclick="setExample('hello@guerrillamail.com')">hello@guerrillamail.com</button>
+        <button class="example-tag phish-tag" onclick="setExample('test@10minutemail.com')">test@10minutemail.com</button>
+        <button class="example-tag phish-tag" onclick="setExample('anon@yopmail.com')">anon@yopmail.com</button>
+        <button class="example-tag phish-tag" onclick="setExample('burner@maildrop.cc')">burner@maildrop.cc</button>
+      </div>
+    </div>
+
+    <!-- Loading -->
+    <div id="loading-area" class="loading-area hidden">
+      <div class="loading-spinner"></div>
+      <div class="loading-text">Analyzing email features…</div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ── Performance ─────────────────────────────────────────────────────────── -->
+<section class="section section-dark" id="performance">
+  <div class="container">
+    <div class="section-header">
+      <h2>Model Performance</h2>
+      <p>Comparison of four classifiers on a held-out 20% test set (2,211 samples).</p>
+    </div>
+
+    <div class="metrics-grid">
+      <div class="metrics-table-wrap">
+        <table class="metrics-table">
+          <thead>
+            <tr>
+              <th>Classifier</th>
+              <th>Accuracy</th>
+              <th>Precision</th>
+              <th>Recall</th>
+              <th>F1</th>
+              <th>ROC AUC</th>
+            </tr>
+          </thead>
+          <tbody id="metrics-tbody">
+            <tr><td colspan="6" class="loading-cell">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="charts-row">
+        <div class="chart-card">
+          <h3 class="chart-title">Classifier Performance Comparison</h3>
+          <canvas id="metricsChart"></canvas>
+        </div>
+        <div class="chart-card">
+          <h3 class="chart-title">Top 10 Feature Importances (Random Forest)</h3>
+          <canvas id="importanceChart"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Feature Groups ──────────────────────────────────────────────────────── -->
+<section class="section" id="features">
+  <div class="container">
+    <div class="section-header">
+      <h2>30 Extracted Features</h2>
+      <p>The system automatically extracts three groups of 30 features from the email address. Each feature is encoded as −1 (phishing indicator), 0 (suspicious), or +1 (legitimate indicator).</p>
+    </div>
+
+    <div class="feature-cards-grid">
+      <div class="feature-category-card">
+        <div class="fc-header url-header">
+          <span class="fc-icon">🔗</span>
+          <div>
+            <div class="fc-title">URL / Address Structure</div>
+            <div class="fc-count">8 features</div>
+          </div>
+        </div>
+        <ul class="fc-list">
+          <li>IP address used as domain</li>
+          <li>Total email address length</li>
+          <li>URL shortener service domain</li>
+          <li>Multiple @ symbols</li>
+          <li>Double slash in domain</li>
+          <li>Hyphen in domain name</li>
+          <li>Subdomain depth</li>
+          <li>"http" token inside address</li>
+        </ul>
+      </div>
+
+      <div class="feature-category-card">
+        <div class="fc-header domain-header">
+          <span class="fc-icon">🌐</span>
+          <div>
+            <div class="fc-title">Domain Reputation</div>
+            <div class="fc-count">8 features · Highest signal</div>
+          </div>
+        </div>
+        <ul class="fc-list">
+          <li>Known legitimate mail provider</li>
+          <li>Top-level domain type (TLD)</li>
+          <li>Domain label character length</li>
+          <li>Digits mixed into domain</li>
+          <li>High-traffic mail platform</li>
+          <li>Phishing keywords in domain</li>
+          <li>Phishing keywords in username</li>
+          <li>Suspicious / high-risk TLD</li>
+        </ul>
+      </div>
+
+      <div class="feature-category-card">
+        <div class="fc-header html-header">
+          <span class="fc-icon">📧</span>
+          <div>
+            <div class="fc-title">Username Patterns</div>
+            <div class="fc-count">14 features</div>
+          </div>
+        </div>
+        <ul class="fc-list">
+          <li>Digit ratio in username</li>
+          <li>Username randomness (entropy)</li>
+          <li>Non-standard special characters</li>
+          <li>Username length</li>
+          <li>Brand domain spoofing</li>
+          <li>noreply / system sender type</li>
+          <li>Repeated character ratio</li>
+          <li>Digit-letter mix in domain</li>
+          <li>Abused country-code TLD</li>
+          <li>Auto-generated username pattern</li>
+          <li>… and composite risk features</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="top3-section">
+      <h3>Top 3 Most Discriminative Features</h3>
+      <div class="top3-grid">
+        <div class="top3-card">
+          <div class="top3-rank">#1</div>
+          <div class="top3-name">Known Legitimate Provider</div>
+          <div class="top3-imp">Importance: 0.3199</div>
+          <div class="top3-desc">Whether the sender domain is a well-known mail service (Gmail, Outlook, QQ, etc.). The single strongest predictor — phishing emails rarely come from trusted providers.</div>
+        </div>
+        <div class="top3-card">
+          <div class="top3-rank">#2</div>
+          <div class="top3-name">Username Length</div>
+          <div class="top3-imp">Importance: 0.2503</div>
+          <div class="top3-desc">Phishing email usernames are often unusually long. Normal user-created usernames are typically under 30 characters.</div>
+        </div>
+        <div class="top3-card">
+          <div class="top3-rank">#3</div>
+          <div class="top3-name">High-Traffic Mail Platform</div>
+          <div class="top3-imp">Importance: 0.0708</div>
+          <div class="top3-desc">Major platforms like Gmail and Outlook are strong legitimacy signals. Phishing domains are almost never ranked in any traffic index.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── About ──────────────────────────────────────────────────────────────── -->
+<section class="section section-dark" id="about">
+  <div class="container">
+    <div class="section-header">
+      <h2>How It Works</h2>
+      <p>A six-stage end-to-end machine learning pipeline.</p>
+    </div>
+
+    <div class="pipeline-steps">
+      <div class="step">
+        <div class="step-num">01</div>
+        <div class="step-body">
+          <div class="step-title">Dataset Acquisition</div>
+          <div class="step-desc">UCI Phishing Websites Dataset (ID 327) — 11,055 labeled samples, 30 features. Downloaded via <code>ucimlrepo</code> with local CSV caching and a synthetic fallback generator.</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">02</div>
+        <div class="step-body">
+          <div class="step-title">Exploratory Data Analysis</div>
+          <div class="step-desc">Class distribution (44.3% phishing / 55.7% legitimate), zero missing values, full 31×31 correlation heatmap, and per-feature-group signal analysis.</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">03</div>
+        <div class="step-body">
+          <div class="step-title">Preprocessing</div>
+          <div class="step-desc">Label remapping (−1 → 0 phishing, 1 → 1 legitimate), stratified 80/20 split, StandardScaler fitted on training data only — no data leakage.</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">04</div>
+        <div class="step-body">
+          <div class="step-title">Model Training</div>
+          <div class="step-desc">Four classifiers: Logistic Regression, Random Forest (100 trees), SVM (RBF kernel), Decision Tree. All trained in under 3 seconds on an Apple M-series processor.</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">05</div>
+        <div class="step-body">
+          <div class="step-title">Email Feature Extraction</div>
+          <div class="step-desc">The 30 UCI structural features are mapped to email address analysis: domain reputation, keyword detection, username entropy, brand spoofing checks — all offline, no network calls required.</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">06</div>
+        <div class="step-body">
+          <div class="step-title">Real-Time Inference</div>
+          <div class="step-desc">FastAPI REST backend serves the trained Random Forest. Input any email address and receive an instant verdict with per-feature explanations and risk indicators.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tech-stack">
+      <div class="tech-label">Tech Stack</div>
+      <div class="tech-items">
+        <span class="tech-badge">Python 3.13</span>
+        <span class="tech-badge">scikit-learn</span>
+        <span class="tech-badge">FastAPI</span>
+        <span class="tech-badge">pandas</span>
+        <span class="tech-badge">NumPy</span>
+        <span class="tech-badge">Chart.js</span>
+        <span class="tech-badge">UCI ML Repo</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Footer ──────────────────────────────────────────────────────────────── -->
+<footer class="footer">
+  <div class="footer-inner">
+    <div class="footer-brand">
+      <span class="shield-icon">🛡</span> PhishGuard
+    </div>
+    <div class="footer-info">
+      CS 166 – Information Security · Final Project ·
+      <a href="https://github.com/Lushangtu123/CS-166-Final-Project" target="_blank" rel="noopener">GitHub →</a>
+    </div>
+  </div>
+</footer>
+
+<script src="/static/app.js?v=7"></script>
+</body>
+</html>
