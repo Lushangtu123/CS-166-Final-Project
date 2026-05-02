@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>PhishGuard – Phishing Email Detector</title>
-  <link rel="stylesheet" href="/static/style.css?v=7" />
+  <link rel="stylesheet" href="/static/style.css?v=14" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -28,7 +28,6 @@
 <!-- ── Hero ────────────────────────────────────────────────────────────────── -->
 <section class="hero">
   <div class="hero-content">
-    <div class="hero-badge">CS 166 · Information Security · Final Project</div>
     <h1 class="hero-title">
       Phishing Email<br>
       <span class="gradient-text">Detection</span>
@@ -59,11 +58,15 @@
     <a href="#demo" class="btn btn-primary">Check an Email Address</a>
   </div>
   <div class="hero-visual">
-    <div class="orbit-ring">
-      <div class="orbit-center">
-        <span>🛡</span>
-        <div class="orbit-label">Random Forest</div>
+    <!-- Outer container is static; ring spins inside; dots are fixed siblings -->
+    <div class="orbit-container">
+      <div class="orbit-ring">
+        <div class="orbit-center">
+          <span>🛡</span>
+          <div class="orbit-label">Random Forest</div>
+        </div>
       </div>
+      <!-- Dots are outside the ring so they never inherit its rotation -->
       <div class="orbit-dot dot-1">Domain</div>
       <div class="orbit-dot dot-2">SSL</div>
       <div class="orbit-dot dot-3">Keywords</div>
@@ -77,8 +80,21 @@
   <div class="container">
     <div class="section-header">
       <h2>Live Demo</h2>
-      <p>Enter any email address. The system will automatically extract 30 features and run them through the trained Random Forest model to classify it as phishing or legitimate.</p>
+      <p>Analyze an email address for structural phishing signals, or paste the full email content for a keyword-based risk scan.</p>
     </div>
+
+    <!-- Tab Switcher -->
+    <div class="demo-tabs">
+      <button class="demo-tab active" id="tab-email-address" onclick="switchDemoTab('email-address')">
+        <span>✉</span> Email Address
+      </button>
+      <button class="demo-tab" id="tab-email-content" onclick="switchDemoTab('email-content')">
+        <span>📄</span> Email Content
+      </button>
+    </div>
+
+    <!-- ── Tab 1: Email Address ─────────────────────────────────────────────── -->
+    <div class="tab-panel" id="panel-email-address">
 
     <!-- Email Input -->
     <div class="email-input-card">
@@ -168,6 +184,91 @@
             </div>
             <a href="#disposable-info" class="disp-learn-sm">Learn about disposable emails →</a>
           </div>
+
+          <!-- Email Authenticity Verification Card -->
+          <div class="col-card" id="verify-card">
+            <h4 class="col-title">Email Authenticity Verification</h4>
+            <div id="verify-idle" class="verify-idle">
+              <p class="verify-desc">Verify whether this mailbox actually exists by checking DNS records and probing the mail server via SMTP.</p>
+              <button class="btn-verify" onclick="runVerification()">
+                <span>🔎</span> Run Verification
+              </button>
+            </div>
+            <div id="verify-loading" class="verify-loading hidden">
+              <div class="verify-spinner"></div>
+              <span>Probing mail server… this may take up to 10 seconds</span>
+            </div>
+            <div id="verify-result" class="verify-result hidden">
+
+              <!-- Section A: Mailbox Existence -->
+              <div class="verify-section-title">📬 Mailbox Existence</div>
+              <div class="verify-steps">
+                <div class="verify-step" id="vstep-format">
+                  <span class="vstep-icon" id="vstep-format-icon"></span>
+                  <div class="vstep-body">
+                    <div class="vstep-label">Format Validation</div>
+                    <div class="vstep-detail" id="vstep-format-detail"></div>
+                  </div>
+                </div>
+                <div class="verify-step" id="vstep-mx">
+                  <span class="vstep-icon" id="vstep-mx-icon"></span>
+                  <div class="vstep-body">
+                    <div class="vstep-label">DNS / MX Records</div>
+                    <div class="vstep-detail" id="vstep-mx-detail"></div>
+                  </div>
+                </div>
+                <div class="verify-step" id="vstep-smtp">
+                  <span class="vstep-icon" id="vstep-smtp-icon"></span>
+                  <div class="vstep-body">
+                    <div class="vstep-label">SMTP Mailbox Probe</div>
+                    <div class="vstep-detail" id="vstep-smtp-detail"></div>
+                  </div>
+                </div>
+                <div class="verify-step" id="vstep-ptr">
+                  <span class="vstep-icon" id="vstep-ptr-icon"></span>
+                  <div class="vstep-body">
+                    <div class="vstep-label">MX Reverse DNS (PTR)</div>
+                    <div class="vstep-detail" id="vstep-ptr-detail"></div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Section B: Email Security Policy -->
+              <div class="verify-section-title">🛡️ Email Security Policy</div>
+              <div class="verify-steps">
+                <div class="verify-step" id="vstep-spf">
+                  <span class="vstep-icon" id="vstep-spf-icon"></span>
+                  <div class="vstep-body">
+                    <div class="vstep-label">SPF Record <span class="vstep-badge">Sender Policy Framework</span></div>
+                    <div class="vstep-detail" id="vstep-spf-detail"></div>
+                  </div>
+                </div>
+                <div class="verify-step" id="vstep-dmarc">
+                  <span class="vstep-icon" id="vstep-dmarc-icon"></span>
+                  <div class="vstep-body">
+                    <div class="vstep-label">DMARC Policy <span class="vstep-badge">Anti-Spoofing</span></div>
+                    <div class="vstep-detail" id="vstep-dmarc-detail"></div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Section C: Domain Intelligence -->
+              <div class="verify-section-title">🌐 Domain Intelligence</div>
+              <div class="verify-steps">
+                <div class="verify-step" id="vstep-age">
+                  <span class="vstep-icon" id="vstep-age-icon"></span>
+                  <div class="vstep-body">
+                    <div class="vstep-label">Domain Age (WHOIS)</div>
+                    <div class="vstep-detail" id="vstep-age-detail"></div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Overall verdict -->
+              <div class="verify-verdict" id="verify-verdict"></div>
+              <button class="btn-verify btn-verify-sm" onclick="runVerification()">🔄 Re-run</button>
+            </div>
+          </div>
         </div>
 
         <!-- Col 2: Risk Indicators -->
@@ -245,6 +346,101 @@
       <div class="loading-spinner"></div>
       <div class="loading-text">Analyzing email features…</div>
     </div>
+
+    </div><!-- end panel-email-address -->
+
+    <!-- ── Tab 2: Email Content ─────────────────────────────────────────────── -->
+    <div class="tab-panel hidden" id="panel-email-content">
+
+      <div class="content-input-card">
+        <div class="content-input-subject-row">
+          <label class="content-label" for="content-subject">Subject</label>
+          <input
+            type="text"
+            id="content-subject"
+            class="content-subject-input"
+            placeholder="e.g. URGENT: Your account has been suspended"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </div>
+        <div class="content-input-body-row">
+          <label class="content-label" for="content-body">Email Body</label>
+          <textarea
+            id="content-body"
+            class="content-body-textarea"
+            rows="9"
+            placeholder="Paste the full email body text here…"
+            spellcheck="false"
+          ></textarea>
+        </div>
+        <div class="content-input-actions">
+          <button class="btn btn-primary btn-analyze" id="content-analyze-btn" onclick="runContentAnalysis()">
+            <span id="content-btn-text">Analyze Content</span>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          </button>
+          <button class="btn-ghost" onclick="clearContent()">Clear</button>
+        </div>
+
+        <div class="quick-examples">
+          <span class="examples-label">Quick examples:</span>
+          <button class="example-tag phish-tag" onclick="setContentExample('phishing-account')">⚠️ Account suspension phish</button>
+          <button class="example-tag phish-tag" onclick="setContentExample('phishing-lottery')">💰 Lottery scam</button>
+          <button class="example-tag legit-tag" onclick="setContentExample('legit-newsletter')">✅ Legitimate newsletter</button>
+        </div>
+      </div>
+
+      <!-- Content Result Area -->
+      <div id="content-result-area" class="content-result-area hidden">
+
+        <!-- Risk Banner -->
+        <div class="content-risk-banner" id="content-risk-banner">
+          <div class="crb-left">
+            <div class="crb-icon" id="crb-icon"></div>
+            <div>
+              <div class="crb-title" id="crb-title"></div>
+              <div class="crb-sub" id="crb-sub"></div>
+            </div>
+          </div>
+          <div class="crb-right">
+            <div class="crb-score-label">Risk Score</div>
+            <div class="crb-score" id="crb-score"></div>
+          </div>
+        </div>
+
+        <!-- Category Cards -->
+        <div class="content-category-grid" id="content-category-grid"></div>
+
+        <!-- Extra Indicators + Safety Signals row -->
+        <div class="content-bottom-row">
+          <div class="col-card" id="content-extra-card" style="display:none">
+            <h4 class="col-title">Technical Indicators</h4>
+            <div id="content-extra-list" class="risk-list"></div>
+          </div>
+          <div class="col-card" id="content-safety-card" style="display:none">
+            <h4 class="col-title">Safety Signals Found ✓</h4>
+            <div id="content-safety-list" class="safety-list"></div>
+          </div>
+          <div class="col-card content-method-note">
+            <h4 class="col-title">About This Analysis</h4>
+            <p class="method-note-text">
+              This is a <strong>keyword &amp; heuristic</strong> scan — not an ML model prediction.
+              It flags patterns commonly found in phishing emails (urgency phrases, credential requests,
+              brand impersonation, etc.). For the highest accuracy, combine this with the
+              <strong>Email Address</strong> tab analysis.
+            </p>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Content Loading -->
+      <div id="content-loading-area" class="loading-area hidden">
+        <div class="loading-spinner"></div>
+        <div class="loading-text">Scanning email content…</div>
+      </div>
+
+    </div><!-- end panel-email-content -->
 
   </div>
 </section>
@@ -470,6 +666,6 @@
   </div>
 </footer>
 
-<script src="/static/app.js?v=7"></script>
+<script src="/static/app.js?v=14"></script>
 </body>
 </html>

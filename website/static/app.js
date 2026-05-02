@@ -1,5 +1,5 @@
 /* ──────────────────────────────────────────────────────────────────────────
-   app.js – PhishGuard 邮箱检测前端逻辑
+   app.js – PhishGuard frontend logic
    ────────────────────────────────────────────────────────────────────────── */
 
 let metricsChart = null;
@@ -18,6 +18,184 @@ function setupInputEvents() {
   input.addEventListener('input', () => {
     clearBtn.classList.toggle('visible', input.value.length > 0);
   });
+}
+
+// ── Email Authenticity Verification ──────────────────────────────────────────
+let _verifyEmail = null;   // remember which email was last analyzed
+
+function resetVerifyCard() {
+  document.getElementById('verify-idle').classList.remove('hidden');
+  document.getElementById('verify-loading').classList.add('hidden');
+  document.getElementById('verify-result').classList.add('hidden');
+}
+
+async function runVerification() {
+  const email = _verifyEmail || document.getElementById('email-input').value.trim();
+  if (!email) return;
+
+  document.getElementById('verify-idle').classList.add('hidden');
+  document.getElementById('verify-loading').classList.remove('hidden');
+  document.getElementById('verify-result').classList.add('hidden');
+
+  let data;
+  try {
+    const res = await fetch('/api/verify-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    data = await res.json();
+  } catch (err) {
+    document.getElementById('verify-loading').classList.add('hidden');
+    document.getElementById('verify-idle').classList.remove('hidden');
+    alert('Verification request failed: ' + err.message);
+    return;
+  }
+
+  document.getElementById('verify-loading').classList.add('hidden');
+  renderVerifyResult(data);
+}
+
+function renderVerifyResult(data) {
+  const ICONS = {
+    ok:   { icon: '✅', cls: 'vstep-ok'   },
+    warn: { icon: '⚠️', cls: 'vstep-warn' },
+    fail: { icon: '❌', cls: 'vstep-fail' },
+    skip: { icon: '—',  cls: 'vstep-skip' },
+    info: { icon: 'ℹ️', cls: 'vstep-info' },
+  };
+
+  function setStep(id, state, detail) {
+    const iconEl   = document.getElementById(`vstep-${id}-icon`);
+    const detailEl = document.getElementById(`vstep-${id}-detail`);
+    const step     = document.getElementById(`vstep-${id}`);
+    if (!iconEl) return;
+    const cfg = ICONS[state] || ICONS.skip;
+    iconEl.textContent   = cfg.icon;
+    step.className       = 'verify-step ' + cfg.cls;
+    detailEl.textContent = detail;
+  }
+
+  // ── Section A: Mailbox Existence ────────────────────────────────────────
+  // Step 1 – Format
+  if (data.format_valid) {
+    setStep('format', 'ok', 'Address conforms to RFC 5321 format.');
+  } else {
+    setStep('format', 'fail', data.smtp_message || 'Invalid email format.');
+    ['mx', 'smtp', 'ptr', 'spf', 'dmarc', 'age'].forEach(s =>
+      setStep(s, 'skip', 'Skipped.'));
+    showVerifyVerdict('invalid_format');
+    return;
+  }
+
+  // Step 2 – DNS / MX
+  if (data.mx_found) {
+    const recs = (data.mx_records || [])
+      .map(r => `${r[1]} (pref ${r[0]})`).join(' · ');
+    setStep('mx', 'ok', `MX records: ${recs || data.email.split('@')[1]}`);
+  } else {
+    setStep('mx',   'fail', data.smtp_message || 'No MX or A records found.');
+    ['smtp', 'ptr', 'spf', 'dmarc', 'age'].forEach(s => setStep(s, 'skip', 'Skipped.'));
+    showVerifyVerdict('likely_invalid');
+    return;
+  }
+
+  // Step 3 – SMTP probe
+  const smtpResult = data.smtp_result || '';
+  const smtpMsg    = data.smtp_message || '';
+  if (smtpResult === 'exists') {
+    setStep('smtp', 'ok', smtpMsg);
+  } else if (smtpResult === 'does_not_exist') {
+    setStep('smtp', 'fail', smtpMsg);
+  } else if (smtpResult === 'temporarily_unavailable') {
+    setStep('smtp', 'warn', smtpMsg);
+  } else {
+    setStep('smtp', 'warn',
+      smtpMsg || (!data.smtp_connectable
+        ? 'Port 25 appears blocked — probe skipped. Domain MX exists, mailbox unconfirmed.'
+        : 'Server gave no definitive response.'));
+  }
+
+  // Step 4 – MX PTR (reverse DNS)
+  const ptr = data.mx_ptr || {};
+  if (ptr.found) {
+    setStep('ptr', 'ok', ptr.message || `PTR: ${ptr.ptr}`);
+  } else if (ptr.message && ptr.message.includes('timed out')) {
+    setStep('ptr', 'skip', ptr.message);
+  } else {
+    setStep('ptr', 'warn',
+      ptr.message || 'No PTR record — legitimate mail servers should have reverse DNS.');
+  }
+
+  // ── Section B: Email Security Policy ───────────────────────────────────
+  // Step 5 – SPF
+  const spf = data.spf || {};
+  if (spf.found) {
+    const policy = spf.policy;
+    const state  = policy === 'strict'   ? 'ok'   :
+                   policy === 'softfail' ? 'warn'  :
+                   policy === 'open'     ? 'fail'  : 'warn';
+    setStep('spf', state, spf.message || `Policy: ${policy}`);
+  } else {
+    setStep('spf', 'warn', spf.message || 'No SPF record found.');
+  }
+
+  // Step 6 – DMARC
+  const dmarc = data.dmarc || {};
+  if (dmarc.found) {
+    const policy = dmarc.policy;
+    const state  = policy === 'reject'     ? 'ok'   :
+                   policy === 'quarantine' ? 'warn'  :
+                   policy === 'none'       ? 'warn'  : 'skip';
+    setStep('dmarc', state, dmarc.message || `Policy: ${policy}`);
+  } else {
+    setStep('dmarc', 'warn', dmarc.message || 'No DMARC record found.');
+  }
+
+  // ── Section C: Domain Intelligence ─────────────────────────────────────
+  // Step 7 – Domain Age
+  const age = data.domain_age || {};
+  if (age.found && age.age_days !== null) {
+    const d = age.age_days;
+    const state = d < 30 ? 'fail' : d < 180 ? 'warn' : 'ok';
+    const detail = age.message + (age.registrar ? ` · Registrar: ${age.registrar}` : '');
+    setStep('age', state, detail);
+  } else {
+    setStep('age', 'skip', age.message || 'WHOIS data unavailable.');
+  }
+
+  showVerifyVerdict(data.overall);
+}
+
+function showVerifyVerdict(overall) {
+  const VERDICTS = {
+    verified:    { cls: 'vv-ok',      icon: '✅',
+      text: 'Verified — This mailbox exists and can receive email.' },
+    likely_invalid: { cls: 'vv-fail', icon: '❌',
+      text: 'Likely Invalid — This address probably does not exist.' },
+    unverifiable: { cls: 'vv-warn',   icon: '⚠️',
+      text: 'Unverifiable — Domain and MX records are real, but the mail server blocked the mailbox probe (port 25 filtered or server has probe protection). The address may still be valid.' },
+    suspicious:  { cls: 'vv-suspicious', icon: '🚨',
+      text: 'Suspicious — Domain was registered very recently (< 30 days). Newly registered domains are a hallmark of phishing campaigns.' },
+    invalid_format: { cls: 'vv-fail', icon: '❌',
+      text: 'Invalid Format — This is not a valid email address.' },
+    temporarily_unavailable: { cls: 'vv-warn', icon: '⚠️',
+      text: 'Temporarily Unavailable — The server returned a transient error. Try again later.' },
+  };
+  const cfg = VERDICTS[overall] || { cls: 'vv-warn', icon: '⋯', text: 'Result inconclusive.' };
+  const el  = document.getElementById('verify-verdict');
+  el.className  = 'verify-verdict ' + cfg.cls;
+  el.innerHTML  = `<span>${cfg.icon}</span> ${cfg.text}`;
+
+  document.getElementById('verify-result').classList.remove('hidden');
+}
+
+// ── Demo Tab Switcher ─────────────────────────────────────────────────────────
+function switchDemoTab(tabName) {
+  document.querySelectorAll('.demo-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.add('hidden'));
+  document.getElementById('tab-' + tabName).classList.add('active');
+  document.getElementById('panel-' + tabName).classList.remove('hidden');
 }
 
 // ── Quick examples ────────────────────────────────────────────────────────────
@@ -86,6 +264,10 @@ function renderResult(data) {
   const isPhishing = data.prediction === 0;
   const area = document.getElementById('result-area');
 
+  // Reset verify card so it shows "Run Verification" for the new email
+  _verifyEmail = data.email;
+  resetVerifyCard();
+
   // Disposable email check card — 3 states:
   //   confirmed (purple)  → is_disposable && !is_suspected_disposable
   //   suspected  (amber)  → is_disposable &&  is_suspected_disposable
@@ -132,13 +314,35 @@ function renderResult(data) {
   }
 
   // Verdict banner
+  const isSuspect  = !!data.is_suspected_phishing;
   const banner = document.getElementById('verdict-banner');
-  banner.className = 'verdict-banner ' + (isPhishing ? 'banner-phish' : 'banner-legit');
-  document.getElementById('vb-icon').textContent = isPhishing ? '⚠️' : '✅';
+  let bannerCls, bannerIcon, probColor;
+  if (isPhishing) {
+    bannerCls = 'banner-phish';   bannerIcon = '⚠️';  probColor = '#f85149';
+  } else if (isSuspect) {
+    bannerCls = 'banner-suspect'; bannerIcon = '🔍';  probColor = '#e8a000';
+  } else {
+    bannerCls = 'banner-legit';   bannerIcon = '✅';  probColor = '#3fb950';
+  }
+  banner.className = 'verdict-banner ' + bannerCls;
+  document.getElementById('vb-icon').textContent  = bannerIcon;
   document.getElementById('vb-title').textContent = data.label;
   document.getElementById('vb-email').textContent = data.email;
-  document.getElementById('vb-prob').textContent = data.phishing_probability + '%';
-  document.getElementById('vb-prob').style.color = isPhishing ? '#f85149' : '#3fb950';
+  document.getElementById('vb-prob').textContent  = data.phishing_probability + '%';
+  document.getElementById('vb-prob').style.color  = probColor;
+
+  // Remove previous suspect note if any
+  const oldNote = banner.querySelector('.suspect-note');
+  if (oldNote) oldNote.remove();
+  if (isSuspect) {
+    const note = document.createElement('div');
+    note.className = 'suspect-note';
+    note.textContent =
+      'ML model classifies this as legitimate, but heuristic analysis detected ' +
+      data.high_risk_count + ' high-risk structural pattern(s) in the domain. ' +
+      'Manual verification is strongly recommended.';
+    banner.querySelector('.vb-left').appendChild(note);
+  }
 
   // Probability bars
   const phishPct = data.phishing_probability;
@@ -158,8 +362,12 @@ function renderResult(data) {
   } else if (data.is_disposable && data.is_suspected_disposable) {
     dispPill = `<span class="pill pill-disp-suspect">⚠️ Suspected Disposable</span>`;
   }
+  const suspectPill = isSuspect
+    ? `<span class="pill pill-suspect">🔍 Suspected Phishing</span>`
+    : '';
   riskSummary.innerHTML = `
     <div class="risk-pills">
+      ${suspectPill}
       ${dispPill}
       <span class="pill pill-high">${h} high-risk</span>
       <span class="pill pill-med">${m} medium-risk</span>
@@ -310,6 +518,199 @@ function renderImportanceChart(importances) {
       },
     },
   });
+}
+
+// ── Email Content Analysis ────────────────────────────────────────────────────
+
+const CONTENT_EXAMPLES = {
+  'phishing-account': {
+    subject: 'URGENT: Your P@yP@l account has been SUSPENDED!!!',
+    body: `Dear valued customer,
+
+We have detected UNAUTHORIZED ACCESS on your P@yP@l account. Your account has been SUSPENDED due to suspicious activity. Failure to act will result in PERMANENT TERMINATION and legal action.
+
+URGENT ACTION REQUIRED: You must verify your identity within 24 hours!
+
+Click here: http://192.168.1.1/paypal-verify-now
+Click here to confirm: http://bit.ly/verify-account-now
+
+Please enter your username, password, credit card number, date of birth, social security number, and bank account number to restore access.
+
+DO NOT share this email. DELETE after reading. Keep this CONFIDENTIAL.
+
+P@yP@l Security Department`,
+  },
+  'phishing-lottery': {
+    subject: 'CONGRATULATIONS!!! You WON $5,000,000 – Claim NOW!!!',
+    body: `Dear Lucky Winner,
+
+I am Mr. James Williams, Senior Claims Agent. You have been SPECIALLY SELECTED as the winner of our international lottery draw!!! You have won FIVE MILLION DOLLARS ($5,000,000)!!!
+
+To claim your prize you must act NOW! This offer expires in 24 hours! Kindly revert back to me immediately.
+
+Please send your full name, date of birth, home address, bank account number, and routing number. A release fee of $200 is required via Bitcoin, gift card, or Western Union.
+
+DO NOT tell anyone. Keep this strictly confidential. Do the needful and respond at the earliest.
+
+God Bless You,
+I am Barrister James, Esq.`,
+  },
+  'legit-newsletter': {
+    subject: 'Your monthly digest from TechBlog – May 2026',
+    body: `Hi Sarah,
+
+Thanks for subscribing to the TechBlog monthly newsletter. Here's a roundup of what's new this month:
+
+• The latest in AI and machine learning research
+• Upcoming community events and webinars
+• Product updates and release notes
+
+We hope you find this content helpful. If you have feedback, feel free to contact us at hello@techblog.com.
+
+You are receiving this email because you subscribed at techblog.com.
+If you no longer wish to receive these emails, please click unsubscribe below or update your preferences.
+
+Privacy Policy | Terms of Service
+© 2026 TechBlog, All Rights Reserved.
+Sent from TechBlog, 123 Main St, San Francisco, CA 94101`,
+  },
+};
+
+function setContentExample(key) {
+  const ex = CONTENT_EXAMPLES[key];
+  if (!ex) return;
+  document.getElementById('content-subject').value = ex.subject;
+  document.getElementById('content-body').value = ex.body;
+  runContentAnalysis();
+}
+
+function clearContent() {
+  document.getElementById('content-subject').value = '';
+  document.getElementById('content-body').value = '';
+  document.getElementById('content-result-area').classList.add('hidden');
+  document.getElementById('content-loading-area').classList.add('hidden');
+}
+
+async function runContentAnalysis() {
+  const subject = document.getElementById('content-subject').value.trim();
+  const body    = document.getElementById('content-body').value.trim();
+  if (!subject && !body) {
+    document.getElementById('content-body').classList.add('shake');
+    setTimeout(() => document.getElementById('content-body').classList.remove('shake'), 500);
+    return;
+  }
+
+  const btn = document.getElementById('content-analyze-btn');
+  const btnText = document.getElementById('content-btn-text');
+  btn.disabled = true;
+  btnText.textContent = 'Scanning…';
+
+  document.getElementById('content-result-area').classList.add('hidden');
+  document.getElementById('content-loading-area').classList.remove('hidden');
+
+  try {
+    const res = await fetch('/api/analyze-content', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subject, body }),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || 'Request failed');
+    }
+    const data = await res.json();
+    renderContentResult(data);
+  } catch (e) {
+    alert('Analysis failed: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btnText.textContent = 'Analyze Content';
+    document.getElementById('content-loading-area').classList.add('hidden');
+  }
+}
+
+const RISK_CONFIG = {
+  safe:     { icon: '✅', color: 'safe',     scoreColor: '#3fb950' },
+  low:      { icon: '🔵', color: 'low',      scoreColor: '#63b3ed' },
+  medium:   { icon: '⚠️',  color: 'medium',  scoreColor: '#e3b341' },
+  high:     { icon: '🔴', color: 'high',     scoreColor: '#f97316' },
+  critical: { icon: '☠️',  color: 'critical', scoreColor: '#f85149' },
+};
+
+const LEVEL_ICONS = { high: '🔴', medium: '🟡', low: '🔵' };
+
+function renderContentResult(data) {
+  const cfg = RISK_CONFIG[data.risk_level] || RISK_CONFIG.medium;
+
+  // Banner
+  const banner = document.getElementById('content-risk-banner');
+  banner.className = 'content-risk-banner crb-' + data.risk_level;
+  document.getElementById('crb-icon').textContent  = cfg.icon;
+  document.getElementById('crb-title').textContent = data.risk_label;
+  document.getElementById('crb-sub').textContent   =
+    data.category_results.length === 0
+      ? 'No suspicious patterns detected in this email.'
+      : `${data.category_results.length} suspicious category${data.category_results.length > 1 ? 'ies' : 'y'} detected.`;
+  const scoreEl = document.getElementById('crb-score');
+  scoreEl.textContent    = data.total_score;
+  scoreEl.style.color    = cfg.scoreColor;
+
+  // Category cards
+  const grid = document.getElementById('content-category-grid');
+  if (data.category_results.length === 0) {
+    grid.innerHTML = `<div class="cat-empty">No suspicious keyword categories matched in this email.</div>`;
+  } else {
+    grid.innerHTML = data.category_results.map(cat => `
+      <div class="cat-card cat-${cat.level}">
+        <div class="cat-header">
+          <span class="cat-icon">${cat.icon}</span>
+          <div class="cat-title-wrap">
+            <div class="cat-title">${cat.label}</div>
+            <div class="cat-count">${cat.count} signal${cat.count > 1 ? 's' : ''} matched</div>
+          </div>
+          <span class="cat-level-badge level-${cat.level}">${cat.level}</span>
+        </div>
+        <div class="cat-desc">${cat.description}</div>
+        <div class="cat-keywords">
+          ${cat.matched.map(kw => `<span class="kw-pill">${kw}</span>`).join('')}
+        </div>
+      </div>
+    `).join('');
+  }
+
+  // Extra technical indicators
+  const extraCard = document.getElementById('content-extra-card');
+  const extraList = document.getElementById('content-extra-list');
+  if (data.extra_indicators.length > 0) {
+    extraCard.style.display = '';
+    extraList.innerHTML = data.extra_indicators.map(ind => `
+      <div class="risk-item risk-${ind.level}">
+        <span class="risk-dot"></span>
+        <span class="risk-msg">${ind.msg}</span>
+      </div>
+    `).join('');
+  } else {
+    extraCard.style.display = 'none';
+  }
+
+  // Safety signals
+  const safetyCard = document.getElementById('content-safety-card');
+  const safetyList = document.getElementById('content-safety-list');
+  if (data.safety_signals.length > 0) {
+    safetyCard.style.display = '';
+    safetyList.innerHTML = data.safety_signals.map(s => `
+      <div class="safety-item">
+        <span class="safety-dot">✓</span>
+        <span class="safety-msg">${s}</span>
+      </div>
+    `).join('');
+  } else {
+    safetyCard.style.display = 'none';
+  }
+
+  const area = document.getElementById('content-result-area');
+  area.classList.remove('hidden');
+  area.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 // ── Smooth Scroll & Navbar ────────────────────────────────────────────────────

@@ -85,33 +85,68 @@ code { background: rgba(255,255,255,0.08); padding: 2px 6px; border-radius: 4px;
 
 /* Hero Visual */
 .hero-visual { display: flex; justify-content: center; align-items: center; }
-.orbit-ring {
+
+/* The outer container is the positioning reference for both ring and dots */
+.orbit-container {
   position: relative; width: 300px; height: 300px;
+}
+
+/* The ring spins; it holds only the center ball */
+.orbit-ring {
+  position: absolute; inset: 0;
   border-radius: 50%; border: 1px dashed rgba(88,166,255,0.2);
   animation: spin-slow 20s linear infinite;
 }
+
+/* Center ball counter-rotates to keep its content upright */
 .orbit-center {
-  position: absolute; inset: 50%; transform: translate(-50%,-50%);
+  position: absolute; top: 50%; left: 50%;
   background: linear-gradient(135deg, #1c2430, #0d1117);
   border: 2px solid rgba(88,166,255,0.3); border-radius: 50%;
   width: 110px; height: 110px;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   font-size: 36px; box-shadow: 0 0 40px rgba(88,166,255,0.15);
-  animation: counter-spin 20s linear infinite;
+  animation: counter-spin-center 20s linear infinite;
 }
 .orbit-label { font-size: 9px; color: var(--text-muted); margin-top: 4px; font-weight: 600; }
+
+/* Dots are siblings of the ring — they orbit independently using their own animation.
+   This avoids the "rotating coordinate system" bug where translateX(-50%) shifts
+   direction as the parent ring rotates.
+   Technique: all dots start at the ring's center, then use
+   rotate(θ) → translateY(-radius) → rotate(-θ) to orbit while staying upright. */
 .orbit-dot {
-  position: absolute; background: var(--bg-card2); border: 1px solid var(--border);
+  position: absolute; top: 50%; left: 50%;
+  background: var(--bg-card2); border: 1px solid var(--border);
   border-radius: 20px; padding: 4px 10px; font-size: 11px; font-weight: 700; color: var(--accent);
-  animation: counter-spin 20s linear infinite;
+  white-space: nowrap;
+  animation: orbit-dot 20s linear infinite;
 }
-.dot-1 { top: -14px; left: 50%; transform: translateX(-50%); }
-.dot-2 { right: -20px; top: 50%; transform: translateY(-50%); animation: counter-spin-shift 20s linear infinite; }
-.dot-3 { bottom: -14px; left: 50%; transform: translateX(-50%); }
-.dot-4 { left: -20px; top: 50%; transform: translateY(-50%); animation: counter-spin-shift 20s linear infinite; }
-@keyframes spin-slow { to { transform: rotate(360deg); } }
-@keyframes counter-spin { to { transform: rotate(-360deg); } }
-@keyframes counter-spin-shift { to { transform: translateY(-50%) rotate(-360deg); } }
+/* Starting angles: SSL=top(0°) Keywords=right(90°) Structure=bottom(180°) Domain=left(270°) */
+.dot-2 { animation-delay:   0s; }   /* SSL      – 12 o'clock */
+.dot-3 { animation-delay:  -5s; }   /* Keywords –  3 o'clock */
+.dot-4 { animation-delay: -10s; }   /* Structure –  6 o'clock */
+.dot-1 { animation-delay: -15s; }   /* Domain   –  9 o'clock */
+
+/* orbit-dot:
+   1. translate(-50%,-50%)  → move element centre to ring's centre
+   2. rotate(θ)             → swing to current orbit angle
+   3. translateY(-152px)    → push outward to orbit radius
+   4. rotate(-θ)            → counter-rotate so text stays upright */
+@keyframes orbit-dot {
+  from { transform: translate(-50%, -50%) rotate(0deg)   translateY(-152px) rotate(0deg);   }
+  to   { transform: translate(-50%, -50%) rotate(360deg) translateY(-152px) rotate(-360deg); }
+}
+
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+/* Center ball: translate(-50%,-50%) baked into keyframe so animation never drops it */
+@keyframes counter-spin-center {
+  from { transform: translate(-50%, -50%) rotate(0deg); }
+  to   { transform: translate(-50%, -50%) rotate(-360deg); }
+}
 
 /* ── Buttons ─────────────────────────────────────────────────────────────── */
 .btn {
@@ -294,13 +329,21 @@ code { background: rgba(255,255,255,0.08); padding: 2px 6px; border-radius: 4px;
   padding: 20px 28px; border-radius: var(--radius); margin-bottom: 20px;
   border: 1px solid;
 }
-.banner-phish { background: rgba(248,81,73,0.08); border-color: rgba(248,81,73,0.25); }
-.banner-legit { background: rgba(63,185,80,0.08); border-color: rgba(63,185,80,0.25); }
+.banner-phish   { background: rgba(248,81,73,0.08);  border-color: rgba(248,81,73,0.25);  }
+.banner-legit   { background: rgba(63,185,80,0.08);  border-color: rgba(63,185,80,0.25);  }
+.banner-suspect { background: rgba(210,140,0,0.10);  border-color: rgba(210,140,0,0.35);  }
 .vb-left { display: flex; align-items: center; gap: 16px; }
 .vb-icon { font-size: 36px; line-height: 1; }
 .vb-title { font-size: 20px; font-weight: 800; }
-.banner-phish .vb-title { color: var(--red); }
-.banner-legit .vb-title { color: var(--accent2); }
+.banner-phish   .vb-title { color: var(--red); }
+.banner-legit   .vb-title { color: var(--accent2); }
+.banner-suspect .vb-title { color: #e8a000; }
+.banner-suspect .vb-prob  { color: #e8a000; }
+.suspect-note {
+  margin-top: 6px; font-size: 12px; color: #c88800;
+  background: rgba(210,140,0,0.12); border-radius: 6px;
+  padding: 5px 10px; max-width: 480px;
+}
 .vb-email { font-size: 13px; color: var(--text-muted); margin-top: 2px; font-family: monospace; }
 .vb-right { text-align: right; }
 .vb-prob-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; }
@@ -334,9 +377,10 @@ code { background: rgba(255,255,255,0.08); padding: 2px 6px; border-radius: 4px;
 /* Risk pills */
 .risk-pills { display: flex; gap: 6px; flex-wrap: wrap; }
 .pill { padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; }
-.pill-high { background: rgba(248,81,73,0.15); color: var(--red); }
-.pill-med  { background: rgba(227,179,65,0.15); color: var(--yellow); }
-.pill-feat { background: rgba(88,166,255,0.1); color: var(--accent); }
+.pill-suspect { background: rgba(210,140,0,0.18); color: #e8a000; border: 1px solid rgba(210,140,0,0.4); }
+.pill-high    { background: rgba(248,81,73,0.15); color: var(--red); }
+.pill-med     { background: rgba(227,179,65,0.15); color: var(--yellow); }
+.pill-feat    { background: rgba(88,166,255,0.1); color: var(--accent); }
 
 /* Risk list */
 .risk-list { display: flex; flex-direction: column; gap: 8px; max-height: 340px; overflow-y: auto; }
@@ -447,6 +491,202 @@ code { background: rgba(255,255,255,0.08); padding: 2px 6px; border-radius: 4px;
 .footer-brand { display: flex; align-items: center; gap: 8px; font-weight: 700; color: var(--text-muted); }
 .footer-info { font-size: 13px; color: var(--text-dim); }
 
+/* ── Demo Tabs ───────────────────────────────────────────────────────────── */
+.demo-tabs {
+  display: flex; gap: 0; margin-bottom: 24px;
+  border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+  background: var(--bg-card2);
+}
+.demo-tab {
+  flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 13px 20px; background: transparent; border: none; cursor: pointer;
+  font-size: 14px; font-weight: 600; color: var(--text-muted);
+  transition: all 0.2s; border-right: 1px solid var(--border);
+}
+.demo-tab:last-child { border-right: none; }
+.demo-tab:hover { background: rgba(255,255,255,0.04); color: var(--text); }
+.demo-tab.active { background: var(--accent); color: #fff; }
+.demo-tab span { font-size: 16px; }
+
+.tab-panel.hidden { display: none; }
+
+/* ── Content Input Card ──────────────────────────────────────────────────── */
+.content-input-card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 24px; margin-bottom: 24px;
+}
+.content-input-subject-row { margin-bottom: 16px; }
+.content-input-body-row { margin-bottom: 18px; }
+.content-label {
+  display: block; font-size: 12px; font-weight: 700; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 8px;
+}
+.content-subject-input {
+  width: 100%; padding: 11px 14px; background: var(--bg-card2);
+  border: 1px solid var(--border); border-radius: 8px; color: var(--text);
+  font-size: 14px; outline: none; transition: border-color 0.2s; box-sizing: border-box;
+}
+.content-subject-input:focus { border-color: var(--accent); }
+.content-body-textarea {
+  width: 100%; padding: 12px 14px; background: var(--bg-card2);
+  border: 1px solid var(--border); border-radius: 8px; color: var(--text);
+  font-size: 13.5px; font-family: inherit; resize: vertical; outline: none;
+  transition: border-color 0.2s; line-height: 1.65; box-sizing: border-box;
+}
+.content-body-textarea:focus { border-color: var(--accent); }
+.content-input-actions { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; }
+.btn-ghost {
+  padding: 10px 18px; background: transparent; border: 1px solid var(--border);
+  border-radius: 8px; color: var(--text-muted); font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: all 0.2s;
+}
+.btn-ghost:hover { border-color: var(--text-muted); color: var(--text); }
+
+/* ── Content Result Area ─────────────────────────────────────────────────── */
+.content-result-area { margin-top: 4px; }
+
+/* Risk Banner */
+.content-risk-banner {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 22px 28px; border-radius: var(--radius); margin-bottom: 20px;
+  border: 1px solid transparent; gap: 16px;
+}
+.crb-safe     { background: rgba(63,185,80,0.12);  border-color: rgba(63,185,80,0.35); }
+.crb-low      { background: rgba(99,179,237,0.12); border-color: rgba(99,179,237,0.35); }
+.crb-medium   { background: rgba(227,179,65,0.12); border-color: rgba(227,179,65,0.35); }
+.crb-high     { background: rgba(249,115,22,0.12); border-color: rgba(249,115,22,0.40); }
+.crb-critical { background: rgba(248,81,73,0.14);  border-color: rgba(248,81,73,0.45); }
+
+.crb-left  { display: flex; align-items: center; gap: 16px; }
+.crb-icon  { font-size: 36px; line-height: 1; }
+.crb-title { font-size: 20px; font-weight: 800; margin-bottom: 4px; }
+.crb-sub   { font-size: 13px; color: var(--text-muted); }
+.crb-right { text-align: right; flex-shrink: 0; }
+.crb-score-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); margin-bottom: 4px; }
+.crb-score { font-size: 40px; font-weight: 900; line-height: 1; }
+
+/* Category Grid */
+.content-category-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 16px; margin-bottom: 20px;
+}
+.cat-empty {
+  grid-column: 1/-1; text-align: center; padding: 32px;
+  color: var(--text-muted); font-size: 14px;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
+}
+.cat-card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 18px 20px;
+  border-left: 4px solid transparent;
+}
+.cat-card.cat-high   { border-left-color: #f97316; }
+.cat-card.cat-medium { border-left-color: #e3b341; }
+.cat-card.cat-low    { border-left-color: #63b3ed; }
+.cat-header { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 10px; }
+.cat-icon { font-size: 24px; line-height: 1; flex-shrink: 0; margin-top: 2px; }
+.cat-title-wrap { flex: 1; }
+.cat-title { font-size: 14px; font-weight: 700; margin-bottom: 2px; }
+.cat-count { font-size: 12px; color: var(--text-muted); }
+.cat-level-badge {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+  padding: 3px 8px; border-radius: 4px; flex-shrink: 0;
+}
+.level-high   { background: rgba(249,115,22,0.2); color: #f97316; }
+.level-medium { background: rgba(227,179,65,0.2); color: #e3b341; }
+.level-low    { background: rgba(99,179,237,0.2); color: #63b3ed; }
+.cat-desc { font-size: 12px; color: var(--text-muted); line-height: 1.6; margin-bottom: 12px; }
+.cat-keywords { display: flex; flex-wrap: wrap; gap: 6px; }
+.kw-pill {
+  background: rgba(255,255,255,0.07); border: 1px solid var(--border);
+  padding: 2px 10px; border-radius: 10px; font-size: 11.5px; color: var(--text-muted);
+  font-family: monospace;
+}
+
+/* Bottom row: technical indicators + safety signals + method note */
+.content-bottom-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px,1fr)); gap: 16px; }
+.safety-list { display: flex; flex-direction: column; gap: 8px; }
+.safety-item { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; }
+.safety-dot { color: #3fb950; font-weight: 700; flex-shrink: 0; }
+.safety-msg { color: var(--text-muted); line-height: 1.5; }
+.content-method-note { }
+.method-note-text { font-size: 13px; color: var(--text-muted); line-height: 1.7; }
+.method-note-text strong { color: var(--text); }
+
+/* ── Email Authenticity Verification Card ────────────────────────────────── */
+.verify-desc {
+  font-size: 13px; color: var(--text-muted); line-height: 1.65; margin-bottom: 14px;
+}
+.btn-verify {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 18px; border-radius: 8px; border: 1px solid var(--accent);
+  background: rgba(88,166,255,0.1); color: var(--accent);
+  font-size: 13px; font-weight: 700; cursor: pointer; transition: background 0.2s;
+}
+.btn-verify:hover { background: rgba(88,166,255,0.2); }
+.btn-verify-sm { padding: 5px 12px; font-size: 12px; margin-top: 12px; }
+
+/* Loading spinner */
+.verify-loading {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 13px; color: var(--text-muted); padding: 6px 0;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.verify-spinner {
+  width: 18px; height: 18px; border: 2px solid rgba(88,166,255,0.2);
+  border-top-color: var(--accent); border-radius: 50%;
+  animation: spin 0.8s linear infinite; flex-shrink: 0;
+}
+
+/* Steps */
+.verify-steps { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }
+.verify-step {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 10px 12px; border-radius: 8px;
+  background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06);
+  transition: background 0.25s, border-color 0.25s;
+}
+.verify-step.vstep-ok   { background: rgba(63,185,80,0.07);  border-color: rgba(63,185,80,0.2);  }
+.verify-step.vstep-fail { background: rgba(248,81,73,0.07);  border-color: rgba(248,81,73,0.2);  }
+.verify-step.vstep-warn { background: rgba(227,179,65,0.07); border-color: rgba(227,179,65,0.2); }
+.verify-step.vstep-skip { opacity: 0.45; }
+.vstep-icon  { font-size: 18px; line-height: 1; flex-shrink: 0; margin-top: 1px; }
+.vstep-label { font-size: 13px; font-weight: 700; color: var(--text); }
+.vstep-detail{ font-size: 12px; color: var(--text-muted); margin-top: 3px; line-height: 1.5; word-break: break-word; }
+
+/* Section titles */
+.verify-section-title {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.07em;
+  text-transform: uppercase; color: var(--text-muted);
+  padding: 10px 0 4px; border-top: 1px solid rgba(255,255,255,0.07);
+  margin-top: 8px;
+}
+.verify-section-title:first-child { border-top: none; margin-top: 0; padding-top: 0; }
+
+/* vstep-info state */
+.verify-step.vstep-info {
+  background: rgba(88,166,255,0.06); border-color: rgba(88,166,255,0.15);
+}
+
+/* vstep-badge inline label */
+.vstep-badge {
+  display: inline-block; font-size: 10px; font-weight: 600;
+  background: rgba(255,255,255,0.06); color: var(--text-muted);
+  border-radius: 4px; padding: 1px 6px; margin-left: 6px;
+  vertical-align: middle;
+}
+
+/* Overall verdict */
+.verify-verdict {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 10px 14px; border-radius: 8px; font-size: 13px; font-weight: 600;
+  line-height: 1.5; margin-top: 6px;
+}
+.vv-ok         { background: rgba(63,185,80,0.1);  color: var(--accent2);  border: 1px solid rgba(63,185,80,0.3);  }
+.vv-fail       { background: rgba(248,81,73,0.1);  color: var(--red);      border: 1px solid rgba(248,81,73,0.3);  }
+.vv-warn       { background: rgba(227,179,65,0.1); color: var(--yellow);   border: 1px solid rgba(227,179,65,0.3); }
+.vv-suspicious { background: rgba(248,81,73,0.12); color: #ff6b6b;         border: 1px solid rgba(248,81,73,0.4); }
+
 /* ── Responsive ──────────────────────────────────────────────────────────── */
 @media (max-width: 1024px) {
   .hero { grid-template-columns: 1fr; padding-top: 60px; }
@@ -456,6 +696,8 @@ code { background: rgba(255,255,255,0.08); padding: 2px 6px; border-radius: 4px;
   .charts-row { grid-template-columns: 1fr; }
   .feature-cards-grid { grid-template-columns: 1fr; }
   .top3-grid { grid-template-columns: 1fr; }
+  .content-category-grid { grid-template-columns: 1fr; }
+  .content-bottom-row { grid-template-columns: 1fr; }
 }
 @media (max-width: 640px) {
   .nav-links { display: none; }
@@ -465,4 +707,7 @@ code { background: rgba(255,255,255,0.08); padding: 2px 6px; border-radius: 4px;
   .verdict-banner { flex-direction: column; gap: 12px; text-align: center; }
   .vb-right { text-align: center; }
   .quick-examples { flex-direction: column; align-items: flex-start; }
+  .content-risk-banner { flex-direction: column; align-items: flex-start; }
+  .crb-right { text-align: left; }
+  .demo-tabs { border-radius: 8px; }
 }

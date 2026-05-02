@@ -3,17 +3,20 @@ app.py – FastAPI backend for the Phishing Email Detector demo.
 
 Startup: loads/trains the Random Forest model on the UCI Phishing dataset.
 Routes:
-  GET  /                    → serve index.html
-  GET  /api/metrics         → classifier performance metrics
-  GET  /api/features        → feature metadata
-  POST /api/analyze-email   → extract features from email & predict
-  POST /api/predict         → raw feature dict prediction (legacy)
+  GET  /                      → serve index.html
+  GET  /api/metrics           → classifier performance metrics
+  GET  /api/features          → feature metadata
+  POST /api/analyze-email     → extract features from email address & predict
+  POST /api/analyze-content   → heuristic analysis of email subject + body
+  POST /api/predict           → raw feature dict prediction (legacy)
 """
 
 import os
 import re
 import math
 import sys
+import socket
+import smtplib
 import warnings
 import numpy as np
 
@@ -180,10 +183,58 @@ SUSPICIOUS_KEYWORDS = [
     'support', 'service', 'help', 'admin', 'official', 'alert', 'notice',
     'suspended', 'blocked', 'urgent', 'important', 'limited', 'claim',
     'prize', 'winner', 'free', 'bonus', 'reward',
+    # Extended: action / account management keywords
+    'recover', 'recovery', 'restore', 'reactivate', 'unlock', 'validate',
+    'authenticate', 'protect', 'notification', 'warning', 'billing',
+    'invoice', 'refund', 'payment', 'subscri', 'renew', 'expir',
+    # Extended: financial / crypto
+    'crypto', 'bitcoin', 'wallet', 'token', 'trading', 'invest',
+    # Extended: impersonation signals in domain/username
+    'noreply', 'no-reply', 'donotreply', 'postmaster', 'mailer',
+    'webmaster', 'hostmaster', 'abuse',
 ]
+
 BRAND_DOMAINS = {
+    # Consumer tech / social
     'paypal', 'google', 'microsoft', 'amazon', 'apple', 'netflix',
     'facebook', 'twitter', 'instagram', 'linkedin', 'ebay', 'alibaba',
+    'dropbox', 'adobe', 'docusign', 'salesforce', 'stripe', 'shopify',
+    # Banks & financial
+    'chase', 'citibank', 'wellsfargo', 'bankofamerica', 'barclays',
+    'hsbc', 'santander', 'natwest', 'lloyds', 'capitalone', 'usbank',
+    'schwab', 'fidelity', 'vanguard', 'robinhood',
+    # Crypto
+    'coinbase', 'binance', 'kraken', 'metamask',
+    # Government / regulatory (non-.gov impersonation)
+    'irs', 'fbi', 'dhs', 'interpol', 'europol',
+    # Logistics
+    'fedex', 'ups', 'dhl', 'usps',
+}
+
+# Financial-sector keywords commonly embedded in phishing domain labels
+FINANCIAL_DOMAIN_KEYWORDS = {
+    'bank', 'banking', 'banc', 'credit', 'debit', 'loan', 'mortgage',
+    'invest', 'investment', 'capital', 'fund', 'finance', 'financial',
+    'wealth', 'trading', 'forex', 'crypto', 'bitcoin', 'blockchain',
+    'insurance', 'ins', 'assurance', 'revenue', 'treasury', 'fiscal',
+    'pension', 'savings', 'wallet', 'transfer', 'remit', 'clearing',
+    'brokerage', 'exchange', 'escrow', 'leasing', 'billing', 'refund',
+    'invoice', 'payroll', 'accounting', 'audit', 'taxserv', 'taxrefund',
+    # Government/regulatory impersonation
+    'federal', 'national', 'official', 'government', 'regulatory',
+    'authority', 'ministry', 'bureau',
+}
+
+# Business entity suffixes that scammers append to fake-brand abbreviations
+BUSINESS_SUFFIX_KEYWORDS = {
+    'group', 'corp', 'corporation', 'inc', 'incorporated', 'ltd', 'limited',
+    'llc', 'plc', 'holdings', 'holding', 'management', 'enterprise', 'enterprises',
+    'solutions', 'service', 'services', 'associates', 'association',
+    'partners', 'partnership', 'international', 'global',
+    'agency', 'institute', 'trust', 'ventures', 'systems', 'technologies',
+    'administration', 'department', 'commission', 'organisation', 'organization',
+    'centre', 'center', 'network', 'networks', 'alliance', 'union',
+    'foundation', 'consultants', 'consulting', 'advisory',
 }
 SPAM_TLDS = {'xyz', 'top', 'click', 'loan', 'win', 'gq', 'tk', 'ml', 'cf', 'ga', 'pw', 'cc'}
 COMMON_TLDS = {'com', 'org', 'net', 'edu', 'gov', 'mil', 'io', 'co', 'cn'}
@@ -675,6 +726,106 @@ def extract_email_features(email: str) -> tuple[dict, list]:
     if not email_valid:
         risk_indicators.append({"level": "high", "msg": "Email address does not pass RFC format validation — invalid address"})
 
+    # ── Extended semantic domain analysis (extra risk signals beyond ML) ──────
+    if not is_known:
+        fin_kw_found  = sorted({kw for kw in FINANCIAL_DOMAIN_KEYWORDS if kw in domain_label}, key=len, reverse=True)
+        biz_sfx_found = sorted({kw for kw in BUSINESS_SUFFIX_KEYWORDS  if kw in domain_label}, key=len, reverse=True)
+
+        # Detect the fake-business-name compound pattern:
+        #   [short abbreviation 0-4 chars] + [financial keyword] + [business suffix]
+        # e.g. bpinsgroup → bp + ins + group
+        fake_biz_breakdown = None
+        for fkw in fin_kw_found:
+            idx = domain_label.find(fkw)
+            if idx < 0:
+                continue
+            prefix    = domain_label[:idx]
+            remainder = domain_label[idx + len(fkw):]
+            if len(prefix) <= 4 and prefix.isalpha() and any(bkw == remainder for bkw in biz_sfx_found):
+                fake_biz_breakdown = f"'{prefix or '(none)'}' + '{fkw}' + '{remainder}'"
+                break
+            # Also catch: financial keyword at start, business suffix follows
+            if idx == 0 and any(bkw == remainder for bkw in biz_sfx_found):
+                fake_biz_breakdown = f"[start] + '{fkw}' + '{remainder}'"
+                break
+
+        if fake_biz_breakdown:
+            risk_indicators.insert(0, {
+                "level": "high",
+                "msg": (
+                    f"Domain '{base_domain}' follows an [abbreviation]+[financial term]+"
+                    f"[business suffix] pattern ({fake_biz_breakdown}) — a known technique "
+                    f"used to fabricate fake financial institution email domains"
+                ),
+            })
+        elif fin_kw_found and biz_sfx_found:
+            risk_indicators.append({
+                "level": "high",
+                "msg": (
+                    f"Domain '{base_domain}' combines financial keywords "
+                    f"({', '.join(fin_kw_found[:2])}) with business entity suffixes "
+                    f"({', '.join(biz_sfx_found[:2])}) — pattern commonly seen in "
+                    f"financial phishing and business email compromise (BEC) domains"
+                ),
+            })
+        elif fin_kw_found:
+            risk_indicators.append({
+                "level": "medium",
+                "msg": (
+                    f"Domain '{base_domain}' contains financial-sector keywords "
+                    f"({', '.join(fin_kw_found[:3])}) on an unverified provider — "
+                    f"verify the sender before sharing financial or personal information"
+                ),
+            })
+        elif biz_sfx_found:
+            risk_indicators.append({
+                "level": "low",
+                "msg": (
+                    f"Domain '{base_domain}' uses a business entity suffix "
+                    f"({', '.join(biz_sfx_found[:2])}) but is not a recognized "
+                    f"or verified organization"
+                ),
+            })
+
+        # Detect domain that embeds a known brand name as a sub-string
+        # (catches cases not handled by exact-match brand spoofing check above)
+        if not brand_spoof:
+            partial_brands = [b for b in BRAND_DOMAINS if b in domain_label and b != domain_label]
+            if partial_brands:
+                risk_indicators.append({
+                    "level": "high",
+                    "msg": (
+                        f"Domain '{base_domain}' contains the name of a well-known brand "
+                        f"({', '.join(partial_brands[:2])}) as a substring but is not the "
+                        f"official domain — possible typosquatting or brand impersonation"
+                    ),
+                })
+
+        # Detect government/regulatory keyword on a non-.gov domain
+        gov_kw = {'federal', 'national', 'authority', 'ministry', 'government',
+                  'regulatory', 'commission', 'bureau', 'department', 'administration'}
+        gov_hits = [kw for kw in gov_kw if kw in domain_label]
+        if gov_hits and tld not in {'gov', 'mil'}:
+            risk_indicators.append({
+                "level": "high",
+                "msg": (
+                    f"Domain '{base_domain}' contains government/regulatory keywords "
+                    f"({', '.join(gov_hits[:2])}) but is NOT a .gov/.mil domain — "
+                    f"likely impersonating an official body"
+                ),
+            })
+
+        # Detect very long domain label (>15 chars) that is a concatenated word chain
+        if len(domain_label) > 15 and (fin_kw_found or biz_sfx_found):
+            risk_indicators.append({
+                "level": "medium",
+                "msg": (
+                    f"Domain label '{domain_label}' is long ({len(domain_label)} chars) and "
+                    f"appears to be a compound of multiple words — bulk phishing campaigns "
+                    f"often generate such domains to appear business-like"
+                ),
+            })
+
     # ── Disposable email detection (separate from the 30 ML features) ─────────
     # 1. Exact match against known domain list
     is_disposable = base_domain in DISPOSABLE_DOMAINS
@@ -977,10 +1128,21 @@ async def analyze_email(request: EmailRequest):
     med_risks = sum(1 for r in risk_indicators if r["level"] == "medium")
     phish_features = sum(1 for v in feature_values if v == -1)
 
+    # "Suspected phishing": ML classifies as legitimate, but ≥1 high-risk indicator
+    # flags a serious structural problem (fake business domain, brand impersonation, etc.)
+    is_suspected_phishing = (prediction == 1 and high_risks >= 1)
+
+    if is_suspected_phishing:
+        label = "Suspected Phishing"
+    elif prediction == 1:
+        label = "Legitimate Email"
+    else:
+        label = "Likely Phishing"
+
     return JSONResponse({
         "email": email,
         "prediction": prediction,
-        "label": "Legitimate Email" if prediction == 1 else "Likely Phishing",
+        "label": label,
         "phishing_probability": round(phishing_prob * 100, 1),
         "legitimate_probability": round(legitimate_prob * 100, 1),
         "risk_indicators": risk_indicators,
@@ -991,9 +1153,848 @@ async def analyze_email(request: EmailRequest):
         "is_disposable": is_disposable,
         "is_suspected_disposable": is_suspected_disposable,
         "disposable_service": disposable_service,
+        "is_suspected_phishing": is_suspected_phishing,
     })
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Email Content Analysis (heuristic rule-based, no ML model required)
+# ─────────────────────────────────────────────────────────────────────────────
+
+CONTENT_RULES: dict = {
+    "urgency": {
+        "label": "Urgency & Pressure",
+        "level": "high",
+        "icon": "⏰",
+        "description": "Phishing emails create artificial time pressure to prevent careful thinking.",
+        "keywords": [
+            "urgent", "immediately", "act now", "respond within", "respond today",
+            "within 24 hours", "within 48 hours", "within 72 hours", "limited time",
+            "today only", "expires soon", "expiring", "deadline", "last chance",
+            "final notice", "final warning", "time sensitive", "time-sensitive",
+            "asap", "do not delay", "action required", "response required",
+            "reply immediately", "prompt action", "critical alert", "important notice",
+            "account will be deleted", "service will be discontinued",
+            "must respond", "failure to respond", "failure to act",
+            "your access will be", "expiration notice",
+        ],
+    },
+    "threats": {
+        "label": "Threats & Fear Tactics",
+        "level": "high",
+        "icon": "🚨",
+        "description": "Scammers use fear of account loss, legal trouble, or arrest to coerce victims.",
+        "keywords": [
+            "account suspended", "account blocked", "account terminated", "account closed",
+            "access denied", "access revoked", "will be terminated", "will be suspended",
+            "legal action", "lawsuit", "arrested", "penalty", "criminal charges",
+            "your account has been", "unusual activity", "suspicious activity",
+            "unauthorized access", "security breach", "compromised", "hacked",
+            "report you", "law enforcement", "police", "fbi", "irs audit",
+            "debt collection", "warrant issued", "court order",
+            "face prosecution", "civil lawsuit", "criminal investigation",
+            "your ip address", "your device has been", "data breach",
+            "identity theft", "we have recorded", "we have detected",
+        ],
+    },
+    "financial": {
+        "label": "Financial Lure",
+        "level": "high",
+        "icon": "💰",
+        "description": "Promises of unexpected money or urgent payment demands are classic scam patterns.",
+        "keywords": [
+            "free money", "lottery", "you won", "you have won", "prize winner",
+            "million dollar", "billion dollar", "inheritance", "unclaimed funds",
+            "transfer funds", "wire transfer", "bitcoin", "cryptocurrency", "crypto wallet",
+            "investment opportunity", "guaranteed return", "100% profit", "risk-free",
+            "send money", "western union", "moneygram", "gift card", "itunes card",
+            "google play card", "steam card",
+            "overdue payment", "unpaid invoice", "outstanding balance",
+            "refund pending", "tax refund", "claim your refund", "unclaimed prize",
+            "processing fee", "advance fee", "release fee", "activation fee",
+            "donation", "charity fund", "humanitarian fund",
+            "next of kin", "deceased customer", "estate",
+        ],
+    },
+    "credential": {
+        "label": "Credential Harvesting",
+        "level": "high",
+        "icon": "🔑",
+        "description": "Requests for passwords, card numbers, SSN, or account details are major red flags.",
+        "keywords": [
+            "click here to verify", "verify your account", "verify your email",
+            "confirm your account", "confirm your identity", "confirm your details",
+            "reset your password", "update your password", "enter your password",
+            "provide your password", "validate your account", "re-enter your",
+            "social security number", "ssn", "credit card number",
+            "bank account number", "routing number", "date of birth",
+            "mother's maiden name", "security question", "pin number",
+            "login to your account", "sign in to verify", "update your information",
+            "submit your details", "fill in the form below",
+            "complete the form", "fill out the form", "enter your details",
+            "passport number", "driver's license", "national id",
+            "two-factor", "one-time password", "otp code",
+        ],
+    },
+    "impersonation": {
+        "label": "Possible Brand Impersonation",
+        "level": "medium",
+        "icon": "🎭",
+        "description": "Mentions of well-known brands alongside action requests may indicate spoofing.",
+        "keywords": [
+            "paypal", "amazon", "apple id", "google account", "microsoft account",
+            "netflix", "facebook", "instagram", "twitter", "linkedin", "ebay",
+            "fedex", "ups delivery", "dhl express", "usps", "royal mail",
+            "bank of america", "chase bank", "wells fargo", "citibank", "hsbc",
+            "barclays", "santander", "natwest", "lloyds",
+            "internal revenue service", "irs", "social security administration",
+            "department of homeland security", "interpol", "europol",
+            "world health organization", "who", "united nations",
+            "dropbox", "docusign", "adobe sign", "wetransfer",
+        ],
+    },
+    "deception": {
+        "label": "Deceptive Tactics",
+        "level": "medium",
+        "icon": "🎪",
+        "description": "Phrases designed to manipulate behavior, bypass skepticism, or avoid scrutiny.",
+        "keywords": [
+            "do not share this", "keep this confidential", "keep this secret",
+            "delete this email", "do not forward", "burn after reading",
+            "you have been specially selected", "you have been chosen",
+            "congratulations you are", "dear valued customer",
+            "dear account holder", "dear user", "dear beneficiary",
+            "dear friend", "dear sir", "dear madam", "dear sir/madam",
+            "your package is waiting", "delivery attempt failed",
+            "click the link below", "click the button below",
+            "download the attachment", "open the attachment",
+            "we will never ask for your password",
+            "this is not spam", "this email is legitimate",
+            "100% safe", "guaranteed secure", "verified by",
+            "forward this email", "share with your friends",
+            "as seen on cnn", "as seen on bbc",
+        ],
+    },
+    # ── New categories ────────────────────────────────────────────────────────
+    "attachments": {
+        "label": "Suspicious Attachment References",
+        "level": "high",
+        "icon": "📎",
+        "description": "References to file attachments, especially executables or documents with macros, are a primary malware delivery vector.",
+        "keywords": [
+            "see the attached", "please find attached", "open the attached file",
+            "attached invoice", "attached document", "attached receipt",
+            "download and run", "run the installer", "execute the file",
+            "attached .exe", "attached .zip", "attached .doc", "attached .pdf",
+            "scan the attached", "view the attached", "enable macros",
+            "enable editing", "enable content", "allow this document",
+            "extract the zip", "unzip the file", "password is attached",
+            "attachment contains", "file attached",
+        ],
+    },
+    "tech_scam": {
+        "label": "Tech Support / Malware Scam",
+        "level": "high",
+        "icon": "💻",
+        "description": "Fake security alerts claiming your device is infected, designed to make you call fraudulent 'support' numbers.",
+        "keywords": [
+            "your computer is infected", "your device is infected", "virus detected",
+            "malware detected", "spyware detected", "ransomware detected",
+            "call microsoft", "call apple support", "call our toll-free",
+            "windows has detected", "microsoft security alert", "apple security alert",
+            "your subscription has expired", "renew your antivirus",
+            "your computer has been hacked", "hacker has access to your webcam",
+            "your files have been encrypted", "pay to decrypt",
+            "remote access", "allow remote connection", "install this software",
+            "technical support", "tech support", "call immediately",
+            "do not turn off your computer", "do not restart",
+        ],
+    },
+    "job_scam": {
+        "label": "Job / Money Mule Scam",
+        "level": "medium",
+        "icon": "💼",
+        "description": "Fake job offers, work-from-home schemes, or requests to receive and forward money on behalf of others.",
+        "keywords": [
+            "work from home", "work at home", "home-based job", "remote job offer",
+            "earn per day", "earn per week", "earn $", "make money online",
+            "no experience required", "no experience needed",
+            "part time job", "flexible hours", "be your own boss",
+            "package forwarding", "parcel forwarding", "reshipping agent",
+            "receive payment", "transfer the funds", "keep a commission",
+            "money transfer agent", "financial agent", "payment processor",
+            "lottery agent", "claims agent", "prize agent",
+            "data entry job", "typing job", "easy job", "simple task",
+            "multi-level marketing", "mlm", "pyramid scheme",
+        ],
+    },
+    "social_engineering": {
+        "label": "Social Engineering",
+        "level": "medium",
+        "icon": "🧠",
+        "description": "Psychological manipulation tactics that exploit trust, authority, or reciprocity to bypass judgment.",
+        "keywords": [
+            "i am the ceo", "i am a doctor", "i am a lawyer", "i am an agent",
+            "on behalf of", "acting on behalf",
+            "god bless you", "may god bless", "in god we trust",
+            "i need your help", "please help me", "only you can help",
+            "i trust you", "you are the only person", "i chose you",
+            "our mutual friend", "your friend recommended",
+            "strictly confidential", "top secret", "classified information",
+            "do not tell anyone", "between you and me",
+            "i found your contact", "i got your email from",
+            "dying of cancer", "terminal illness", "last wish",
+            "refugee", "stranded abroad", "stuck in",
+            "revert back", "kindly revert", "do the needful",
+            "i am mr", "i am mrs", "i am dr", "i am barrister",
+        ],
+    },
+}
+
+CONTENT_SAFETY_SIGNALS: list = [
+    ("unsubscribe", "Contains unsubscribe link — typical of legitimate bulk emails"),
+    ("privacy policy", "Mentions privacy policy — sign of compliance"),
+    ("terms of service", "References terms of service"),
+    ("terms and conditions", "References terms and conditions"),
+    ("to stop receiving", "Provides opt-out option"),
+    ("if you did not request", "Acknowledges you may not have requested this"),
+    ("if you didn't request", "Acknowledges you may not have requested this"),
+    ("contact us at", "Provides official contact information"),
+    ("© ", "Contains copyright notice"),
+    ("all rights reserved", "Contains copyright notice"),
+    ("sent from", "Identifies sender system transparently"),
+    ("view in browser", "Provides web version link — common in legitimate newsletters"),
+    ("manage preferences", "Offers subscription preference management"),
+    ("update your preferences", "Offers subscription preference management"),
+    ("you are receiving this", "Explains why the email was sent"),
+    ("you subscribed", "Acknowledges subscription consent"),
+    ("hello [name]", "Personalized greeting (legitimate systems use names)"),
+    ("hi [name]", "Personalized greeting"),
+]
+
+SHORTENER_DOMAINS = [
+    "bit.ly", "tinyurl.com", "goo.gl", "t.co", "ow.ly",
+    "short.link", "rb.gy", "cutt.ly", "is.gd", "buff.ly",
+    "ift.tt", "dlvr.it", "wp.me", "tiny.cc", "clck.ru",
+    "qr.ae", "su.pr", "lnkd.in", "db.tt", "qr.net",
+]
+
+# Character obfuscation substitution map (leetspeak / homoglyph tricks)
+_OBFUSCATION_PAIRS = [
+    (r'p[@4]yp[@4]l', 'PayPal'),
+    (r'am[@4]z[o0]n', 'Amazon'),
+    (r'[a4]ppl[e3]', 'Apple'),
+    (r'm[i1]cr[o0]s[o0]ft', 'Microsoft'),
+    (r'g[o0][o0]gl[e3]', 'Google'),
+    (r'n[e3]tfl[i1]x', 'Netflix'),
+    (r'[i1]nst[@a4]gr[@a4]m', 'Instagram'),
+    (r'f[@a4]c[e3]b[o0][o0]k', 'Facebook'),
+    (r'[l1][o0]g[i1]n', 'login'),
+    (r'v[e3]r[i1]fy', 'verify'),
+    (r'[a4]cc[o0]unt', 'account'),
+    (r'p[@a4]ssw[o0]rd', 'password'),
+    (r'b[a4]nk', 'bank'),
+]
+
+
+def _count_urls(text: str) -> int:
+    return len(re.findall(r'https?://\S+', text))
+
+
+def _has_ip_url(text: str) -> bool:
+    return bool(re.search(r'https?://\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', text))
+
+
+def _has_shortener_url(text: str) -> bool:
+    lower = text.lower()
+    return any(s in lower for s in SHORTENER_DOMAINS)
+
+
+def _excessive_caps_ratio(text: str) -> float:
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return 0.0
+    return sum(1 for c in letters if c.isupper()) / len(letters)
+
+
+def _detect_obfuscation(text: str) -> list[str]:
+    """Detect leetspeak / homoglyph substitution tricks (e.g. P@yP@l, Amaz0n)."""
+    found = []
+    for pattern, brand in _OBFUSCATION_PAIRS:
+        if re.search(pattern, text, re.IGNORECASE):
+            found.append(brand)
+    return found
+
+
+def _large_currency_amounts(text: str) -> list[str]:
+    """Find patterns like $5,000,000 or USD 2000000 suggesting implausible winnings."""
+    raw = re.findall(r'(?:\$|usd|gbp|eur|€|£)\s*[\d,\.]+', text, re.IGNORECASE)
+    results = []
+    for m in raw:
+        digits = re.sub(r'[^\d]', '', m)
+        if digits and int(digits) >= 10_000:
+            results.append(m.strip())
+    return results[:4]
+
+
+def _count_generic_cta(text: str) -> int:
+    """Count generic call-to-action phrases that hide real link destinations."""
+    patterns = [
+        r'\bclick here\b', r'\bclick now\b', r'\bclick below\b',
+        r'\bclick this link\b', r'\bpress here\b', r'\btap here\b',
+        r'\bfollow this link\b', r'\bopen this link\b',
+    ]
+    return sum(len(re.findall(p, text, re.IGNORECASE)) for p in patterns)
+
+
+def _has_generic_salutation(text: str) -> bool:
+    """Detect impersonal greetings that suggest bulk phishing campaigns."""
+    generics = [
+        r'\bdear\s+(sir|madam|sir/madam|customer|user|account\s+holder|'
+        r'beneficiary|friend|winner|client|member|valued\s+customer|'
+        r'valued\s+member|applicant)\b',
+    ]
+    return any(re.search(p, text, re.IGNORECASE) for p in generics)
+
+
+def _detect_non_native_phrases(text: str) -> list[str]:
+    """Detect English phrases atypical of native speakers, common in overseas scam emails."""
+    markers = [
+        "kindly revert", "kindly do", "kindly note", "kindly confirm",
+        "kindly send", "kindly provide", "revert back to me",
+        "do the needful", "at the earliest", "i am mr.", "i am mrs.",
+        "i am barrister", "i am dr.", "attached herewith",
+        "please do the", "for your kind", "your swift response",
+        "your prompt response", "be informed that",
+        "we wish to inform", "we are pleased to inform",
+        "i write to inform", "i write to bring",
+        "seeking for", "in need of your",
+    ]
+    lower = text.lower()
+    return [m for m in markers if m in lower]
+
+
+def _has_mismatched_link_text(text: str) -> bool:
+    """Detect markdown-style [text](url) or HTML href patterns where link text ≠ domain."""
+    md_links = re.findall(r'\[([^\]]+)\]\((https?://[^)]+)\)', text)
+    for link_text, url in md_links:
+        domain_match = re.search(r'https?://([^/\s]+)', url)
+        if domain_match:
+            domain = domain_match.group(1).lower()
+            if link_text.lower() not in domain and domain not in link_text.lower():
+                return True
+    return False
+
+
+def analyze_email_content(subject: str, body: str) -> dict:
+    """Rule-based heuristic phishing analysis of email subject + body text."""
+    full_lower = (subject + "\n" + body).lower()
+    full_orig  = subject + "\n" + body
+
+    category_results = []
+    total_score = 0
+
+    for cat_key, cat_info in CONTENT_RULES.items():
+        matched = [kw for kw in cat_info["keywords"] if kw in full_lower]
+        if matched:
+            capped = min(len(matched), 5)
+            total_score += capped
+            category_results.append({
+                "key":         cat_key,
+                "label":       cat_info["label"],
+                "level":       cat_info["level"],
+                "icon":        cat_info["icon"],
+                "description": cat_info["description"],
+                "matched":     matched[:6],
+                "count":       len(matched),
+                "score":       capped,
+            })
+
+    extra_indicators = []
+
+    # ── Structural & heuristic checks ────────────────────────────────────────
+
+    # 1. IP-based URLs
+    if _has_ip_url(full_orig):
+        total_score += 3
+        extra_indicators.append({
+            "level": "high",
+            "msg": "Contains URLs using raw IP addresses — strong phishing signal (legitimate services never do this)",
+        })
+
+    # 2. URL shorteners
+    if _has_shortener_url(full_orig):
+        total_score += 2
+        extra_indicators.append({
+            "level": "high",
+            "msg": "Contains shortened URLs (bit.ly, tinyurl, etc.) — hides the true destination domain",
+        })
+
+    # 3. Mismatched link text vs URL
+    if _has_mismatched_link_text(full_orig):
+        total_score += 2
+        extra_indicators.append({
+            "level": "high",
+            "msg": "Link display text does not match the actual URL destination — classic deceptive link technique",
+        })
+
+    # 4. Excessive exclamation marks
+    excl = full_orig.count("!")
+    if excl >= 3:
+        total_score += 1
+        extra_indicators.append({
+            "level": "medium",
+            "msg": f"Excessive exclamation marks ({excl}) — emotional manipulation tactic common in scam emails",
+        })
+
+    # 5. Excessive capitalization
+    caps_ratio = _excessive_caps_ratio(full_orig)
+    if caps_ratio > 0.40 and len(full_orig) > 60:
+        total_score += 1
+        extra_indicators.append({
+            "level": "medium",
+            "msg": f"Excessive capitalization ({caps_ratio:.0%} uppercase) — used to simulate alarm and urgency",
+        })
+
+    # 6. Excessive question marks in subject
+    subj_q = subject.count("?")
+    if subj_q >= 2:
+        total_score += 1
+        extra_indicators.append({
+            "level": "medium",
+            "msg": f"Multiple question marks in subject line ({subj_q}) — manipulative rhetorical device",
+        })
+
+    # 7. High URL count
+    url_count = _count_urls(full_orig)
+    if url_count > 6:
+        total_score += 1
+        extra_indicators.append({
+            "level": "medium",
+            "msg": f"Unusually high number of URLs ({url_count}) — suggests bulk phishing template",
+        })
+
+    # 8. Generic/impersonal salutation
+    if _has_generic_salutation(full_orig):
+        total_score += 2
+        extra_indicators.append({
+            "level": "medium",
+            "msg": "Generic impersonal greeting (Dear Customer/User/Valued Member) — legitimate services address you by name",
+        })
+
+    # 9. Implausibly large currency amounts
+    large_amounts = _large_currency_amounts(full_orig)
+    if large_amounts:
+        total_score += 2
+        extra_indicators.append({
+            "level": "high",
+            "msg": f"Implausibly large monetary amounts mentioned: {', '.join(large_amounts)} — hallmark of advance-fee and lottery scams",
+        })
+
+    # 10. Excessive generic CTAs
+    cta_count = _count_generic_cta(full_orig)
+    if cta_count >= 2:
+        total_score += 1
+        extra_indicators.append({
+            "level": "medium",
+            "msg": f"Generic call-to-action phrases used {cta_count}× ('click here', 'click now') — legitimate emails use descriptive link text",
+        })
+
+    # 11. Non-native English patterns
+    non_native = _detect_non_native_phrases(full_orig)
+    if non_native:
+        total_score += min(len(non_native), 2)
+        extra_indicators.append({
+            "level": "medium",
+            "msg": f"Non-native English phrasing detected ({len(non_native)} pattern{'s' if len(non_native)>1 else ''}): \"{non_native[0]}\"{'…' if len(non_native)>1 else ''} — common in overseas scam campaigns",
+        })
+
+    # 12. Character obfuscation / leetspeak
+    obfuscated = _detect_obfuscation(full_orig)
+    if obfuscated:
+        total_score += 3
+        extra_indicators.append({
+            "level": "high",
+            "msg": f"Character substitution / homoglyph obfuscation detected for: {', '.join(set(obfuscated))} — e.g. P@yP@l, Amaz0n — used to evade spam filters",
+        })
+
+    # ── Safety signals (each reduces score by 1) ─────────────────────────────
+    safety_found = [
+        desc for (kw, desc) in CONTENT_SAFETY_SIGNALS if kw.lower() in full_lower
+    ]
+    total_score = max(0, total_score - len(safety_found))
+
+    if total_score == 0:
+        risk_level, risk_label = "safe",     "No Phishing Indicators Found"
+    elif total_score <= 3:
+        risk_level, risk_label = "low",      "Low Risk — Minor Concerns"
+    elif total_score <= 8:
+        risk_level, risk_label = "medium",   "Medium Risk — Suspicious Content"
+    elif total_score <= 15:
+        risk_level, risk_label = "high",     "High Risk — Likely Phishing"
+    else:
+        risk_level, risk_label = "critical", "Critical Risk — Very Likely Phishing"
+
+    return {
+        "risk_level":        risk_level,
+        "risk_label":        risk_label,
+        "total_score":       total_score,
+        "category_results":  category_results,
+        "extra_indicators":  extra_indicators,
+        "safety_signals":    safety_found,
+        "url_count":         url_count,
+        "has_ip_url":        _has_ip_url(full_orig),
+        "has_shortener":     _has_shortener_url(full_orig),
+    }
+
+
+class ContentRequest(BaseModel):
+    subject: str = ""
+    body: str = ""
+
+
+@app.post("/api/analyze-content")
+async def analyze_content_endpoint(request: ContentRequest):
+    subject = request.subject.strip()
+    body    = request.body.strip()
+    if not subject and not body:
+        raise HTTPException(status_code=400, detail="Subject or body is required")
+    result = analyze_email_content(subject, body)
+    return JSONResponse(result)
+
+
+# ── Email Authenticity Verification ──────────────────────────────────────────
+
+from concurrent.futures import ThreadPoolExecutor, wait as futures_wait
+
+
+class VerifyRequest(BaseModel):
+    email: str
+
+
+# ── Helper: SMTP mailbox probe ────────────────────────────────────────────────
+def _smtp_probe(email: str, mx_host: str, timeout: int = 8) -> dict:
+    result = {"connectable": False, "result": "unverifiable", "message": ""}
+    try:
+        smtp = smtplib.SMTP(timeout=timeout)
+        smtp.connect(mx_host, 25)
+        result["connectable"] = True
+        smtp.helo("verify.phishguard.local")
+        smtp.mail("")
+        code, msg_bytes = smtp.rcpt(email)
+        msg_str = msg_bytes.decode(errors="replace") if isinstance(msg_bytes, bytes) else str(msg_bytes)
+        try:
+            smtp.quit()
+        except Exception:
+            pass
+        if code == 250:
+            result["result"] = "exists"
+            result["message"] = f"Mail server accepted the address (SMTP {code})"
+        elif code in (550, 551, 552, 553):
+            result["result"] = "does_not_exist"
+            result["message"] = f"Mail server rejected the address (SMTP {code}): {msg_str[:120]}"
+        elif code in (421, 450, 451, 452):
+            result["result"] = "temporarily_unavailable"
+            result["message"] = f"Server returned a temporary error (SMTP {code}) — try again later"
+        else:
+            result["result"] = "unknown"
+            result["message"] = f"Unexpected server response (SMTP {code}): {msg_str[:120]}"
+    except smtplib.SMTPConnectError as e:
+        result["message"] = f"Cannot connect to {mx_host}:25 — {e}"
+    except smtplib.SMTPServerDisconnected as e:
+        result["message"] = f"Server disconnected unexpectedly — {e}"
+    except socket.timeout:
+        result["message"] = f"Connection to {mx_host} timed out after {timeout}s"
+    except OSError as e:
+        result["message"] = f"Network error: {e}"
+    except Exception as e:
+        result["message"] = str(e)[:150]
+    return result
+
+
+# ── Helper: SPF record check ──────────────────────────────────────────────────
+def _check_spf(domain: str) -> dict:
+    """Look up SPF TXT record and parse the enforcement policy."""
+    import dns.resolver, dns.exception
+    result = {"found": False, "record": None, "policy": None, "message": ""}
+    try:
+        for r in dns.resolver.resolve(domain, "TXT", lifetime=5):
+            txt = r.to_text().strip('"')
+            if txt.startswith("v=spf1"):
+                result["found"]  = True
+                result["record"] = txt[:250]
+                if "-all" in txt:
+                    result["policy"]  = "strict"
+                    result["message"] = "Strict policy (-all): unauthorized senders are rejected."
+                elif "~all" in txt:
+                    result["policy"]  = "softfail"
+                    result["message"] = "Soft-fail policy (~all): unauthorized senders are flagged but not blocked."
+                elif "?all" in txt:
+                    result["policy"]  = "neutral"
+                    result["message"] = "Neutral policy (?all): no enforcement — spoofing possible."
+                elif "+all" in txt:
+                    result["policy"]  = "open"
+                    result["message"] = "Open policy (+all): ANY server may send — high spoofing risk!"
+                else:
+                    result["policy"]  = "unknown"
+                    result["message"] = "SPF record found but enforcement policy is unclear."
+                break
+        if not result["found"]:
+            result["message"] = "No SPF record — this domain is vulnerable to email spoofing."
+    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+        result["message"] = "No TXT records found for domain."
+    except dns.exception.DNSException as e:
+        result["message"] = f"DNS error: {e}"
+    except Exception as e:
+        result["message"] = f"SPF check error: {str(e)[:100]}"
+    return result
+
+
+# ── Helper: DMARC policy check ────────────────────────────────────────────────
+def _check_dmarc(domain: str) -> dict:
+    """Look up DMARC TXT record at _dmarc.<domain> and parse the p= policy."""
+    import dns.resolver, dns.exception
+    result = {"found": False, "record": None, "policy": None, "pct": None, "message": ""}
+    try:
+        dmarc_domain = f"_dmarc.{domain}"
+        for r in dns.resolver.resolve(dmarc_domain, "TXT", lifetime=5):
+            txt = r.to_text().strip('"')
+            if "v=DMARC1" in txt:
+                result["found"]  = True
+                result["record"] = txt[:250]
+                m_p   = re.search(r'\bp=(\w+)',   txt)
+                m_pct = re.search(r'\bpct=(\d+)', txt)
+                if m_p:
+                    p = m_p.group(1).lower()
+                    result["policy"] = p
+                    pct = int(m_pct.group(1)) if m_pct else 100
+                    result["pct"] = pct
+                    pct_str = f" (applied to {pct}% of messages)" if pct < 100 else ""
+                    if p == "reject":
+                        result["message"] = f"p=reject{pct_str}: unauthorized emails are rejected."
+                    elif p == "quarantine":
+                        result["message"] = f"p=quarantine{pct_str}: unauthorized emails go to spam."
+                    elif p == "none":
+                        result["message"] = f"p=none: monitoring only — no enforcement, spoofing possible."
+                    else:
+                        result["message"] = f"DMARC policy: {p}{pct_str}"
+                else:
+                    result["message"] = "DMARC record found but p= policy tag is missing."
+                break
+        if not result["found"]:
+            result["message"] = f"No DMARC record at _dmarc.{domain} — no anti-spoofing policy set."
+    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+        result["message"] = f"No DMARC record at _dmarc.{domain}."
+    except dns.exception.DNSException as e:
+        result["message"] = f"DNS error: {e}"
+    except Exception as e:
+        result["message"] = f"DMARC check error: {str(e)[:100]}"
+    return result
+
+
+# ── Helper: Domain age via WHOIS ──────────────────────────────────────────────
+def _check_domain_age(domain: str) -> dict:
+    """Retrieve domain creation date via WHOIS and assess age."""
+    result = {"found": False, "creation_date": None, "age_days": None,
+              "registrar": None, "message": ""}
+    try:
+        import whois
+        from datetime import datetime, timezone
+        w = whois.whois(domain)
+        creation = w.creation_date
+        if isinstance(creation, list):
+            creation = creation[0]
+        if creation:
+            now = datetime.now(timezone.utc)
+            if creation.tzinfo is None:
+                creation = creation.replace(tzinfo=timezone.utc)
+            age = (now - creation).days
+            result["found"]         = True
+            result["creation_date"] = creation.strftime("%Y-%m-%d")
+            result["age_days"]      = age
+            result["registrar"]     = (w.registrar or "")[:80] if w.registrar else None
+            if age < 30:
+                result["message"] = (
+                    f"Domain is only {age} days old — newly registered domains "
+                    f"are a major phishing red flag."
+                )
+            elif age < 180:
+                result["message"] = (
+                    f"Domain is {age} days old (~{age//30} months) — "
+                    f"relatively new, proceed with caution."
+                )
+            elif age < 365:
+                result["message"] = f"Domain is {age} days old (< 1 year) — moderately established."
+            else:
+                years = age // 365
+                result["message"] = (
+                    f"Domain registered {creation.strftime('%Y-%m-%d')} "
+                    f"({years} year{'s' if years != 1 else ''} old) — well-established."
+                )
+        else:
+            result["message"] = "WHOIS returned no creation date for this domain."
+    except Exception as e:
+        result["message"] = f"WHOIS lookup failed or data unavailable: {str(e)[:100]}"
+    return result
+
+
+# ── Helper: MX PTR (reverse DNS) check ───────────────────────────────────────
+def _check_mx_ptr(mx_host: str) -> dict:
+    """Check if the primary MX server has a valid PTR (reverse DNS) record."""
+    import dns.resolver, dns.reversename, dns.exception
+    result = {"found": False, "ptr": None, "ip": None, "message": ""}
+    try:
+        a_records = dns.resolver.resolve(mx_host, "A", lifetime=5)
+        ip = str(a_records[0])
+        result["ip"] = ip
+        rev = dns.reversename.from_address(ip)
+        ptr_records = dns.resolver.resolve(rev, "PTR", lifetime=5)
+        ptr = str(ptr_records[0]).rstrip(".")
+        result["found"] = True
+        result["ptr"]   = ptr
+        result["message"] = f"MX server {ip} → PTR: {ptr}"
+    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+        result["message"] = (
+            f"No PTR record for MX server{(' ' + result['ip']) if result['ip'] else ''} "
+            f"— legitimate mail servers almost always have reverse DNS configured."
+        )
+    except dns.exception.DNSException as e:
+        result["message"] = f"PTR lookup error: {e}"
+    except Exception as e:
+        result["message"] = f"PTR check error: {str(e)[:100]}"
+    return result
+
+
+@app.post("/api/verify-email")
+def verify_email_endpoint(req: VerifyRequest):
+    """
+    Six-stage email authenticity check (stages 3-6 run in parallel):
+      1. RFC 5321 format validation
+      2. DNS MX (+ A fallback) record lookup
+      3. SMTP RCPT TO mailbox probe   ┐
+      4. SPF record & policy          ├─ parallel
+      5. DMARC record & policy        │
+      6. MX PTR / reverse-DNS         │
+      7. Domain age (WHOIS)           ┘
+    """
+    import dns.resolver
+    import dns.exception
+
+    email = req.email.strip()
+    out = {
+        "email": email,
+        "format_valid": False,
+        "mx_found": False,
+        "mx_records": [],
+        "smtp_connectable": False,
+        "smtp_result": None,
+        "smtp_message": None,
+        "spf":  None,
+        "dmarc": None,
+        "domain_age": None,
+        "mx_ptr": None,
+        "note": None,
+        "overall": None,
+    }
+
+    # ── Stage 1: Format ───────────────────────────────────────────────────────
+    _EMAIL_RE = re.compile(
+        r'^[a-zA-Z0-9!#$%&\'*+/=?^_`{|}~.\-]{1,64}'
+        r'@'
+        r'[a-zA-Z0-9.\-]{1,253}'
+        r'\.[a-zA-Z]{2,}$'
+    )
+    if not _EMAIL_RE.match(email) or ".." in email:
+        out["overall"]       = "invalid_format"
+        out["smtp_message"]  = "Email address does not conform to RFC 5321 format."
+        return JSONResponse(out)
+    out["format_valid"] = True
+    domain = email.split("@")[1].lower()
+
+    # ── Stage 2: DNS MX / A lookup ────────────────────────────────────────────
+    mx_host = None
+    try:
+        mx_answers = dns.resolver.resolve(domain, "MX", lifetime=6)
+        records = sorted(
+            [(r.preference, str(r.exchange).rstrip(".")) for r in mx_answers]
+        )
+        out["mx_found"]   = True
+        out["mx_records"] = records
+        mx_host = records[0][1]
+    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.exception.DNSException):
+        try:
+            dns.resolver.resolve(domain, "A", lifetime=4)
+            out["mx_found"]   = True
+            out["mx_records"] = [[0, domain]]
+            mx_host = domain
+            out["note"] = "No MX record found; domain has an A record — using domain directly."
+        except Exception:
+            out["overall"]      = "likely_invalid"
+            out["smtp_message"] = (
+                f"Domain '{domain}' has no MX or A records in DNS — "
+                f"this address cannot receive email."
+            )
+            return JSONResponse(out)
+
+    # ── Stages 3-7: run in parallel ───────────────────────────────────────────
+    _TIMEOUT = 12  # seconds to wait for all parallel tasks
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        f_smtp  = pool.submit(_smtp_probe,      email,  mx_host)
+        f_spf   = pool.submit(_check_spf,       domain)
+        f_dmarc = pool.submit(_check_dmarc,     domain)
+        f_age   = pool.submit(_check_domain_age, domain)
+        f_ptr   = pool.submit(_check_mx_ptr,    mx_host)
+        futures_wait([f_smtp, f_spf, f_dmarc, f_age, f_ptr], timeout=_TIMEOUT)
+
+    def safe_result(future, fallback):
+        try:
+            return future.result(timeout=0)
+        except Exception:
+            return fallback
+
+    probe        = safe_result(f_smtp,  {"connectable": False, "result": "unverifiable",
+                                          "message": "SMTP probe timed out."})
+    spf_info     = safe_result(f_spf,   {"found": False, "policy": None,
+                                          "message": "SPF check timed out."})
+    dmarc_info   = safe_result(f_dmarc, {"found": False, "policy": None,
+                                          "message": "DMARC check timed out."})
+    age_info     = safe_result(f_age,   {"found": False, "age_days": None,
+                                          "message": "WHOIS lookup timed out."})
+    ptr_info     = safe_result(f_ptr,   {"found": False, "ptr": None,
+                                          "message": "PTR check timed out."})
+
+    out["smtp_connectable"] = probe["connectable"]
+    out["smtp_result"]      = probe["result"]
+    out["smtp_message"]     = probe["message"]
+    out["spf"]              = spf_info
+    out["dmarc"]            = dmarc_info
+    out["domain_age"]       = age_info
+    out["mx_ptr"]           = ptr_info
+
+    # ── Overall verdict ───────────────────────────────────────────────────────
+    if probe["result"] == "exists":
+        out["overall"] = "verified"
+    elif probe["result"] == "does_not_exist":
+        out["overall"] = "likely_invalid"
+    elif not probe["connectable"]:
+        out["overall"] = "unverifiable"
+        if not out["smtp_message"]:
+            out["smtp_message"] = (
+                "Port 25 appears blocked by your network. "
+                "MX records exist, so the domain is real, but mailbox existence cannot be confirmed."
+            )
+    else:
+        out["overall"] = "unverifiable"
+
+    # Escalate: very new domain is a serious additional red flag
+    age_days = age_info.get("age_days")
+    if age_days is not None and age_days < 30 and out["overall"] != "likely_invalid":
+        out["overall"] = "suspicious"
+
+    return JSONResponse(out)
+
+
+# ── Legacy predict endpoint ───────────────────────────────────────────────────
 class PredictRequest(BaseModel):
     features: dict
 
