@@ -165,21 +165,51 @@ FEATURE_NAMES = [f["name"] for f in FEATURE_INFO]
 
 # ── Known domains ─────────────────────────────────────────────────────────────
 LEGIT_PROVIDERS = {
+     # Email providers
     'gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com', 'icloud.com',
     'aol.com', 'protonmail.com', 'zoho.com', 'mail.com', 'yandex.com',
     'live.com', 'msn.com', 'me.com', 'apple.com', 'google.com',
     'microsoft.com', 'amazon.com', 'qq.com', '163.com', '126.com',
     'sina.com', 'sohu.com', 'foxmail.com',
+    # Big tech companies
+    'paypal.com', 'netflix.com', 'facebook.com', 'twitter.com',
+    'instagram.com', 'linkedin.com', 'github.com', 'adobe.com',
+    'dropbox.com', 'spotify.com', 'uber.com', 'airbnb.com',
+    'salesforce.com', 'slack.com', 'zoom.us', 'stripe.com',
+    # Banks
+    'chase.com', 'bankofamerica.com', 'wellsfargo.com', 'citibank.com',
+    'capitalone.com', 'americanexpress.com', 'discover.com',
+    # Shipping
+    'fedex.com', 'ups.com', 'dhl.com', 'usps.com',
+    # Education
+    'stanford.edu', 'mit.edu', 'harvard.edu', 'berkeley.edu',
 }
 HIGH_TRAFFIC = {
-    'gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com',
+     'gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com',
     'icloud.com', 'protonmail.com', 'live.com', 'qq.com', '163.com',
+    'paypal.com', 'netflix.com', 'microsoft.com', 'apple.com',
+    'google.com', 'amazon.com', 'facebook.com', 'linkedin.com',
+    'github.com', 'spotify.com', 'chase.com', 'bankofamerica.com',
+}
+HOMOGLYPH_MAP = {
+    '0': 'o',   # amaz0n → amazon
+    '1': 'l',   # paypa1 → paypal, app1e → apple
+    '3': 'e',   # n3tflix → netflix
+    '4': 'a',   # p4ypal → paypal
+    '5': 's',   # micro5oft → microsoft
+    '6': 'g',   # 6oogle → google
+    '8': 'b',   # 8ank → bank
+    '@': 'a',   # p@ypal → paypal
+    'vv': 'w',  # vvindows → windows
+    'rn': 'm',  # rnicro → micro
+    'nn': 'm',  # nnicrosoft → microsoft
+    'ii': 'u',  # giithub → github (rare)
+    'cl': 'd',  # clomain → domain (rare)
 }
 SUSPICIOUS_KEYWORDS = [
     'verify', 'verification', 'secure', 'security', 'bank', 'account',
     'update', 'confirm', 'login', 'signin', 'password', 'credential',
-    'paypal', 'ebay', 'amazon', 'apple', 'microsoft', 'google', 'netflix',
-    'support', 'service', 'help', 'admin', 'official', 'alert', 'notice',
+    'ebay', 'service', 'admin', 'official', 'alert', 'notice',
     'suspended', 'blocked', 'urgent', 'important', 'limited', 'claim',
     'prize', 'winner', 'free', 'bonus', 'reward',
     # Extended: action / account management keywords
@@ -189,7 +219,7 @@ SUSPICIOUS_KEYWORDS = [
     # Extended: financial / crypto
     'crypto', 'bitcoin', 'wallet', 'token', 'trading', 'invest',
     # Extended: impersonation signals in domain/username
-    'noreply', 'no-reply', 'donotreply', 'postmaster', 'mailer',
+    'no-reply', 'donotreply', 'postmaster', 'mailer',
     'webmaster', 'hostmaster', 'abuse',
 ]
 
@@ -537,7 +567,24 @@ _model: RandomForestClassifier = None
 _scaler: StandardScaler = None
 _train_feature_cols: list = None   # column order used during training
 
-
+def normalize_homoglyphs(text: str) -> str:
+    """Convert typosquatting characters back to normal letters."""
+    result = text.lower()
+    # Multi-char substitutions first
+    result = result.replace('vv', 'w')
+    result = result.replace('rn', 'm')
+    result = result.replace('nn', 'm')
+    result = result.replace('cl', 'd')
+    # Single char substitutions
+    result = result.replace('0', 'o')
+    result = result.replace('1', 'l')
+    result = result.replace('3', 'e')
+    result = result.replace('4', 'a')
+    result = result.replace('5', 's')
+    result = result.replace('6', 'g')
+    result = result.replace('8', 'b')
+    result = result.replace('@', 'a')
+    return result
 def _shannon_entropy(s: str) -> float:
     if not s:
         return 0.0
@@ -696,14 +743,28 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
 
     # 21. links_in_tags (brand spoofing)
     brand_spoof = None
+    normalized_domain = normalize_homoglyphs(domain_label)
+    normalized_base = normalize_homoglyphs(base_domain)
+
     for brand in BRAND_DOMAINS:
-        if brand in domain_label and base_domain not in {brand + '.com', brand + '.net', brand + '.org'}:
+        # Check original domain
+        original_match = (brand in domain_label and 
+                        base_domain not in {brand+'.com', brand+'.net', brand+'.org'})
+        # Check normalized domain (catches paypa1, vvindows, amaz0n etc)
+        normalized_match = (brand in normalized_domain and 
+                        normalized_base not in {brand+'.com', brand+'.net', brand+'.org'} and
+                        base_domain not in {brand+'.com', brand+'.net', brand+'.org'})
+        
+        if original_match or normalized_match:
             brand_spoof = brand
+            # Show which substitution was used
+            if normalized_match and not original_match:
+                risk_indicators.append({
+                    "level": "high",
+                    "msg": f"Homoglyph attack detected — '{domain_label}' uses character substitution to impersonate '{brand}' (e.g. 1→l, 0→o, vv→w)"
+                })
             break
     features['links_in_tags'] = -1 if brand_spoof else 1
-    if brand_spoof:
-        risk_indicators.append({"level": "high", "msg": f"Domain appears to impersonate {brand_spoof.title()} ({base_domain}) — not the official domain"})
-
     # 22. sfh (noreply address — neutral)
     features['sfh'] = 0 if ('noreply' in local or 'no-reply' in local or 'donotreply' in local) else 1
 
@@ -714,11 +775,18 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
     if repeat_ratio > 0.5 and len(local) > 3:
         risk_indicators.append({"level": "low", "msg": "Username contains heavily repeated characters — possibly auto-generated"})
 
-    # 24. abnormal_url (digit-letter mix in domain label)
+    # 24. abnormal_url (digit-letter mix + homoglyph in domain label)
     digit_letter_mix = bool(re.search(r'(?<=[a-z])\d|(?<=\d)[a-z]', domain_label))
-    features['abnormal_url'] = -1 if digit_letter_mix else 1
-    if digit_letter_mix and not has_digits_domain:
-        risk_indicators.append({"level": "medium", "msg": f"Domain mixes digits and letters ({domain_label}) — possible brand impersonation (e.g. paypa1)"})
+    # Also check if normalizing changes the domain significantly (indicates substitution)
+    normalized = normalize_homoglyphs(domain_label)
+    homoglyph_detected = (normalized != domain_label and 
+                        any(brand in normalized for brand in BRAND_DOMAINS))
+    features['abnormal_url'] = -1 if (digit_letter_mix or homoglyph_detected) else 1
+    if homoglyph_detected and not digit_letter_mix:
+        risk_indicators.append({
+            "level": "high",
+            "msg": f"Character substitution detected in domain '{domain_label}' — normalized to '{normalized}'"
+        })
 
     # 25. redirect (default legit — can't check without network)
     features['redirect'] = 1
