@@ -1,0 +1,51 @@
+---
+description: Always append a dated entry to CHANGELOG.md after any code, model, dataset, or documentation change.
+alwaysApply: true
+---
+
+# CHANGELOG discipline for this project
+
+Whenever you modify ANY of the following in this repository, you MUST append a
+new entry at the top of `CHANGELOG.md` before ending your turn:
+
+- Backend code (`website/app.py`, `website/content_model.py`,
+  `phishing-detection/src/**`)
+- Frontend code (`website/static/**`)
+- Datasets (`phishing-detection/data/**`)
+- Notebooks (`phishing-detection/notebooks/**`)
+- Project documentation (`README.md`, `phishing-detection/README.md`)
+- Dependencies (`*requirements.txt`)
+- Cursor rules, `.cursor/**`, or this file itself
+
+## Entry format (newest first, Pacific time)
+
+```
+## [YYYY-MM-DD HH:MM PT] — Short title
+
+### Why
+- 1–3 bullets explaining the motivation / observed problem / user request.
+
+### Files changed
+- `path/to/file.py` — concrete one-line description per file
+- ...
+
+### Effect
+- Concrete before/after metrics, behavioural changes, or sample-level
+  evidence. Use tables when comparing model versions.
+```
+
+## Rules
+
+1. **Always at the top.** The most recent entry is the first entry under the
+   "Format is loosely based on..." line.
+2. **Be specific.** Reference exact file paths, function names, metric values,
+   sample inputs, dataset row counts. Avoid generic phrases like "improved
+   accuracy"; quote the number.
+3. **Group atomically.** A single logical change (even spanning many files)
+   is ONE entry. Multiple unrelated changes in the same turn get multiple
+   entries.
+4. **Never delete history.** If a previous entry is wrong, add a follow-up
+   entry that corrects it rather than editing the old one.
+5. **No emojis in headings**, but ✓ / ⚠ inline inside tables is fine.
+6. If a change is purely cosmetic (typo, indent, comment-only) you may skip the
+   entry, but anything that would affect a reviewer must be logged.

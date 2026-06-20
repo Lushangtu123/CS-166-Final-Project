@@ -603,6 +603,59 @@ code { background: rgba(255,255,255,0.08); padding: 2px 6px; border-radius: 4px;
   font-family: monospace;
 }
 
+/* ── ML Classifier Card (Content tab) ───────────────────────────────────── */
+.content-ml-card {
+  background: linear-gradient(135deg,
+    rgba(99, 179, 237, 0.08) 0%,
+    rgba(99, 179, 237, 0.02) 100%);
+  border: 1px solid rgba(99, 179, 237, 0.30);
+  border-radius: 14px;
+  padding: 22px 24px;
+  margin: 18px 0;
+}
+.ml-card-header {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  gap: 16px; flex-wrap: wrap; margin-bottom: 16px;
+}
+.ml-card-title {
+  font-size: 16px; font-weight: 700; color: var(--text);
+  display: flex; align-items: center; gap: 8px;
+}
+.ml-badge {
+  background: linear-gradient(135deg, #63b3ed, #4299e1);
+  color: #0d1117;
+  font-size: 10.5px; font-weight: 800;
+  padding: 2px 8px; border-radius: 6px;
+  letter-spacing: 0.5px;
+}
+.ml-card-sub { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
+.ml-card-metrics {
+  display: flex; gap: 10px; flex-wrap: wrap;
+}
+.ml-metric {
+  display: flex; flex-direction: column; align-items: center;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 12px; min-width: 70px;
+}
+.ml-metric-k { font-size: 10.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; }
+.ml-metric-v { font-size: 15px; font-weight: 700; color: #63b3ed; margin-top: 2px; }
+
+.ml-contribs { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+.ml-contribs-title { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }
+.ml-contribs-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.ml-token {
+  background: rgba(249, 115, 22, 0.10);
+  border: 1px solid rgba(249, 115, 22, 0.35);
+  color: #fbbf24;
+  font-family: monospace;
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 8px;
+  cursor: help;
+}
+
 /* Bottom row: technical indicators + safety signals + method note */
 .content-bottom-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px,1fr)); gap: 16px; }
 .safety-list { display: flex; flex-direction: column; gap: 8px; }

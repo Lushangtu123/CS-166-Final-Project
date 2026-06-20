@@ -647,13 +647,69 @@ function renderContentResult(data) {
   banner.className = 'content-risk-banner crb-' + data.risk_level;
   document.getElementById('crb-icon').textContent  = cfg.icon;
   document.getElementById('crb-title').textContent = data.risk_label;
-  document.getElementById('crb-sub').textContent   =
+
+  // Sub-line: now combines heuristic categories with ML verdict
+  const subParts = [];
+  if (data.ml_label != null) {
+    subParts.push(`ML: ${data.ml_label} (${data.ml_phishing_probability}% phishing)`);
+  }
+  subParts.push(
     data.category_results.length === 0
-      ? 'No suspicious patterns detected in this email.'
-      : `${data.category_results.length} suspicious category${data.category_results.length > 1 ? 'ies' : 'y'} detected.`;
+      ? 'No heuristic categories matched.'
+      : `${data.category_results.length} suspicious category${data.category_results.length > 1 ? 'ies' : 'y'} detected.`
+  );
+  document.getElementById('crb-sub').textContent = subParts.join(' • ');
+
   const scoreEl = document.getElementById('crb-score');
-  scoreEl.textContent    = data.total_score;
-  scoreEl.style.color    = cfg.scoreColor;
+  // Prefer the blended ML+heuristic score when available; fall back to raw heuristic total.
+  scoreEl.textContent = data.combined_phishing_score != null
+    ? `${data.combined_phishing_score}%`
+    : data.total_score;
+  scoreEl.style.color = cfg.scoreColor;
+
+  // ── ML Classifier Card ───────────────────────────────────────────────────
+  const mlCard = document.getElementById('content-ml-card');
+  if (data.ml_label != null) {
+    mlCard.style.display = '';
+
+    const phishPct = data.ml_phishing_probability;
+    const legitPct = data.ml_legitimate_probability;
+
+    document.getElementById('content-phish-bar').style.width = phishPct + '%';
+    document.getElementById('content-phish-pct').textContent = phishPct + '%';
+    document.getElementById('content-legit-bar').style.width = legitPct + '%';
+    document.getElementById('content-legit-pct').textContent = legitPct + '%';
+
+    const verdict = data.ml_prediction === 1 ? '🚨 Likely Phishing' : '✅ Likely Legitimate';
+    document.getElementById('content-ml-sub').textContent =
+      `${verdict} — model confidence ${Math.max(phishPct, legitPct).toFixed(1)}%`;
+
+    // Hold-out evaluation metrics for the content text classifier
+    const m = data.ml_metrics || {};
+    document.getElementById('content-ml-metrics').innerHTML = m.Accuracy != null ? `
+      <div class="ml-metric"><span class="ml-metric-k">Accuracy</span><span class="ml-metric-v">${(m.Accuracy*100).toFixed(1)}%</span></div>
+      <div class="ml-metric"><span class="ml-metric-k">F1</span><span class="ml-metric-v">${(m.F1*100).toFixed(1)}%</span></div>
+      <div class="ml-metric"><span class="ml-metric-k">ROC AUC</span><span class="ml-metric-v">${m.ROC_AUC.toFixed(4)}</span></div>
+    ` : '';
+
+    // Per-email token contributions (what pushed the score toward "phishing")
+    const contribs = data.ml_top_contributors || [];
+    const contribBox = document.getElementById('content-ml-contribs');
+    if (contribs.length > 0) {
+      contribBox.innerHTML =
+        `<div class="ml-contribs-title">Top tokens driving the ML score</div>` +
+        `<div class="ml-contribs-list">` +
+        contribs.map(c =>
+          `<span class="ml-token" title="weighted contribution: ${c.contribution}">${c.term}</span>`
+        ).join('') +
+        `</div>`;
+    } else {
+      contribBox.innerHTML =
+        `<div class="ml-contribs-title">No phishing-indicative tokens found in this email.</div>`;
+    }
+  } else {
+    mlCard.style.display = 'none';
+  }
 
   // Category cards
   const grid = document.getElementById('content-category-grid');

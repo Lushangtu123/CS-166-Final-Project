@@ -408,6 +408,37 @@
           </div>
         </div>
 
+        <!-- ML Classifier Card -->
+        <div class="content-ml-card" id="content-ml-card">
+          <div class="ml-card-header">
+            <div>
+              <div class="ml-card-title">
+                <span class="ml-badge">ML</span>
+                TF-IDF + Logistic Regression
+              </div>
+              <div class="ml-card-sub" id="content-ml-sub"></div>
+            </div>
+            <div class="ml-card-metrics" id="content-ml-metrics"></div>
+          </div>
+          <div class="prob-bars">
+            <div class="prob-row">
+              <span class="prob-label phish-label">Phishing</span>
+              <div class="prob-bar-track">
+                <div class="prob-bar phish-bar" id="content-phish-bar"></div>
+              </div>
+              <span class="prob-pct" id="content-phish-pct"></span>
+            </div>
+            <div class="prob-row">
+              <span class="prob-label legit-label">Legit</span>
+              <div class="prob-bar-track">
+                <div class="prob-bar legit-bar" id="content-legit-bar"></div>
+              </div>
+              <span class="prob-pct" id="content-legit-pct"></span>
+            </div>
+          </div>
+          <div class="ml-contribs" id="content-ml-contribs"></div>
+        </div>
+
         <!-- Category Cards -->
         <div class="content-category-grid" id="content-category-grid"></div>
 
@@ -424,10 +455,12 @@
           <div class="col-card content-method-note">
             <h4 class="col-title">About This Analysis</h4>
             <p class="method-note-text">
-              This is a <strong>keyword &amp; heuristic</strong> scan — not an ML model prediction.
-              It flags patterns commonly found in phishing emails (urgency phrases, credential requests,
-              brand impersonation, etc.). For the highest accuracy, combine this with the
-              <strong>Email Address</strong> tab analysis.
+              This analysis combines a <strong>TF-IDF + Logistic Regression</strong>
+              text classifier with a <strong>keyword &amp; heuristic</strong> scan.
+              The ML model produces a phishing probability from the raw email text;
+              the heuristic layer adds explainable category signals (urgency phrases,
+              credential requests, brand impersonation, etc.). The final risk verdict
+              blends both signals.
             </p>
           </div>
         </div>

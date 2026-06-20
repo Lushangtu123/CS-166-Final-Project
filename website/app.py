@@ -37,6 +37,8 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 
+from content_model import build_content_pipeline, predict_content
+
 # ── Feature definitions (UCI Phishing Websites Dataset mapping) ───────────────
 FEATURE_INFO = [
     {"name": "having_ip_address",
@@ -585,6 +587,12 @@ def normalize_homoglyphs(text: str) -> str:
     result = result.replace('8', 'b')
     result = result.replace('@', 'a')
     return result
+
+
+# Email-content text classifier (TF-IDF + Logistic Regression).
+# Populated at startup via build_content_pipeline().
+_content_pipeline: dict | None = None
+
 def _shannon_entropy(s: str) -> float:
     if not s:
         return 0.0
@@ -1105,6 +1113,16 @@ def _load_and_train():
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     _load_and_train()
+
+    global _content_pipeline
+    print("Training email-content text classifier (TF-IDF + Logistic Regression)…")
+    _content_pipeline = build_content_pipeline(seed=42)
+    m = _content_pipeline["metrics"]
+    print(
+        f"  → Content model ready: "
+        f"Acc={m['Accuracy']:.4f}  F1={m['F1']:.4f}  ROC_AUC={m['ROC_AUC']:.4f}  "
+        f"(train={m['n_train']}, test={m['n_test']})"
+    )
     yield
 
 
@@ -1133,7 +1151,19 @@ async def health():
 # ── API ───────────────────────────────────────────────────────────────────────
 @app.get("/api/metrics")
 async def get_metrics():
-    return JSONResponse({"metrics": MODEL_METRICS, "feature_importances": FEATURE_IMPORTANCES})
+    payload = {
+        "metrics": MODEL_METRICS,
+        "feature_importances": FEATURE_IMPORTANCES,
+    }
+    if _content_pipeline is not None:
+        m = _content_pipeline["metrics"]
+        payload["content_model"] = {
+            "name": "TF-IDF (word + char n-gram) + Logistic Regression (email body text)",
+            "metrics":     m,
+            "data_source": m.get("data_source", ""),
+            "top_terms":   _content_pipeline["top_terms"],
+        }
+    return JSONResponse(payload)
 
 
 @app.get("/api/features")
@@ -1728,7 +1758,36 @@ async def analyze_content_endpoint(request: ContentRequest):
     body    = request.body.strip()
     if not subject and not body:
         raise HTTPException(status_code=400, detail="Subject or body is required")
+
+    # 1. Rule-based heuristic scan (explainable categories + extra indicators)
     result = analyze_email_content(subject, body)
+
+    # 2. ML text classifier (TF-IDF + Logistic Regression)
+    if _content_pipeline is not None:
+        ml = predict_content(_content_pipeline, subject, body)
+        result.update(ml)
+        result["ml_metrics"] = _content_pipeline["metrics"]
+
+        # 3. Blend heuristic score with the ML probability into a single verdict.
+        #    Heuristic score → ~0.05 weight per point, capped at 0.6.
+        #    ML phishing probability → 0-1 weight.
+        heur_norm = min(result["total_score"] * 0.05, 0.6)
+        ml_norm   = ml["ml_phishing_probability"] / 100.0
+        combined  = 0.55 * ml_norm + 0.45 * heur_norm
+        result["combined_phishing_score"] = round(combined * 100, 1)
+
+        # Promote/demote risk label based on the blended score.
+        if combined >= 0.75:
+            result["risk_level"], result["risk_label"] = "critical", "Critical Risk — Very Likely Phishing"
+        elif combined >= 0.55:
+            result["risk_level"], result["risk_label"] = "high",     "High Risk — Likely Phishing"
+        elif combined >= 0.30:
+            result["risk_level"], result["risk_label"] = "medium",   "Medium Risk — Suspicious Content"
+        elif combined >= 0.10:
+            result["risk_level"], result["risk_label"] = "low",      "Low Risk — Minor Concerns"
+        else:
+            result["risk_level"], result["risk_label"] = "safe",     "No Phishing Indicators Found"
+
     return JSONResponse(result)
 
 

@@ -5,6 +5,9 @@
 
 A full-stack phishing and scam-email detection system built on a Random Forest classifier trained on the UCI Phishing Websites Dataset. The project includes a reproducible ML pipeline and an interactive web application with three analysis modes: **email address risk analysis**, **email content scanning**, and **email authenticity verification**.
 
+> 📋 **Change history:** see [`CHANGELOG.md`](./CHANGELOG.md) for a dated log
+> of every model upgrade, dataset addition, and bug fix.
+
 ---
 
 ## Table of Contents
@@ -129,7 +132,43 @@ Legitimate `firstname.lastname` patterns (e.g. `alice.smith`) are exempted via a
 
 ### 2. Email Content Analysis
 
-A **rule-based heuristic scanner** for email subject and body text. No ML model — pure keyword matching and structural analysis.
+A **hybrid ML + heuristic** scanner for email subject and body text. Combines:
+
+1. **TF-IDF + auto-selected classifier** — trained on **~61 000 real emails**
+   merged from three public corpora plus ~3 600 modern-style template samples.
+   At startup the pipeline performs **3-fold CV model selection** across:
+   - `LogisticRegression` (liblinear, balanced)
+   - `CalibratedClassifierCV(LinearSVC)` — Platt-scaled SVM for trustworthy
+     probabilities
+   - `ComplementNB`
+   
+   The best model by CV ROC AUC is fit on the full training set. Feature space
+   is a `FeatureUnion` of:
+   - word 1–2 grams (semantic phrases)
+   - `char_wb` 3–5 grams (catches obfuscation like `P@yP@l`, `Amaz0n`)
+
+2. **Rule-based heuristic layer** — explainable keyword categories + structural
+   checks (below)
+3. **Score blending** — the final risk verdict combines the ML probability
+   (55 %) and the heuristic score (45 %) into a `combined_phishing_score`
+
+**Content Classifier — Test-set Metrics (n ≈ 16 500, 20 % hold-out)**
+
+| Accuracy | Precision | Recall | F1-Score | ROC AUC | Training corpus |
+|----------|-----------|--------|----------|---------|-----------------|
+| **99.05 %** | **99.0 %** | **99.2 %** | **99.08 %** | **0.9996** | **~82 400 emails** (incl. 2026 LLM-grounded data) |
+
+The training set now blends classic public corpora (Phishing_Email.csv,
+CEAS_08, Nazario, ~59 k) with two **2026 LLM-grounded benchmarks**:
+**PhishNChips v5.2** (2 387 emails grounded in live PhishTank /
+OpenPhish / GitHub-Pages / Tranco URLs + modern workplace legit) and
+**PhishFuzzer** (19 800 LLM variants over 3 300 real seeds; Spam class
+dropped, Phishing/Valid kept for binary). See the *Datasets* section
+below for full provenance.
+
+The trained pipeline is pickled to `phishing-detection/data/content_model_cache.pkl`
+(~3.6 MB) so subsequent server starts load in **< 50 ms** instead of the ~2-minute
+initial training time.
 
 **Keyword Categories (10 categories)**
 
@@ -334,13 +373,59 @@ Each feature is scored as:
 
 ---
 
-## Dataset
+## Datasets
+
+### 1. URL-feature dataset (email-address classifier + notebook)
 
 - **Source:** [UCI ML Repository – Phishing Websites (ID 327)](https://archive.ics.uci.edu/ml/datasets/phishing+websites)
 - **Size:** 11,055 rows × 30 features + 1 target
 - **Label encoding:** `-1` = phishing → remapped to `0`; `1` = legitimate
 - **Feature types:** Ternary integers `{-1, 0, 1}` encoding URL, domain, and HTML signals
 - **Collection date:** 2012 (features reflect phishing techniques of that era)
+
+### 2. Email-text datasets (content classifier)
+
+The corpus blends **classic 2002-2008 public data** with **two 2026
+LLM-grounded benchmarks**, all auto-downloaded by
+`content_model.ensure_real_dataset()` on first server start:
+
+| Corpus | Era | Rows | Phishing / Legit | Source | License |
+|--------|-----|-----:|------------------|--------|---------|
+| `Phishing_Email.csv` | 2002-2007 | 18 631 | 7 309 / 11 322 | [HF mirror of Kaggle *Phishing Email Detection*](https://huggingface.co/datasets/zefang-liu/phishing-email-dataset) (Cyber Cop) | LGPL-3.0 |
+| `CEAS_08.csv` | 2008 | 39 127 | 21 841 / 17 286 | [Champa et al. 2024 — Zenodo 8339691](https://zenodo.org/records/8339691) (CEAS 2008 challenge) | CC-BY-4.0 |
+| `Nazario.csv` | 2005-2008 | 1 562 | 1 562 / 0 | [Champa et al. 2024 — Zenodo 8339691](https://zenodo.org/records/8339691) (Nazario phishing corpus) | CC-BY-4.0 |
+| `phishnchips_*.csv` (core + cross-domain + infra) | **Apr 2026** | 2 387 | 1 054 / 1 333 | [AreLit/PhishNChips v5.2](https://huggingface.co/datasets/AreLit/PhishNChips) — emails grounded in live PhishTank / OpenPhish / GitHub-Pages / Tranco URLs + modern workplace legit | MIT |
+| `phishfuzzer_{train,val,test}.csv` | **Nov 2026** | 13 356 (Spam dropped) | 6 756 / 6 600 | [hai123xz/PhishFuzzer-split](https://huggingface.co/datasets/hai123xz/PhishFuzzer-split) — LLM (Gemini-2.5-Flash) variants over 3 300 real seeds; 3-class → binary | CC-BY-4.0 |
+| **Real total** | mixed | **75 063** | **38 522 / 36 541** | | |
+| Synthetic templates | 2024-2026 | ~5 600 | ~2 800 / ~2 800 | Generated in `content_model.py` (`n_variants=160` × ~35 templates) | — |
+| **Grand total** | | **~80 700** | balanced | | |
+
+**Why blend the two 2026 LLM-grounded corpora in:**
+- **PhishNChips v5.2** anchors the model to *real* 2026 phishing
+  infrastructure (PhishTank-grounded URLs, GitHub Pages phishing,
+  IPFS-hosted lures, URL shorteners, infrastructure phishing) and to
+  *modern legitimate workplace* patterns (Google Workspace, M365,
+  e-signature, finance tools, HR / IT portals).
+- **PhishFuzzer** brings ~13 k LLM-generated variants of contemporary
+  brand-impersonation lures (Dropbox, Xerox, ICAO, DocuSign, etc.) plus
+  matched legit examples — invaluable for teaching the model to
+  distinguish brand-issued transactional email from brand-impersonating
+  phishing.
+- Synthetic templates (now 35+ legit categories, 160 variants each) are
+  still needed for *brand-issued transactional* emails (Amazon shipping,
+  Stripe payout, DocuSign envelope from the brand itself, mortgage
+  statements, 2FA backup-code emails) — those are not strongly
+  represented in any single public corpus. Without them the
+  PhishFuzzer brand-impersonation signal would dominate and produce
+  legit false positives on the real things.
+
+**Model selection:** at training time `build_content_pipeline` runs
+3-fold ROC-AUC cross-validation across `LogisticRegression`,
+`CalibratedClassifierCV(LinearSVC)`, and `ComplementNB`. A tie-break
+prefers LogReg whenever the AUC gap is < 0.001, because its sigmoid
+output is naturally well-calibrated at the decision boundary (Platt
+calibration on LinearSVC was producing brittle 50–60 % probabilities
+for boundary samples like legitimate Amazon-shipping emails).
 
 ---
 
