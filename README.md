@@ -67,9 +67,9 @@ CS-166-Final-Project/
 | **Suspected Phishing Override** | Shows amber "Suspected Phishing" verdict when heuristics detect high-risk patterns even if ML says legitimate |
 | **Semantic Domain Analysis** | Detects fake business domains (e.g. `[abbr]+[financial term]+[business suffix]`), brand impersonation, government keyword abuse |
 | **Disposable Email Detection** | 500+ known providers + pattern matching + 6-factor heuristic for auto-generated usernames |
-| **Email Content Analysis** | Rule-based keyword scan across 10 phishing categories + 11 structural checks |
+| **Email Content Analysis** | Hybrid **ML + heuristic** classifier — TF-IDF (word + char n-gram) → CV-selected calibrated model (LogReg / LinearSVC / ComplementNB) trained on ~82 400 emails incl. 2026 LLM-grounded benchmarks (PhishNChips v5.2, PhishFuzzer), blended 55 / 45 with the 10-category keyword scan + 11 structural checks |
 | **Email Authenticity Verification** | 7-stage live verification: format → DNS/MX → SMTP probe → PTR → SPF → DMARC → domain age |
-| **Model Metrics Dashboard** | Live display of all four classifiers' accuracy, F1, and ROC AUC |
+| **Model Metrics Dashboard** | Live display of all classifiers' accuracy, F1, and ROC AUC (UCI URL-feature models + content classifier) |
 
 ---
 

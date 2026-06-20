@@ -22,6 +22,35 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-06-20 15:15 PT] — README features-table sync with v4.3 content classifier
+
+### Why
+- User flagged: the "Web Application" features table in `README.md` still
+  described **Email Content Analysis** as "Rule-based keyword scan across
+  10 phishing categories + 11 structural checks", which has been stale
+  since v2 of the content classifier (May 2026). The same row also said
+  "all four classifiers" in the Model Metrics Dashboard row even though
+  we now also expose the content-classifier metrics in `/api/metrics`.
+
+### Files changed
+- `README.md` (features table, two rows):
+  - **Email Content Analysis** — now reads
+    "Hybrid **ML + heuristic** classifier — TF-IDF (word + char n-gram)
+    → CV-selected calibrated model (LogReg / LinearSVC / ComplementNB)
+    trained on ~82 400 emails incl. 2026 LLM-grounded benchmarks
+    (PhishNChips v5.2, PhishFuzzer), blended 55 / 45 with the
+    10-category keyword scan + 11 structural checks".
+  - **Model Metrics Dashboard** — wording adjusted from "all four
+    classifiers" to "all classifiers (UCI URL-feature models + content
+    classifier)" so it matches what `/api/metrics` actually returns.
+
+### Effect
+- Top-of-README feature summary now accurately reflects the v4.3 hybrid
+  pipeline; new readers won't be told the content path is rule-only.
+- No code or model changes; docs-only patch.
+
+---
+
 ## [2026-06-20 14:55 PT] — 2026 LLM-grounded datasets + brand-impersonation rebalance (v4.3)
 
 ### Why
