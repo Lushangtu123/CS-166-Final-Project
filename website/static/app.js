@@ -7,6 +7,7 @@ let importanceChart = null;
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
+  await loadPublicConfig();
   await loadMetrics();
   setupSmoothScroll();
   setupInputEvents();
@@ -22,8 +23,37 @@ function setupInputEvents() {
 
 // ── Email Authenticity Verification ──────────────────────────────────────────
 let _verifyEmail = null;   // remember which email was last analyzed
+let _emailVerificationEnabled = false;
+
+function applyPublicConfig(config) {
+  const enabled = config.email_verification_enabled === true;
+  _emailVerificationEnabled = enabled;
+  const notice = document.getElementById('verification-local-notice');
+  ['verify-idle', 'verify-loading', 'verify-result'].forEach(id => {
+    document.getElementById(id).classList.toggle('hidden', !enabled);
+  });
+  notice.classList.toggle('hidden', enabled);
+  notice.textContent = enabled
+    ? ''
+    : 'Full email authenticity verification is disabled on this public service. Deploy the full version on your own computer to enable SMTP, DNS, and WHOIS checks.';
+}
+
+async function loadPublicConfig() {
+  let config = { email_verification_enabled: false };
+  try {
+    const response = await fetch('/api/config');
+    if (response.ok) config = await response.json();
+  } catch (error) {
+    console.warn('Public configuration unavailable; using safe defaults.', error);
+  }
+  applyPublicConfig(config);
+}
 
 function resetVerifyCard() {
+  if (!_emailVerificationEnabled) {
+    applyPublicConfig({ email_verification_enabled: false });
+    return;
+  }
   document.getElementById('verify-idle').classList.remove('hidden');
   document.getElementById('verify-loading').classList.add('hidden');
   document.getElementById('verify-result').classList.add('hidden');
@@ -647,19 +677,18 @@ function renderContentResult(data) {
   banner.className = 'content-risk-banner crb-' + data.risk_level;
   document.getElementById('crb-icon').textContent  = cfg.icon;
   document.getElementById('crb-title').textContent = data.risk_label;
-
   // Sub-line: now combines heuristic categories with ML verdict
   const subParts = [];
   if (data.ml_label != null) {
     subParts.push(`ML: ${data.ml_label} (${data.ml_phishing_probability}% phishing)`);
   }
+  const categoryCount = data.category_results.length;
   subParts.push(
-    data.category_results.length === 0
-      ? 'No heuristic categories matched.'
-      : `${data.category_results.length} suspicious category${data.category_results.length > 1 ? 'ies' : 'y'} detected.`
+    categoryCount === 0
+      ? 'No suspicious patterns detected in this email.'
+      : `${categoryCount} suspicious ${categoryCount === 1 ? 'category' : 'categories'} detected.`
   );
   document.getElementById('crb-sub').textContent = subParts.join(' • ');
-
   const scoreEl = document.getElementById('crb-score');
   // Prefer the blended ML+heuristic score when available; fall back to raw heuristic total.
   scoreEl.textContent = data.combined_phishing_score != null

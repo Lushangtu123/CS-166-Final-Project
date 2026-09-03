@@ -8,6 +8,8 @@ A full-stack phishing and scam-email detection system built on a Random Forest c
 > 📋 **Change history:** see [`CHANGELOG.md`](./CHANGELOG.md) for a dated log
 > of every model upgrade, dataset addition, and bug fix.
 
+> **Public deployment safety:** outbound email-authenticity verification is disabled by default. The complete SMTP/DNS/WHOIS version must be deployed explicitly on your own computer and must not be exposed as an anonymous public endpoint.
+
 ---
 
 ## Table of Contents
@@ -19,8 +21,10 @@ A full-stack phishing and scam-email detection system built on a Random Forest c
   - [Email Content Analysis](#2-email-content-analysis)
   - [Email Authenticity Verification](#3-email-authenticity-verification)
 - [Model Performance](#model-performance)
+- [Deployment Modes](#deployment-modes)
 - [Quick Start — Web App](#quick-start--web-app)
 - [Quick Start — ML Notebook](#quick-start--ml-notebook)
+- [Testing](#testing)
 - [Tech Stack](#tech-stack)
 - [Feature Engineering](#feature-engineering)
 - [Dataset](#dataset)
@@ -68,7 +72,7 @@ CS-166-Final-Project/
 | **Semantic Domain Analysis** | Detects fake business domains (e.g. `[abbr]+[financial term]+[business suffix]`), brand impersonation, government keyword abuse |
 | **Disposable Email Detection** | 500+ known providers + pattern matching + 6-factor heuristic for auto-generated usernames |
 | **Email Content Analysis** | Hybrid **ML + heuristic** classifier — TF-IDF (word + char n-gram) → CV-selected calibrated model (LogReg / LinearSVC / ComplementNB) trained on ~82 400 emails incl. 2026 LLM-grounded benchmarks (PhishNChips v5.2, PhishFuzzer), blended 55 / 45 with the 10-category keyword scan + 11 structural checks |
-| **Email Authenticity Verification** | 7-stage live verification: format → DNS/MX → SMTP probe → PTR → SPF → DMARC → domain age |
+| **Email Authenticity Verification** | Local-only, opt-in 7-stage verification: format → DNS/MX → SMTP probe → PTR → SPF → DMARC → domain age |
 | **Model Metrics Dashboard** | Live display of all classifiers' accuracy, F1, and ROC AUC (UCI URL-feature models + content classifier) |
 
 ---
@@ -221,6 +225,8 @@ Unsubscribe links, privacy policy mentions, physical address, sender verificatio
 
 A **7-stage live verification** pipeline that checks whether an email address physically exists and whether its domain follows email security best practices. Stages 3–7 run **in parallel** to minimize latency.
 
+This high-risk outbound feature is disabled on public deployments. To use it, deploy the project on your own computer with the explicit local settings shown below. Do not expose the enabled endpoint anonymously to the internet.
+
 | Stage | Check | Method |
 |-------|-------|--------|
 | 1 | **Format Validation** | RFC 5321 regex — catches malformed addresses |
@@ -285,6 +291,32 @@ The Random Forest model is used for real-time inference in the web application.
 
 ---
 
+## Deployment Modes
+
+Runtime behavior is controlled with environment variables. Safe defaults are listed in [`.env.example`](./.env.example).
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `APP_ENV` | `production` | Selects production-safe or local development behavior |
+| `ENABLE_EMAIL_VERIFICATION` | `false` | Enables outbound SMTP, DNS, PTR, SPF, DMARC, and WHOIS checks |
+| `ALLOW_SYNTHETIC_DATA` | `false` | Allows a synthetic model dataset for local experimentation only |
+
+Production mode rejects both high-risk verification and synthetic-data opt-in. A public deployment also requires the real dataset at `phishing-detection/data/phishing_dataset.csv`; startup fails with an actionable message when it is missing.
+
+For the complete local-only version:
+
+```bash
+cd website
+APP_ENV=development \
+ENABLE_EMAIL_VERIFICATION=true \
+ALLOW_SYNTHETIC_DATA=true \
+uvicorn app:app --host 127.0.0.1 --port 8000 --reload
+```
+
+Binding to `127.0.0.1` keeps the enabled verifier on your own computer. Use real data when evaluating model quality; synthetic data is only a development fallback.
+
+---
+
 ## Quick Start — Web App
 
 ```bash
@@ -298,14 +330,17 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 # 3. Install dependencies
 pip install -r requirements.txt
 
-# 4. Start the server (with auto-reload for development)
-uvicorn app:app --host 0.0.0.0 --port 8000 --reload
+# 4. Ensure the real dataset exists for production mode
+#    phishing-detection/data/phishing_dataset.csv
+#    Run the ML notebook once to download/cache it, or provide a validated copy.
+
+# 5. Start with safe public-service defaults
+uvicorn app:app --host 0.0.0.0 --port 8000 --env-file ../.env.example
 ```
 
 Then open **http://localhost:8000** in your browser.
 
-> The model trains automatically on first launch using the UCI dataset
-> (or a synthetic fallback if the dataset file is absent).
+> Production startup requires the real UCI dataset. Synthetic fallback is available only when explicitly enabled in local development mode.
 
 ---
 
@@ -328,6 +363,22 @@ jupyter notebook notebooks/phishing_detection.ipynb
 
 The notebook automatically downloads and caches the UCI dataset on first run.
 A synthetic dataset is generated if no internet connection is available.
+
+---
+
+## Testing
+
+Backend tests use the Python standard library test runner; frontend tests use Node's built-in test runner:
+
+```bash
+# From the repository root, with website dependencies installed
+python -m unittest discover -s website/tests -v
+python -m compileall -q website phishing-detection/src
+node --test website/static/app.test.mjs
+node --check website/static/app.js
+```
+
+The same checks run automatically in GitHub Actions on pushes and pull requests. Live SMTP/WHOIS probes and full external model training are intentionally excluded from CI.
 
 ---
 

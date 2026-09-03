@@ -188,6 +188,9 @@
           <!-- Email Authenticity Verification Card -->
           <div class="col-card" id="verify-card">
             <h4 class="col-title">Email Authenticity Verification</h4>
+            <div id="verification-local-notice" class="verify-idle hidden">
+              <p class="verify-desc">Full email authenticity verification is disabled on this public service. Deploy the full version on your own computer to enable SMTP, DNS, and WHOIS checks.</p>
+            </div>
             <div id="verify-idle" class="verify-idle">
               <p class="verify-desc">Verify whether this mailbox actually exists by checking DNS records and probing the mail server via SMTP.</p>
               <button class="btn-verify" onclick="runVerification()">

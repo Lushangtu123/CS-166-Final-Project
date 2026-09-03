@@ -6,6 +6,7 @@ Routes:
   GET  /                      → serve index.html
   GET  /api/metrics           → classifier performance metrics
   GET  /api/features          → feature metadata
+  GET  /api/config            → public-safe feature configuration
   POST /api/analyze-email     → extract features from email address & predict
   POST /api/analyze-content   → heuristic analysis of email subject + body
   POST /api/predict           → raw feature dict prediction (legacy)
@@ -29,9 +30,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
+from config import load_settings
 
 BASE_DIR = Path(__file__).parent
 DATA_DIR = BASE_DIR.parent / "phishing-detection" / "data"
+SETTINGS = load_settings()
 
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
@@ -568,6 +571,7 @@ FEATURE_IMPORTANCES = [
 _model: RandomForestClassifier = None
 _scaler: StandardScaler = None
 _train_feature_cols: list = None   # column order used during training
+_model_data_source: str | None = None
 
 def normalize_homoglyphs(text: str) -> str:
     """Convert typosquatting characters back to normal letters."""
@@ -1084,18 +1088,25 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
 
 
 def _load_and_train():
-    global _model, _scaler, _train_feature_cols
+    global _model, _scaler, _train_feature_cols, _model_data_source
     csv_path = DATA_DIR / "phishing_dataset.csv"
     if csv_path.exists():
         df = pd.read_csv(csv_path)
         df.columns = [c.strip().lower() for c in df.columns]
+        _model_data_source = "real"
     else:
+        if not SETTINGS.allow_synthetic_data:
+            raise RuntimeError(
+                "Real model data is missing. Provide phishing-detection/data/phishing_dataset.csv "
+                "or set ALLOW_SYNTHETIC_DATA=true for local development only."
+            )
         print("Dataset not found, generating synthetic data…")
         rng = np.random.RandomState(42)
         n = 11055
         data = {col: rng.choice([-1, 0, 1], size=n, p=[0.45, 0.10, 0.45]) for col in FEATURE_NAMES}
         data["result"] = rng.choice([-1, 1], size=n, p=[0.55, 0.45])
         df = pd.DataFrame(data)
+        _model_data_source = "synthetic"
 
     feature_cols = [c for c in df.columns if c != "result"]
     _train_feature_cols = feature_cols
@@ -1144,7 +1155,12 @@ async def health():
     ok = _model is not None and _scaler is not None
     return JSONResponse(
         status_code=200 if ok else 503,
-        content={"status": "ok" if ok else "starting", "model_loaded": ok},
+        content={
+            "status": "ok" if ok else "starting",
+            "model_loaded": ok,
+            "model_data_source": _model_data_source,
+            "email_verification_enabled": SETTINGS.enable_email_verification,
+        },
     )
 
 
@@ -1169,6 +1185,14 @@ async def get_metrics():
 @app.get("/api/features")
 async def get_features():
     return JSONResponse({"features": FEATURE_INFO})
+
+
+@app.get("/api/config")
+async def get_public_config():
+    return JSONResponse({
+        "email_verification_enabled": SETTINGS.enable_email_verification,
+        "full_version_local_only": True,
+    })
 
 
 class EmailRequest(BaseModel):
@@ -2005,6 +2029,12 @@ def verify_email_endpoint(req: VerifyRequest):
       6. MX PTR / reverse-DNS         │
       7. Domain age (WHOIS)           ┘
     """
+    if not SETTINGS.enable_email_verification:
+        raise HTTPException(
+            status_code=404,
+            detail="Full email verification is disabled on public services. Run it locally to enable outbound checks.",
+        )
+
     import dns.resolver
     import dns.exception
 
