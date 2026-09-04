@@ -1,0 +1,34 @@
+services:
+  - type: web
+    name: phishguard-cs166-demo
+    runtime: python
+    plan: free
+    buildCommand: pip install -r website/requirements.txt && cd website && python prebuild_demo_model.py
+    startCommand: cd website && uvicorn app:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.13
+      - key: PHISHGUARD_DEPLOYMENT_PROFILE
+        value: free-demo
+      - key: APP_ENV
+        value: demo
+      - key: ENABLE_EMAIL_VERIFICATION
+        value: "false"
+      - key: ALLOW_SYNTHETIC_DATA
+        value: "true"
+      - key: CONTENT_MODEL_USE_REAL
+        value: "0"
+      - key: CONTENT_MODEL_AUTO_DOWNLOAD
+        value: "0"
+      - key: CONTENT_MODEL_N_VARIANTS
+        value: "24"
+      - key: CONTENT_MODEL_FAST_MODE
+        value: "1"
+      - key: RATE_LIMIT_PER_MINUTE
+        value: "20"
+      - key: MAX_REQUEST_BYTES
+        value: "65536"
+      - key: ALLOWED_HOSTS
+        value: "*.onrender.com"

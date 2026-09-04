@@ -1113,7 +1113,8 @@ def _cache_path() -> Path:
     return _DEFAULT_DATA_DIR / "content_model_cache.pkl"
 
 
-def _cache_key(*, use_real, augment_synthetic, n_variants, max_real_rows, seed) -> str:
+def _cache_key(*, use_real, augment_synthetic, n_variants, max_real_rows,
+               fast_mode, seed) -> str:
     """A stable key that captures all training-relevant options + dataset fingerprint."""
     sigs = []
     for name, _url, _schema in _DATASETS:
@@ -1126,7 +1127,7 @@ def _cache_key(*, use_real, augment_synthetic, n_variants, max_real_rows, seed) 
     ds_sig = "|".join(sigs)
     raw = (f"{_CACHE_VERSION}|{ds_sig}|use_real={use_real}|"
            f"augment={augment_synthetic}|n_variants={n_variants}|"
-           f"max_rows={max_real_rows}|seed={seed}")
+           f"max_rows={max_real_rows}|fast_mode={fast_mode}|seed={seed}")
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -1140,6 +1141,7 @@ def build_content_pipeline(
     auto_download: bool       = True,
     use_cache: bool           = True,
     force_retrain: bool       = False,
+    fast_mode: bool           = False,
 ) -> dict:
     """
     Train the content classifier.
@@ -1157,12 +1159,15 @@ def build_content_pipeline(
       use_cache        – load a previously trained pipeline from disk if its
                          cache-key matches (massive speed-up at startup)
       force_retrain    – ignore any cache and train from scratch
+      fast_mode        – evaluate only Logistic Regression with one worker;
+                         intended for memory-constrained demo builds
     """
     if use_real and auto_download:
         ensure_real_dataset()
 
     cache_key  = _cache_key(use_real=use_real, augment_synthetic=augment_synthetic,
-                            n_variants=n_variants, max_real_rows=max_real_rows, seed=seed)
+                            n_variants=n_variants, max_real_rows=max_real_rows,
+                            fast_mode=fast_mode, seed=seed)
     cache_path = _cache_path()
 
     if use_cache and not force_retrain and cache_path.exists():
@@ -1224,21 +1229,25 @@ def build_content_pipeline(
         ("LogisticRegression",
          LogisticRegression(C=4.0, max_iter=2000, solver="liblinear",
                             class_weight="balanced")),
-        ("CalibratedLinearSVC",
-         CalibratedClassifierCV(
-             estimator=LinearSVC(C=1.0, class_weight="balanced", max_iter=4000),
-             method="sigmoid", cv=3)),
-        ("ComplementNB",
-         ComplementNB(alpha=0.3)),
     ]
+    if not fast_mode:
+        candidates.extend([
+            ("CalibratedLinearSVC",
+             CalibratedClassifierCV(
+                 estimator=LinearSVC(C=1.0, class_weight="balanced", max_iter=4000),
+                 method="sigmoid", cv=3)),
+            ("ComplementNB", ComplementNB(alpha=0.3)),
+        ])
 
     cv_results = []
     cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=seed)
     print("Model selection — 3-fold CV ROC AUC on the training fold:")
     for name, est in candidates:
         t0 = time.time()
-        scores = cross_val_score(est, X_train, y_train, cv=cv,
-                                 scoring="roc_auc", n_jobs=-1)
+        scores = cross_val_score(
+            est, X_train, y_train, cv=cv, scoring="roc_auc",
+            n_jobs=1 if fast_mode else -1,
+        )
         mean = float(scores.mean())
         std  = float(scores.std())
         cv_results.append({"name": name, "cv_auc_mean": round(mean, 4),
@@ -1311,6 +1320,7 @@ def build_content_pipeline(
     # Persist cache for fast subsequent startups
     if use_cache:
         try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
             with open(cache_path, "wb") as f:
                 pickle.dump({"cache_key": cache_key, "pipeline": pipeline}, f)
             size_mb = cache_path.stat().st_size / 1e6
@@ -1319,6 +1329,51 @@ def build_content_pipeline(
             print(f"Could not write cache: {exc}")
 
     return pipeline
+
+
+def build_content_pipeline_from_env(seed: int = 42) -> dict:
+    """Build the content model using deployment-friendly environment settings.
+
+    ``PHISHGUARD_DEPLOYMENT_PROFILE=free-demo`` keeps the full request/response
+    behaviour but avoids downloading the large public corpora on a 512 MB
+    hobby instance.  The default profile is unchanged and still uses the full
+    real-data pipeline.
+    """
+    profile = os.getenv("PHISHGUARD_DEPLOYMENT_PROFILE", "full").strip().lower()
+    free_demo = profile in {"free", "free-demo", "demo"}
+
+    def env_bool(name: str, default: bool) -> bool:
+        raw = os.getenv(name)
+        if raw is None:
+            return default
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+    def env_int(name: str, default: int) -> int:
+        raw = os.getenv(name)
+        if raw is None:
+            return default
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            return default
+
+    use_real = env_bool("CONTENT_MODEL_USE_REAL", not free_demo)
+    max_rows_raw = os.getenv("CONTENT_MODEL_MAX_REAL_ROWS", "").strip()
+    try:
+        max_real_rows = max(1, int(max_rows_raw)) if max_rows_raw else None
+    except ValueError:
+        max_real_rows = None
+
+    return build_content_pipeline(
+        seed=seed,
+        use_real=use_real,
+        augment_synthetic=env_bool("CONTENT_MODEL_AUGMENT_SYNTHETIC", True),
+        n_variants=env_int("CONTENT_MODEL_N_VARIANTS", 24 if free_demo else 160),
+        max_real_rows=max_real_rows,
+        auto_download=env_bool("CONTENT_MODEL_AUTO_DOWNLOAD", not free_demo),
+        use_cache=True,
+        fast_mode=env_bool("CONTENT_MODEL_FAST_MODE", free_demo),
+    )
 
 
 def _extract_coefficients(clf) -> np.ndarray | None:

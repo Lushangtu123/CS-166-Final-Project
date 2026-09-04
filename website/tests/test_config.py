@@ -72,6 +72,22 @@ class SettingsTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("ENABLE_EMAIL_VERIFICATION", result.stderr)
 
+    def test_public_demo_allows_synthetic_data_but_rejects_verification(self):
+        allowed = self.run_settings({
+            "APP_ENV": "demo",
+            "ALLOW_SYNTHETIC_DATA": "true",
+        })
+        self.assertEqual(allowed.returncode, 0, allowed.stderr)
+        self.assertEqual(json.loads(allowed.stdout)["app_env"], "demo")
+
+        rejected = self.run_settings({
+            "APP_ENV": "demo",
+            "ALLOW_SYNTHETIC_DATA": "true",
+            "ENABLE_EMAIL_VERIFICATION": "true",
+        })
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("ENABLE_EMAIL_VERIFICATION", rejected.stderr)
+
     def test_invalid_boolean_is_rejected(self):
         result = self.run_settings({"ENABLE_EMAIL_VERIFICATION": "sometimes"})
 

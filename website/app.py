@@ -19,18 +19,22 @@ import re
 import math
 import socket
 import smtplib
+import threading
+import time
 import warnings
+from collections import deque
 import numpy as np
 
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 import pandas as pd
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
 from config import load_settings
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 BASE_DIR = Path(__file__).parent
 DATA_DIR = BASE_DIR.parent / "phishing-detection" / "data"
@@ -40,7 +44,10 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 
-from content_model import build_content_pipeline, predict_content
+from content_model import build_content_pipeline_from_env, predict_content
+
+RATE_LIMIT_PER_MINUTE = max(1, int(os.getenv("RATE_LIMIT_PER_MINUTE", "20")))
+MAX_REQUEST_BYTES = max(1024, int(os.getenv("MAX_REQUEST_BYTES", "65536")))
 
 # ── Feature definitions (UCI Phishing Websites Dataset mapping) ───────────────
 FEATURE_INFO = [
@@ -1102,7 +1109,7 @@ def _load_and_train():
             )
         print("Dataset not found, generating synthetic data…")
         rng = np.random.RandomState(42)
-        n = 11055
+        n = 2500 if SETTINGS.app_env == "demo" else 11055
         data = {col: rng.choice([-1, 0, 1], size=n, p=[0.45, 0.10, 0.45]) for col in FEATURE_NAMES}
         data["result"] = rng.choice([-1, 1], size=n, p=[0.55, 0.45])
         df = pd.DataFrame(data)
@@ -1116,7 +1123,12 @@ def _load_and_train():
     X_train, _, y_train, _ = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
     _scaler = StandardScaler()
     X_train_scaled = _scaler.fit_transform(X_train)
-    _model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
+    demo_mode = SETTINGS.app_env == "demo"
+    _model = RandomForestClassifier(
+        n_estimators=40 if demo_mode else 100,
+        random_state=42,
+        n_jobs=1 if demo_mode else -1,
+    )
     _model.fit(X_train_scaled, y_train)
     print("Model trained and ready.")
 
@@ -1127,7 +1139,7 @@ async def lifespan(_app: FastAPI):
 
     global _content_pipeline
     print("Training email-content text classifier (TF-IDF + Logistic Regression)…")
-    _content_pipeline = build_content_pipeline(seed=42)
+    _content_pipeline = build_content_pipeline_from_env(seed=42)
     m = _content_pipeline["metrics"]
     print(
         f"  → Content model ready: "
@@ -1138,6 +1150,81 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Phishing Email Detector", version="2.0.0", lifespan=lifespan)
+
+allowed_hosts = [
+    host.strip()
+    for host in os.getenv(
+        "ALLOWED_HOSTS", "*.onrender.com,localhost,127.0.0.1,testserver"
+    ).split(",")
+    if host.strip()
+]
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
+
+_rate_limit_lock = threading.Lock()
+_rate_limit_buckets: dict[str, deque[float]] = {}
+
+
+def _with_security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; "
+        "object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+    )
+    return response
+
+
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    """Bound request cost and add browser protections for the public demo."""
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > MAX_REQUEST_BYTES:
+                return _with_security_headers(JSONResponse(
+                    status_code=413,
+                    content={"detail": "Request body is too large"},
+                ))
+        except ValueError:
+            return _with_security_headers(JSONResponse(
+                status_code=400,
+                content={"detail": "Invalid Content-Length"},
+            ))
+
+    if request.method == "POST" and request.url.path.startswith("/api/"):
+        forwarded = request.headers.get("x-forwarded-for", "")
+        client_ip = forwarded.split(",", 1)[0].strip()
+        if not client_ip:
+            client_ip = request.client.host if request.client else "unknown"
+        bucket_key = f"{client_ip}:{request.url.path}"
+        now = time.monotonic()
+        cutoff = now - 60.0
+
+        with _rate_limit_lock:
+            bucket = _rate_limit_buckets.setdefault(bucket_key, deque())
+            while bucket and bucket[0] <= cutoff:
+                bucket.popleft()
+            if len(bucket) >= RATE_LIMIT_PER_MINUTE:
+                return _with_security_headers(JSONResponse(
+                    status_code=429,
+                    content={"detail": "Too many requests; try again in a minute"},
+                    headers={"Retry-After": "60"},
+                ))
+            bucket.append(now)
+
+            if len(_rate_limit_buckets) > 4096:
+                stale = [
+                    key for key, hits in _rate_limit_buckets.items()
+                    if not hits or hits[-1] <= cutoff
+                ]
+                for key in stale[:1024]:
+                    _rate_limit_buckets.pop(key, None)
+
+    return _with_security_headers(await call_next(request))
 
 
 # ── Static files ──────────────────────────────────────────────────────────────
@@ -1158,7 +1245,9 @@ async def health():
         content={
             "status": "ok" if ok else "starting",
             "model_loaded": ok,
+            "content_model_loaded": _content_pipeline is not None,
             "model_data_source": _model_data_source,
+            "deployment_profile": SETTINGS.app_env,
             "email_verification_enabled": SETTINGS.enable_email_verification,
         },
     )

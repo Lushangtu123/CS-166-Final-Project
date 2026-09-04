@@ -7,7 +7,7 @@ from typing import Mapping
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
 FALSE_VALUES = {"0", "false", "no", "off"}
-VALID_ENVIRONMENTS = {"development", "production", "test"}
+VALID_ENVIRONMENTS = {"development", "demo", "production", "test"}
 
 
 def _parse_bool(environ: Mapping[str, str], name: str, default: bool = False) -> bool:
@@ -34,6 +34,10 @@ class Settings:
     def is_production(self) -> bool:
         return self.app_env == "production"
 
+    @property
+    def is_public_service(self) -> bool:
+        return self.app_env in {"demo", "production"}
+
 
 def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     source = os.environ if environ is None else environ
@@ -49,6 +53,8 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     )
     if settings.is_production and settings.allow_synthetic_data:
         raise ValueError("ALLOW_SYNTHETIC_DATA cannot be enabled when APP_ENV=production")
-    if settings.is_production and settings.enable_email_verification:
-        raise ValueError("ENABLE_EMAIL_VERIFICATION cannot be enabled when APP_ENV=production")
+    if settings.is_public_service and settings.enable_email_verification:
+        raise ValueError(
+            "ENABLE_EMAIL_VERIFICATION cannot be enabled when APP_ENV is demo or production"
+        )
     return settings

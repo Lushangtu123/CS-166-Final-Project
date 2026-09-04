@@ -303,6 +303,10 @@ Runtime behavior is controlled with environment variables. Safe defaults are lis
 
 Production mode rejects both high-risk verification and synthetic-data opt-in. A public deployment also requires the real dataset at `phishing-detection/data/phishing_dataset.csv`; startup fails with an actionable message when it is missing.
 
+`APP_ENV=demo` is reserved for the included zero-cost Render demo. It permits a
+clearly reported lightweight synthetic model, but it still rejects all live
+SMTP, DNS, PTR, SPF, DMARC, and WHOIS verification requests.
+
 For the complete local-only version:
 
 ```bash
@@ -314,6 +318,19 @@ uvicorn app:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 Binding to `127.0.0.1` keeps the enabled verifier on your own computer. Use real data when evaluating model quality; synthetic data is only a development fallback.
+
+### Zero-cost Render demo
+
+The root-level [`render.yaml`](./render.yaml) deploys the safe public subset on
+a free Render web service and gives it an HTTPS `*.onrender.com` address. In
+Render, create a **Blueprint**, connect this repository, and approve the
+detected `free` service.
+
+The Blueprint prebuilds a single-worker synthetic content model sized for the
+512 MB free instance. The public service keeps email-authenticity verification
+disabled, enforces a 64 KB request limit and 20 POST requests per minute per IP,
+checks allowed hostnames, and adds browser security headers. The free profile
+is suitable for a class-project demo, not production or model-quality claims.
 
 ---
 
