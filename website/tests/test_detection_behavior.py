@@ -59,6 +59,117 @@ class ContentRuleRobustnessTests(unittest.TestCase):
         messages = [item["msg"] for item in result["extra_indicators"]]
         self.assertTrue(any("does not match" in message for message in messages))
 
+    def test_suspicious_destination_is_analyzed_without_visible_url(self):
+        result = app.analyze_email_content(
+            "Document shared",
+            '<a href="https://credential-capture.example/view">Review document</a>',
+        )
+
+        messages = [item["msg"].lower() for item in result["extra_indicators"]]
+        self.assertIn(result["risk_level"], {"high", "critical"})
+        self.assertTrue(any("destination" in message for message in messages))
+
+    def test_plain_text_suspicious_url_is_analyzed(self):
+        result = app.analyze_email_content(
+            "Document shared",
+            "Review it at https://credential-capture.example/view",
+        )
+
+        self.assertIn(result["risk_level"], {"high", "critical"})
+
+    def test_hxxp_scheme_obfuscation_is_high_risk(self):
+        result = app.analyze_email_content(
+            "Document shared",
+            "Review it at hxxps://credential-capture.example/view",
+        )
+
+        messages = [item["msg"].lower() for item in result["extra_indicators"]]
+        self.assertIn(result["risk_level"], {"high", "critical"})
+        self.assertTrue(any("obfuscated" in message for message in messages))
+
+    def test_zero_width_characters_do_not_hide_credential_phrase(self):
+        result = app.analyze_email_content(
+            "Account notice",
+            "Click here to v\u200berify your acc\u200bount.",
+        )
+
+        categories = [item["key"] for item in result["category_results"]]
+        self.assertIn("credential", categories)
+
+    def test_bare_visible_domain_mismatch_is_detected(self):
+        result = app.analyze_email_content(
+            "Receipt",
+            '<a href="https://evil.example/view">paypal.com</a>',
+        )
+
+        messages = [item["msg"].lower() for item in result["extra_indicators"]]
+        self.assertTrue(any("does not match" in message for message in messages))
+
+    def test_idn_confusable_link_destination_is_high_risk(self):
+        result = app.analyze_email_content(
+            "Document shared",
+            '<a href="https://xn--pple-43d.com/view">Review document</a>',
+        )
+
+        messages = [item["msg"].lower() for item in result["extra_indicators"]]
+        self.assertIn(result["risk_level"], {"high", "critical"})
+        self.assertTrue(any("idn" in message or "confusable" in message for message in messages))
+
+    def test_malformed_link_destination_does_not_abort_analysis(self):
+        result = app.analyze_email_content(
+            "Document shared",
+            '<a href="http://[invalid">Review document</a>',
+        )
+
+        self.assertIsInstance(result, dict)
+        self.assertIn("risk_level", result)
+
+    def test_plain_security_words_are_not_character_obfuscation(self):
+        for text in ("login", "verify", "account", "password", "bank", "Microsoft"):
+            with self.subTest(text=text):
+                self.assertEqual(app._detect_obfuscation(text), [])
+
+    def test_later_obfuscated_word_is_not_hidden_by_plain_occurrence(self):
+        self.assertIn("login", app._detect_obfuscation("login or l0gin"))
+
+    def test_ip_destination_sets_high_risk_floor(self):
+        result = app.analyze_email_content(
+            "Document shared",
+            "Review it at http://203.0.113.10/view",
+        )
+
+        self.assertIn(result["risk_level"], {"high", "critical"})
+
+    def test_high_risk_floor_does_not_downgrade_critical_score(self):
+        result = app.analyze_email_content(
+            "URGENT final warning: account suspended",
+            (
+                "Legal action and criminal charges. You have won free money. "
+                "Verify your account and reset your password. PayPal Amazon. "
+                "Keep this confidential and click the link below. "
+                "See the attached file and enable macros. Technical support. "
+                "Work from home. I am the CEO. "
+                "https://credential-capture.example/view"
+            ),
+        )
+
+        self.assertGreater(result["total_score"], 15)
+        self.assertEqual(result["risk_level"], "critical")
+
+    def test_keyword_matching_respects_word_boundaries(self):
+        subjects = (
+            "First quarterly report",
+            "Who should review this?",
+            "Real estate newsletter",
+        )
+        for subject in subjects:
+            with self.subTest(subject=subject):
+                result = app.analyze_email_content(
+                    subject,
+                    "Here is the requested update.",
+                )
+                self.assertEqual(result["total_score"], 0)
+
     def test_strong_structural_evidence_is_not_averaged_away(self):
         fused = app.fuse_content_risk(
             ml_phishing_probability=0.02,
@@ -221,6 +332,59 @@ Here is this week's project update.
         self.assertEqual(structure["structure_score"], 0)
         self.assertTrue(structure["authentication_trusted"])
 
+    def test_archive_and_macro_attachments_are_flagged(self):
+        samples = (
+            ("invoice.zip", "application/zip"),
+            (
+                "invoice.docm",
+                "application/vnd.ms-word.document.macroEnabled.12",
+            ),
+        )
+        for filename, content_type in samples:
+            raw_email = f"""From: Service <notice@example.com>
+Subject: Updated files
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary=x
+
+--x
+Content-Type: text/plain
+
+Please review.
+--x
+Content-Type: {content_type}
+Content-Disposition: attachment; filename="{filename}"
+
+payload
+--x--
+"""
+            with self.subTest(filename=filename):
+                structure = app.analyze_raw_email(raw_email)
+                messages = [item["msg"].lower() for item in structure["indicators"]]
+                self.assertGreater(structure["structure_score"], 0)
+                self.assertTrue(any("attachment" in message for message in messages))
+
+    def test_decisive_authentication_failure_sets_high_risk_floor(self):
+        raw_email = """From: Service <notice@example.com>
+Subject: Updated document
+Authentication-Results: mx.example; spf=fail; dkim=fail; dmarc=fail
+
+Please review the updated document.
+"""
+        trusted_settings = Settings(
+            app_env="test",
+            enable_email_verification=False,
+            content_model_enabled=False,
+            trusted_authserv_ids=frozenset({"mx.example"}),
+        )
+        with patch.object(app, "SETTINGS", trusted_settings):
+            response = asyncio.run(
+                app.analyze_content_endpoint(app.ContentRequest(raw_email=raw_email))
+            )
+        result = json.loads(response.body)
+
+        self.assertIn(result["risk_level"], {"high", "critical"})
+        self.assertIn("untrusted_authentication_claims", result["message_structure"])
+
 
 class ContentModelEvaluationTests(unittest.TestCase):
     def test_offline_builder_does_not_load_pickle_cache_by_default(self):
@@ -248,6 +412,46 @@ class ContentModelEvaluationTests(unittest.TestCase):
             content_model._text_group(first, "fixture.csv"),
             content_model._text_group(second, "fixture.csv"),
         )
+
+    def test_fallback_grouping_is_source_agnostic(self):
+        text = "Invoice 12345 is ready at https://capture.example/a."
+
+        self.assertEqual(
+            content_model._text_group(text, "first.csv"),
+            content_model._text_group(text, "second.csv"),
+        )
+
+    def test_cross_source_duplicates_are_removed_before_splitting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            first = data_dir / "first.csv"
+            second = data_dir / "second.csv"
+            content_model.pd.DataFrame([
+                {
+                    "subject": "Invoice 12345",
+                    "body": "Review https://capture.example/a for account details.",
+                    "label": 1,
+                },
+            ]).to_csv(first, index=False)
+            content_model.pd.DataFrame([
+                {
+                    "subject": "Invoice 98765",
+                    "body": "Review https://other.example/b for account details.",
+                    "label": 1,
+                },
+            ]).to_csv(second, index=False)
+            datasets = [
+                ("first.csv", None, "champa_csv"),
+                ("second.csv", None, "champa_csv"),
+            ]
+            with patch.object(content_model, "_DATASETS", datasets):
+                texts, labels, groups, _ = content_model.load_real_corpus(
+                    csv_path=data_dir / "anchor.csv"
+                )
+
+        self.assertEqual(len(texts), 1)
+        self.assertEqual(labels, [1])
+        self.assertEqual(len(set(groups)), 1)
 
     def test_phishnchips_variants_with_the_same_url_share_a_group(self):
         rows = [
@@ -293,6 +497,7 @@ class ContentModelEvaluationTests(unittest.TestCase):
         self.assertIn("Recall_Gain_vs_0_5", metrics)
         self.assertIn("source_sample_counts", metrics)
         self.assertTrue(metrics["source_sample_counts"])
+        self.assertEqual(metrics["model_selection_metric"], "average_precision")
         self.assertGreater(pipeline["decision_threshold"], 0)
         self.assertLess(pipeline["decision_threshold"], 1)
 

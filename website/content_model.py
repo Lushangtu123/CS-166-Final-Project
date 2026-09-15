@@ -190,14 +190,78 @@ def ensure_real_dataset(data_dir: Path | None = None,
     return primary_path
 
 
-def _text_group(text: str, source: str) -> str:
+def _normalized_text_family(text: str) -> str:
     normalized = str(text).strip().lower()
     normalized = re.sub(r"\b[\w.+-]+@[\w.-]+\.[a-z]{2,}\b", " <email> ", normalized)
     normalized = re.sub(r"\b(?:https?://|www\.)\S+", " <url> ", normalized)
     normalized = re.sub(r"\b\d+\b", " <number> ", normalized)
-    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _text_group(text: str, _source: str) -> str:
+    """Return a source-independent family ID for fallback grouping."""
+    normalized = _normalized_text_family(text)
     digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:20]
-    return f"{source}:{digest}"
+    return f"content:{digest}"
+
+
+def _deduplicate_corpus(
+    texts: List[str],
+    labels: List[int],
+    groups: List[str],
+) -> tuple[List[str], List[int], List[str], int, int]:
+    """Deduplicate normalized messages and merge campaign groups they connect."""
+    parent = {group: group for group in groups}
+
+    def find(group: str) -> str:
+        while parent[group] != group:
+            parent[group] = parent[parent[group]]
+            group = parent[group]
+        return group
+
+    def union(left: str, right: str) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root == right_root:
+            return
+        first, second = sorted((left_root, right_root))
+        parent[second] = first
+
+    by_family: dict[str, list[int]] = {}
+    for index, text in enumerate(texts):
+        family = _text_group(text, "global")
+        by_family.setdefault(family, []).append(index)
+
+    conflicting_families = {
+        family
+        for family, indices in by_family.items()
+        if len({labels[index] for index in indices}) > 1
+    }
+    for family, indices in by_family.items():
+        if family in conflicting_families:
+            continue
+        first_group = groups[indices[0]]
+        for index in indices[1:]:
+            union(first_group, groups[index])
+
+    kept_indices = [
+        indices[0]
+        for family, indices in by_family.items()
+        if family not in conflicting_families
+    ]
+    kept_indices.sort()
+    deduplicated_groups = [find(groups[index]) for index in kept_indices]
+    removed_count = len(texts) - len(kept_indices) - sum(
+        len(by_family[family]) for family in conflicting_families
+    )
+    conflict_count = sum(len(by_family[family]) for family in conflicting_families)
+    return (
+        [texts[index] for index in kept_indices],
+        [labels[index] for index in kept_indices],
+        deduplicated_groups,
+        removed_count,
+        conflict_count,
+    )
 
 
 def _load_one_corpus(path: Path, schema: str
@@ -327,6 +391,17 @@ def load_real_corpus(csv_path: Path | None = None,
 
     if not all_texts:
         return None
+
+    all_texts, all_labels, all_groups, removed, conflicts = _deduplicate_corpus(
+        all_texts,
+        all_labels,
+        all_groups,
+    )
+    if removed or conflicts:
+        per_source.append(
+            f"global normalization removed {removed} duplicates and "
+            f"{conflicts} label-conflicting rows"
+        )
 
     if max_rows is not None and len(all_texts) > max_rows:
         rng = np.random.default_rng(42)
@@ -1203,7 +1278,7 @@ def _build_vectorizer() -> FeatureUnion:
     return FeatureUnion([("word", word_tfidf), ("char", char_tfidf)])
 
 
-_CACHE_VERSION = "v5.2-campaign-grouped-f2-threshold"  # bump to invalidate stale caches
+_CACHE_VERSION = "v5.3-global-dedup-pr-auc-f2"  # bump to invalidate stale caches
 
 
 def _cache_path() -> Path:
@@ -1280,6 +1355,7 @@ def build_content_pipeline(
             print(f"Cache read failed ({exc}) — retraining.")
 
     sources: List[str] = []
+    sample_sources: List[str] = []
     texts:  List[str]  = []
     labels: List[int]  = []
     groups: List[str]  = []
@@ -1291,6 +1367,7 @@ def build_content_pipeline(
             texts.extend(r_texts)
             labels.extend(r_labels)
             groups.extend(r_groups)
+            sample_sources.extend(["real-corpus"] * len(r_texts))
             sources.append(src)
 
     if (not texts) or augment_synthetic:
@@ -1300,6 +1377,7 @@ def build_content_pipeline(
         texts.extend(s_texts)
         labels.extend(s_labels)
         groups.extend(s_groups)
+        sample_sources.extend(["synthetic"] * len(s_texts))
         sources.append(
             f"Synthetic corpus (n={len(s_texts)}: "
             f"{sum(s_labels)} phishing / {len(s_labels)-sum(s_labels)} legitimate)"
@@ -1320,9 +1398,12 @@ def build_content_pipeline(
     test_groups = [groups[i] for i in test_idx]
 
     # ── Model selection ──────────────────────────────────────────────────────
-    # Try three competitive linear models and pick the best by 3-fold CV ROC AUC
-    # on the TRAINING fold. LinearSVC scores are calibrated via Platt scaling
-    # so they emit probabilities; LogReg / ComplementNB are already probabilistic.
+    # Try three competitive linear models on the training fold and pick the best
+    # by 3-fold CV PR AUC.
+    # Average precision is more informative than ROC AUC for phishing detection
+    # because it emphasizes positive-class ranking under class imbalance.
+    # LinearSVC scores are calibrated via Platt scaling so they emit probabilities;
+    # LogReg / ComplementNB are already probabilistic.
     candidates: list[Tuple[str, object]] = [
         ("LogisticRegression",
          LogisticRegression(C=4.0, max_iter=2000, solver="liblinear",
@@ -1339,7 +1420,7 @@ def build_content_pipeline(
 
     cv_results = []
     cv = StratifiedGroupKFold(n_splits=3, shuffle=True, random_state=seed)
-    print("Model selection — 3-fold CV ROC AUC on the training fold:")
+    print("Model selection — 3-fold CV PR AUC on the training fold:")
     for name, est in candidates:
         t0 = time.time()
         estimator = Pipeline([
@@ -1348,28 +1429,28 @@ def build_content_pipeline(
         ])
         scores = cross_val_score(
             estimator, X_train_txt, y_train, groups=train_groups,
-            cv=cv, scoring="roc_auc",
+            cv=cv, scoring="average_precision",
             n_jobs=1 if fast_mode else -1,
         )
         mean = float(scores.mean())
         std  = float(scores.std())
-        cv_results.append({"name": name, "cv_auc_mean": round(mean, 4),
-                            "cv_auc_std": round(std, 4),
+        cv_results.append({"name": name, "cv_pr_auc_mean": round(mean, 4),
+                            "cv_pr_auc_std": round(std, 4),
                             "elapsed_s": round(time.time() - t0, 1)})
-        print(f"  {name:<22}  AUC = {mean:.4f} ± {std:.4f}   ({time.time()-t0:.1f}s)")
+        print(f"  {name:<22}  PR AUC = {mean:.4f} ± {std:.4f}   ({time.time()-t0:.1f}s)")
 
-    # Tie-break: when two candidates are within 0.001 ROC AUC of each other,
+    # Tie-break: when two candidates are within 0.001 PR AUC of each other,
     # prefer LogisticRegression because its sigmoid outputs are inherently
     # well-calibrated for boundary samples (whereas Platt-calibrated SVMs can
     # be steep near the decision boundary, producing brittle 50–60% probabilities).
-    best_raw = max(cv_results, key=lambda r: r["cv_auc_mean"])
+    best_raw = max(cv_results, key=lambda r: r["cv_pr_auc_mean"])
     lr = next((r for r in cv_results if r["name"] == "LogisticRegression"), None)
-    if lr is not None and abs(best_raw["cv_auc_mean"] - lr["cv_auc_mean"]) < 0.001:
+    if lr is not None and abs(best_raw["cv_pr_auc_mean"] - lr["cv_pr_auc_mean"]) < 0.001:
         best = lr
     else:
         best = best_raw
     best_name = best["name"]
-    print(f"Selected best model: {best_name} (CV AUC = {best['cv_auc_mean']:.4f})"
+    print(f"Selected best model: {best_name} (CV PR AUC = {best['cv_pr_auc_mean']:.4f})"
           + ("  [LogReg preferred on tie]" if best is lr and best is not best_raw else ""))
     best_estimator = Pipeline([
         ("vectorizer", _build_vectorizer()),
@@ -1422,16 +1503,15 @@ def build_content_pipeline(
         "n_test":     int(len(y_test)),
         "split_strategy": "stratified-group-5-fold",
         "grouping_policy": (
-            "source record/template family or campaign URL when available; "
-            "normalized family hash fallback with URLs, email addresses, and "
-            "volatile numeric tokens collapsed"
+            "global normalized-family deduplication before splitting; source "
+            "record/template family or campaign URL when available; URLs, email "
+            "addresses, and volatile numeric tokens collapsed"
         ),
         "group_overlap": len(set(train_groups) & set(test_groups)),
-        "source_sample_counts": dict(sorted(Counter(
-            group.split(":", 1)[0] for group in groups
-        ).items())),
+        "source_sample_counts": dict(sorted(Counter(sample_sources).items())),
         "data_source": " + ".join(sources),
         "model":      best_name,
+        "model_selection_metric": "average_precision",
         "model_selection": cv_results,
     }
 

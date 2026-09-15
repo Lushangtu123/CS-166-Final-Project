@@ -22,6 +22,42 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-15 14:14 PT] — Destination-aware rules and global corpus deduplication
+
+### Why
+- Rules-only analysis inspected displayed URL text but could miss a malicious
+  destination behind generic button text, a bare displayed domain, or an IDN
+  lookalike.
+- Macro-enabled and archive attachments were not scored, and decisive trusted
+  authentication failures could still receive only a medium verdict.
+- Source-prefixed fallback groups allowed normalized duplicates from different
+  corpora to cross the train/test boundary; permissive substring and
+  obfuscation rules also produced avoidable false positives.
+
+### Files changed
+- `website/app.py`: analyze HTML, Markdown, and plain-text destinations; detect
+  IDN lookalikes, displayed-host mismatches, credential-themed domains, raw-IP
+  destinations, malformed targets, `hxxp` schemes, and zero-width keyword
+  splitting; add evidence severity floors and boundary-aware phrase matching.
+- `website/email_structure.py`: score macro-enabled, executable, disk-image, and
+  archive attachments and expose a structural risk floor.
+- `website/content_model.py`: deduplicate normalized families across all sources,
+  exclude label conflicts, use source-independent fallback groups, and select
+  candidate models by cross-validated average precision.
+- `website/tests/test_detection_behavior.py` and project documentation: add the
+  corresponding adversarial regressions and refresh measured metrics.
+
+### Effect
+- Generic-link, bare-domain, and IDN destination attacks now receive high-risk
+  evidence; ZIP and macro-document attachments no longer pass as safe; decisive
+  SPF/DKIM/DMARC failure sets a high-risk minimum.
+- Normal words such as `login` and substrings such as `irs` in `first` no longer
+  trigger obfuscation or brand rules.
+- From 61,707 raw corpus rows, normalization retained 53,841 after removing
+  7,333 duplicates and 533 label-conflicting rows. The 10,768-row grouped
+  holdout measured 99.78% phishing recall, 0.22% false-negative rate, 97.88%
+  precision, 98.89% accuracy, and 0.9996 PR AUC at an F2 threshold of 0.3515.
+
 ## [2026-09-15 08:57 PT] — Trusted email evidence and offline model artifacts
 
 ### Why

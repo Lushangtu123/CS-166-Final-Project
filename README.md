@@ -40,8 +40,9 @@ complete message. Raw input enables additional checks:
 - SPF, DKIM, and DMARC results from explicitly trusted authentication servers;
 - protected-brand display-name and Unicode/IDN domain impersonation;
 - From / Reply-To / Return-Path domain mismatches;
-- dangerous attachment extensions;
-- HTML anchor text whose displayed host differs from its destination;
+- executable, macro-enabled, disk-image, and archive attachment extensions;
+- every HTML, Markdown, and plain-text link destination, including displayed-host
+  mismatch, Unicode/IDN lookalikes, and credential-themed domains;
 - IP-based and shortened URLs, urgency, credential requests, threats, and
   character obfuscation.
 
@@ -57,15 +58,18 @@ word and character n-gram TF-IDF classifier. Web startup never downloads data or
 trains a model. Its offline evaluation pipeline is designed around missed-phishing
 risk:
 
-1. Source-record/template IDs and PhishNChips campaign URLs receive group IDs;
-   corpora without usable family metadata fall back to normalized family hashes
-   that collapse URLs, email addresses, and volatile numeric tokens.
-2. The held-out split and model-selection folds use `StratifiedGroupKFold`.
-3. TF-IDF is fitted inside each cross-validation pipeline, preventing vocabulary
+1. Messages are normalized across all sources before splitting; duplicate
+   families are removed and label-conflicting families are excluded.
+2. Source-record/template IDs and PhishNChips campaign URLs receive group IDs;
+   corpora without usable metadata use source-independent normalized hashes.
+3. The held-out split and model-selection folds use `StratifiedGroupKFold`.
+4. Models are selected by cross-validated PR AUC, which is more informative for
+   imbalanced phishing detection than ROC AUC alone.
+5. TF-IDF is fitted inside each cross-validation pipeline, preventing vocabulary
    leakage.
-4. The phishing decision threshold is selected from training-fold out-of-fold
+6. The phishing decision threshold is selected from training-fold out-of-fold
    predictions by maximizing F2, which weights recall more heavily.
-5. Reports include phishing recall, false-negative rate, PR AUC, ROC AUC, Brier
+7. Reports include phishing recall, false-negative rate, PR AUC, ROC AUC, Brier
    score, threshold, split strategy, and train/test group overlap.
 
 Structural/rule evidence and ML evidence are fused conservatively: weak model
@@ -190,25 +194,27 @@ organization-representative holdout that is never used for threshold tuning.
 ### Observed email-text evaluation — 2026-09-15
 
 The updated Logistic Regression pipeline was evaluated without bundled template
-augmentation on 61,707 rows from the six downloaded corpus files listed by the
-runtime. The split kept normalized message families, available source families,
-and shared PhishNChips campaign URLs together. Normalization collapses volatile
-URLs, email addresses, and numeric tokens before fallback grouping.
+augmentation on 61,707 raw rows from the six downloaded corpus files listed by
+the runtime. Global normalization retained 53,841 rows after removing 7,333
+duplicate rows and 533 rows from label-conflicting families. The split kept
+normalized message families, source families, and shared PhishNChips campaign
+URLs together. Candidate models were selected by cross-validated PR AUC.
 
 | Metric | Result |
 |---|---:|
-| Held-out rows | 12,342 |
-| Accuracy | 99.21% |
-| Precision | 98.80% |
-| Phishing recall | 99.67% |
-| False-negative rate | 0.33% |
-| F1 | 99.23% |
-| ROC AUC | 0.9997 |
-| PR AUC | 0.9997 |
-| Brier score | 0.0058 |
-| Learned F2 threshold | 0.3636 |
-| Recall at default 0.5 threshold | 99.42% |
-| Recall gain from learned threshold | +0.25 percentage points |
+| Retained rows after normalization | 53,841 |
+| Held-out rows | 10,768 |
+| Accuracy | 98.89% |
+| Precision | 97.88% |
+| Phishing recall | 99.78% |
+| False-negative rate | 0.22% |
+| F1 | 98.82% |
+| ROC AUC | 0.9996 |
+| PR AUC | 0.9996 |
+| Brier score | 0.0069 |
+| Learned F2 threshold | 0.3515 |
+| Recall at default 0.5 threshold | 99.38% |
+| Recall gain from learned threshold | +0.40 percentage points |
 | Train/test group overlap | 0 |
 
 These are offline corpus results, not a production claim. PhishNChips is
@@ -216,6 +222,10 @@ synthetic, the older corpora lack campaign identifiers beyond normalized
 content-family grouping, and the holdout is not time-separated. Live-email drift,
 organization-specific false positives, image-only lures, QR codes, and
 attachment contents remain outside this evaluation.
+
+The included public Render profile still keeps the optional text model disabled
+until a representative, versioned artifact is supplied through a trusted build
+process. Rules and message-structure analysis remain available without it.
 
 ## Testing
 

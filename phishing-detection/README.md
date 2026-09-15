@@ -113,9 +113,10 @@ backup codes) that no single public corpus represents well.
 
 Synthetic data broadens tactic coverage but does not establish real-world
 performance. The content pipeline therefore keeps campaign/template families
-within a single split, fits TF-IDF inside cross-validation, learns an
-F2-optimized threshold from training folds, and reports phishing recall,
-false-negative rate, PR AUC, Brier score, and group overlap.
+within a single split, removes normalized duplicates and label conflicts across
+all sources, fits TF-IDF inside cross-validation, selects the candidate model by
+PR AUC, learns an F2-optimized threshold from training folds, and reports
+phishing recall, false-negative rate, PR AUC, Brier score, and group overlap.
 
 ---
 

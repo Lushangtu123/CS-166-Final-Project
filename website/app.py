@@ -24,6 +24,7 @@ import socket
 import smtplib
 import threading
 import time
+import unicodedata
 import warnings
 from collections import deque
 from html.parser import HTMLParser
@@ -46,7 +47,13 @@ from content_model import (
     load_content_pipeline_artifact,
     predict_content,
 )
-from email_structure import analyze_raw_email
+from email_structure import (
+    _PROTECTED_BRAND_DOMAINS,
+    _confusable_skeleton,
+    _decode_idna_domain,
+    _domains_align,
+    analyze_raw_email,
+)
 
 RATE_LIMIT_PER_MINUTE = max(1, int(os.getenv("RATE_LIMIT_PER_MINUTE", "20")))
 RATE_LIMIT_BUCKET_CAPACITY = max(128, int(os.getenv("RATE_LIMIT_BUCKET_CAPACITY", "4096")))
@@ -1414,7 +1421,7 @@ CONTENT_RULES: dict = {
             "refund pending", "tax refund", "claim your refund", "unclaimed prize",
             "processing fee", "advance fee", "release fee", "activation fee",
             "donation", "charity fund", "humanitarian fund",
-            "next of kin", "deceased customer", "estate",
+            "next of kin", "deceased customer", "deceased estate",
         ],
     },
     "credential": {
@@ -1450,7 +1457,7 @@ CONTENT_RULES: dict = {
             "barclays", "santander", "natwest", "lloyds",
             "internal revenue service", "irs", "social security administration",
             "department of homeland security", "interpol", "europol",
-            "world health organization", "who", "united nations",
+            "world health organization", "united nations",
             "dropbox", "docusign", "adobe sign", "wetransfer",
         ],
     },
@@ -1620,9 +1627,28 @@ def _detect_obfuscation(text: str) -> list[str]:
     """Detect leetspeak / homoglyph substitution tricks (e.g. P@yP@l, Amaz0n)."""
     found = []
     for pattern, brand in _OBFUSCATION_PAIRS:
-        if re.search(pattern, text, re.IGNORECASE):
-            found.append(brand)
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            matched = match.group(0).casefold()
+            # The permissive patterns intentionally match both the original and
+            # substituted spellings. Only report an evasion when normalization
+            # actually changes the matched text into the protected term.
+            if matched != brand.casefold() and normalize_homoglyphs(matched) == brand.casefold():
+                found.append(brand)
+                break
     return found
+
+
+def _keyword_matches(text: str, keyword: str) -> bool:
+    """Match phrases while preventing short tokens from firing inside words."""
+    escaped = re.escape(keyword)
+    prefix = r"(?<!\w)" if keyword and keyword[0].isalnum() else ""
+    suffix = r"(?!\w)" if keyword and keyword[-1].isalnum() else ""
+    return bool(re.search(prefix + escaped + suffix, text, re.IGNORECASE))
+
+
+def _strip_invisible_format_controls(text: str) -> str:
+    """Remove zero-width formatting controls commonly used to split keywords."""
+    return "".join(character for character in text if unicodedata.category(character) != "Cf")
 
 
 def _large_currency_amounts(text: str) -> list[str]:
@@ -1673,9 +1699,9 @@ def _detect_non_native_phrases(text: str) -> list[str]:
     return [m for m in markers if m in lower]
 
 
-def _has_mismatched_link_text(text: str) -> bool:
-    """Detect markdown and HTML links whose visible URL names another host."""
-    links = list(re.findall(r'\[([^\]]+)\]\((https?://[^)]+)\)', text))
+def _extract_links(text: str) -> list[tuple[str, str]]:
+    """Extract visible text and destination from Markdown and HTML links."""
+    links = list(re.findall(r'\[([^\]]+)\]\(((?:https?|hxxps?)://[^)]+)\)', text, re.IGNORECASE))
 
     class LinkCollector(HTMLParser):
         def __init__(self):
@@ -1706,26 +1732,174 @@ def _has_mismatched_link_text(text: str) -> bool:
     except Exception:
         pass
 
-    for link_text, url in links:
-        target_host = (urlparse(url).hostname or "").lower()
-        visible_match = re.search(r'https?://([^/\s<]+)', link_text, re.IGNORECASE)
-        if target_host and visible_match:
-            visible_host = visible_match.group(1).lower().rstrip(".,)")
-            if visible_host != target_host:
-                return True
-    return False
+    links.extend(
+        ("", url.rstrip(".,;:)"))
+        for url in re.findall(r"(?:https?|hxxps?)://[^\s<>\"']+", text, re.IGNORECASE)
+    )
+
+    return [
+        (str(visible or "").strip(), str(destination or "").strip())
+        for visible, destination in links
+        if destination
+    ]
+
+
+def _visible_link_host(link_text: str) -> str:
+    match = re.search(
+        r"(?:https?://|www\.)?"
+        r"((?:xn--)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+        r"(?:\.(?:xn--)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+)",
+        link_text,
+        re.IGNORECASE,
+    )
+    return match.group(1).lower().rstrip(".") if match else ""
+
+
+def _known_link_host(host: str) -> bool:
+    return any(host == known or host.endswith("." + known) for known in LEGIT_PROVIDERS)
+
+
+def _analyze_link_destinations(text: str) -> tuple[int, list[dict], str]:
+    """Inspect actual link targets, including links with generic button text."""
+    score = 0
+    findings: list[dict] = []
+    risk_floor = "safe"
+    finding_types: set[str] = set()
+    sensitive_host_terms = {
+        "account", "credential", "login", "password", "reactivate",
+        "secure", "security", "signin", "unlock", "verification", "verify",
+        "wallet",
+    }
+
+    for link_text, url in _extract_links(text):
+        lowered_url = url.lower()
+        if lowered_url.startswith(("hxxp://", "hxxps://")):
+            if "obfuscated-scheme" not in finding_types:
+                score += 3
+                risk_floor = "high"
+                finding_types.add("obfuscated-scheme")
+                findings.append({
+                    "level": "high",
+                    "msg": "Link uses an obfuscated hxxp/hxxps destination scheme.",
+                })
+            if lowered_url.startswith("hxxps://"):
+                url = "https://" + url[8:]
+            else:
+                url = "http://" + url[7:]
+        try:
+            parsed = urlparse(url)
+        except ValueError:
+            if "malformed-target" not in finding_types:
+                score += 2
+                if risk_floor == "safe":
+                    risk_floor = "medium"
+                finding_types.add("malformed-target")
+                findings.append({
+                    "level": "medium",
+                    "msg": "Link contains a malformed destination that could not be safely parsed.",
+                })
+            continue
+        if parsed.scheme.lower() not in {"http", "https"}:
+            if parsed.scheme.lower() in {"data", "file", "javascript"} and "unsafe-scheme" not in finding_types:
+                score += 5
+                risk_floor = "high"
+                finding_types.add("unsafe-scheme")
+                findings.append({
+                    "level": "high",
+                    "msg": f"Link uses an unsafe destination scheme ({parsed.scheme.lower()}:).",
+                })
+            continue
+
+        target_host = (parsed.hostname or "").lower().rstrip(".")
+        if not target_host:
+            continue
+        decoded_host = _decode_idna_domain(target_host)
+
+        visible_host = _visible_link_host(link_text)
+        if (
+            visible_host
+            and not _domains_align(
+                _decode_idna_domain(visible_host),
+                decoded_host,
+            )
+            and "display-mismatch" not in finding_types
+        ):
+            score += 3
+            risk_floor = "high"
+            finding_types.add("display-mismatch")
+            findings.append({
+                "level": "high",
+                "msg": (
+                    f"Link display domain ({visible_host}) does not match the "
+                    f"actual destination ({target_host})."
+                ),
+            })
+
+        decoded_skeleton = _confusable_skeleton(decoded_host)
+        first_label = decoded_skeleton.split(".", 1)[0]
+        for brand, canonical_domains in _PROTECTED_BRAND_DOMAINS.items():
+            canonical = any(_domains_align(target_host, domain) for domain in canonical_domains)
+            if (
+                brand in first_label
+                and not canonical
+                and (
+                    target_host.startswith("xn--")
+                    or decoded_skeleton != decoded_host.casefold()
+                )
+                and "idn-confusable" not in finding_types
+            ):
+                score += 5
+                risk_floor = "high"
+                finding_types.add("idn-confusable")
+                findings.append({
+                    "level": "high",
+                    "msg": (
+                        f"Link destination ({target_host}) is an IDN/confusable "
+                        f"lookalike for {brand}."
+                    ),
+                })
+
+        host_tokens = set(re.findall(r"[a-z0-9]+", decoded_skeleton))
+        if (
+            not _known_link_host(target_host)
+            and host_tokens & sensitive_host_terms
+            and "sensitive-host" not in finding_types
+        ):
+            score += 4
+            risk_floor = "high"
+            finding_types.add("sensitive-host")
+            findings.append({
+                "level": "high",
+                "msg": (
+                    f"Link destination ({target_host}) uses a credential or "
+                    "account-themed untrusted domain."
+                ),
+            })
+
+    return score, findings, risk_floor
+
+
+def _has_mismatched_link_text(text: str) -> bool:
+    """Compatibility wrapper for callers that only need a mismatch boolean."""
+    _score, findings, _floor = _analyze_link_destinations(text)
+    return any("does not match" in finding["msg"] for finding in findings)
 
 
 def analyze_email_content(subject: str, body: str) -> dict:
     """Rule-based heuristic phishing analysis of email subject + body text."""
-    full_lower = (subject + "\n" + body).lower()
-    full_orig  = subject + "\n" + body
+    full_orig = subject + "\n" + body
+    analysis_text = _strip_invisible_format_controls(full_orig)
+    full_lower = analysis_text.lower()
 
     category_results = []
     total_score = 0
+    risk_floor = "safe"
 
     for cat_key, cat_info in CONTENT_RULES.items():
-        matched = [kw for kw in cat_info["keywords"] if kw in full_lower]
+        matched = [
+            kw for kw in cat_info["keywords"]
+            if _keyword_matches(full_lower, kw)
+        ]
         if matched:
             capped = min(len(matched), 5)
             total_score += capped
@@ -1745,28 +1919,29 @@ def analyze_email_content(subject: str, body: str) -> dict:
     # ── Structural & heuristic checks ────────────────────────────────────────
 
     # 1. IP-based URLs
-    if _has_ip_url(full_orig):
+    if _has_ip_url(analysis_text):
         total_score += 3
+        risk_floor = "high"
         extra_indicators.append({
             "level": "high",
             "msg": "Contains URLs using raw IP addresses — strong phishing signal (legitimate services never do this)",
         })
 
     # 2. URL shorteners
-    if _has_shortener_url(full_orig):
+    if _has_shortener_url(analysis_text):
         total_score += 2
         extra_indicators.append({
             "level": "high",
             "msg": "Contains shortened URLs (bit.ly, tinyurl, etc.) — hides the true destination domain",
         })
 
-    # 3. Mismatched link text vs URL
-    if _has_mismatched_link_text(full_orig):
-        total_score += 2
-        extra_indicators.append({
-            "level": "high",
-            "msg": "Link display text does not match the actual URL destination — classic deceptive link technique",
-        })
+    # 3. Inspect every actual link target, even when its visible text is a
+    # generic button such as "Review document".
+    link_score, link_findings, link_floor = _analyze_link_destinations(analysis_text)
+    total_score += link_score
+    extra_indicators.extend(link_findings)
+    if link_floor == "high":
+        risk_floor = "high"
 
     # 4. Excessive exclamation marks
     excl = full_orig.count("!")
@@ -1854,16 +2029,18 @@ def analyze_email_content(subject: str, body: str) -> dict:
         desc for (kw, desc) in CONTENT_SAFETY_SIGNALS if kw.lower() in full_lower
     ]
 
-    if total_score == 0:
+    if total_score > 15:
+        risk_level, risk_label = "critical", "Critical Risk — Very Likely Phishing"
+    elif risk_floor == "high":
+        risk_level, risk_label = "high", "High Risk — Likely Phishing"
+    elif total_score == 0:
         risk_level, risk_label = "safe",     "No Phishing Indicators Found"
     elif total_score <= 3:
         risk_level, risk_label = "low",      "Low Risk — Minor Concerns"
     elif total_score <= 8:
         risk_level, risk_label = "medium",   "Medium Risk — Suspicious Content"
-    elif total_score <= 15:
-        risk_level, risk_label = "high",     "High Risk — Likely Phishing"
     else:
-        risk_level, risk_label = "critical", "Critical Risk — Very Likely Phishing"
+        risk_level, risk_label = "high",     "High Risk — Likely Phishing"
 
     return {
         "risk_level":        risk_level,
@@ -1873,8 +2050,9 @@ def analyze_email_content(subject: str, body: str) -> dict:
         "extra_indicators":  extra_indicators,
         "safety_signals":    safety_found,
         "url_count":         url_count,
-        "has_ip_url":        _has_ip_url(full_orig),
-        "has_shortener":     _has_shortener_url(full_orig),
+        "has_ip_url":        _has_ip_url(analysis_text),
+        "has_shortener":     _has_shortener_url(analysis_text),
+        "risk_floor":        risk_floor,
     }
 
 
@@ -1889,17 +2067,26 @@ def fuse_content_risk(
     ml_phishing_probability: float | None,
     ml_decision_threshold: float,
     heuristic_score: int,
+    minimum_level: str = "safe",
 ) -> dict:
     """Conservatively fuse independent evidence without averaging it away."""
     heuristic_risk = min(1.0, max(0.0, heuristic_score / 16.0))
     ml_risk = 0.0 if ml_phishing_probability is None else min(
         1.0, max(0.0, ml_phishing_probability)
     )
-    combined = max(heuristic_risk, ml_risk)
+    floor_scores = {
+        "safe": 0.0,
+        "low": 0.10,
+        "medium": 0.30,
+        "high": 0.55,
+        "critical": 0.80,
+    }
+    floor_score = floor_scores.get(minimum_level, 0.0)
+    combined = max(heuristic_risk, ml_risk, floor_score)
 
-    if combined >= 0.80:
+    if minimum_level == "critical" or combined >= 0.80:
         level, label = "critical", "Critical Risk — Very Likely Phishing"
-    elif heuristic_risk >= 0.55 or (
+    elif minimum_level == "high" or heuristic_risk >= 0.55 or (
         ml_phishing_probability is not None and ml_risk >= ml_decision_threshold
     ):
         level, label = "high", "High Risk — Likely Phishing"
@@ -1943,11 +2130,19 @@ async def analyze_content_endpoint(request: ContentRequest):
             key: structure[key]
             for key in (
                 "from", "reply_to", "return_path", "auth_results",
-                "authentication_trusted", "attachments",
+                "authentication_trusted", "authentication_results_trusted",
+                "untrusted_authentication_claims", "attachments", "risk_floor",
             )
         }
+        floor_rank = {"safe": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+        if floor_rank[structure["risk_floor"]] > floor_rank[result["risk_floor"]]:
+            result["risk_floor"] = structure["risk_floor"]
         if result["total_score"] > 15:
             result["risk_level"], result["risk_label"] = "critical", "Critical Risk — Very Likely Phishing"
+        elif result["risk_floor"] == "high":
+            result["risk_level"], result["risk_label"] = "high", "High Risk — Likely Phishing"
+        elif result["risk_floor"] == "medium":
+            result["risk_level"], result["risk_label"] = "medium", "Medium Risk — Suspicious Content"
         elif result["total_score"] > 8:
             result["risk_level"], result["risk_label"] = "high", "High Risk — Likely Phishing"
         elif result["total_score"] > 3:
@@ -1963,12 +2158,14 @@ async def analyze_content_endpoint(request: ContentRequest):
             ml_phishing_probability=ml["ml_phishing_probability"] / 100.0,
             ml_decision_threshold=float(_content_pipeline.get("decision_threshold", 0.5)),
             heuristic_score=result["total_score"],
+            minimum_level=result["risk_floor"],
         ))
     else:
         result.update(fuse_content_risk(
             ml_phishing_probability=None,
             ml_decision_threshold=0.5,
             heuristic_score=result["total_score"],
+            minimum_level=result["risk_floor"],
         ))
 
     return JSONResponse(result)

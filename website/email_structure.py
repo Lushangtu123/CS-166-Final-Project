@@ -12,9 +12,12 @@ import unicodedata
 
 _AUTH_FAILURES = {"fail", "softfail", "permerror", "temperror"}
 _DANGEROUS_EXTENSIONS = {
-    ".bat", ".cmd", ".com", ".exe", ".hta", ".html", ".htm", ".iso",
-    ".jar", ".js", ".lnk", ".msi", ".ps1", ".scr", ".vbs", ".wsf",
+    ".bat", ".chm", ".cmd", ".com", ".dll", ".docm", ".exe", ".hta",
+    ".html", ".htm", ".img", ".iso", ".jar", ".js", ".lnk", ".msi",
+    ".one", ".ps1", ".scr", ".vbs", ".vhd", ".vhdx", ".wsf", ".xlam",
+    ".xlsm", ".xll",
 }
+_ARCHIVE_EXTENSIONS = {".7z", ".gz", ".rar", ".tar", ".tgz", ".zip"}
 _PROTECTED_BRAND_DOMAINS = {
     "apple": {"apple.com", "icloud.com"},
     "amazon": {"amazon.com"},
@@ -143,6 +146,7 @@ def analyze_raw_email(
     body = "\n".join(part for part in (plain, html) if part)
     indicators: list[dict] = []
     score = 0
+    risk_floor = "safe"
 
     from_domain = _domain(message.get("From", ""))
     reply_domain = _domain(message.get("Reply-To", ""))
@@ -154,6 +158,8 @@ def analyze_raw_email(
     )
     score += brand_score
     indicators.extend(brand_indicators)
+    if brand_score:
+        risk_floor = "high"
 
     if from_domain and reply_domain and not _domains_align(reply_domain, from_domain):
         score += 4
@@ -201,6 +207,7 @@ def analyze_raw_email(
     )
     if decisive_failure and not dmarc_passes:
         score += 6
+        risk_floor = "high"
         indicators.append({
             "level": "high",
             "msg": "Message authentication failed: " + ", ".join(sorted(failures)).upper() + ".",
@@ -217,9 +224,21 @@ def analyze_raw_email(
         suffix = PurePath(attachment["filename"]).suffix.lower()
         if suffix in _DANGEROUS_EXTENSIONS:
             score += 4
+            risk_floor = "high"
             indicators.append({
                 "level": "high",
                 "msg": f"Potentially dangerous attachment: {attachment['filename']}.",
+            })
+        elif suffix in _ARCHIVE_EXTENSIONS:
+            score += 2
+            if risk_floor == "safe":
+                risk_floor = "medium"
+            indicators.append({
+                "level": "medium",
+                "msg": (
+                    f"Archive attachment requires inspection before opening: "
+                    f"{attachment['filename']}."
+                ),
             })
 
     return {
@@ -236,5 +255,6 @@ def analyze_raw_email(
         "untrusted_authentication_claims": untrusted_authentication_claims,
         "attachments": attachments,
         "structure_score": score,
+        "risk_floor": risk_floor,
         "indicators": indicators,
     }
