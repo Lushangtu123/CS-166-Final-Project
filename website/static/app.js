@@ -3,7 +3,13 @@
    ────────────────────────────────────────────────────────────────────────── */
 
 let metricsChart = null;
-let importanceChart = null;
+let _rawEmailSource = '';
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, char => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[char]);
+}
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
@@ -19,6 +25,16 @@ function setupInputEvents() {
   input.addEventListener('input', () => {
     clearBtn.classList.toggle('visible', input.value.length > 0);
   });
+  const rawInput = document.getElementById('raw-email-file');
+  if (rawInput) {
+    rawInput.addEventListener('change', async event => {
+      const file = event.target.files?.[0];
+      _rawEmailSource = file ? await file.text() : '';
+      document.getElementById('raw-email-status').textContent = file
+        ? `${file.name} loaded — headers, HTML links, and attachments will be analyzed.`
+        : '';
+    });
+  }
 }
 
 // ── Email Authenticity Verification ──────────────────────────────────────────
@@ -291,7 +307,8 @@ function shakeInput() {
 
 // ── Render Result ─────────────────────────────────────────────────────────────
 function renderResult(data) {
-  const isPhishing = data.prediction === 0;
+  const isHighRisk = data.verdict === 'high' || data.verdict === 'critical';
+  const isSuspect = data.verdict === 'medium';
   const area = document.getElementById('result-area');
 
   // Reset verify card so it shows "Run Verification" for the new email
@@ -327,7 +344,7 @@ function renderResult(data) {
     dispCard.className = 'col-card disposable-check-card suspected-disposable';
     dispIcon.textContent  = '⚠️';
     dispLabel.textContent = 'Suspected Disposable / Auto-Generated';
-    dispDet.innerHTML  = `Domain <strong>${domain}</strong> is not in the known disposable provider list, but the username appears to be randomly auto-generated (high entropy, almost no vowels). This pattern is commonly used with disposable or throwaway inboxes.`;
+    dispDet.innerHTML  = `Domain <strong>${escapeHtml(domain)}</strong> is not in the known disposable provider list, but the username appears to be randomly auto-generated (high entropy, almost no vowels). This pattern is commonly used with disposable or throwaway inboxes.`;
     // Confidence badge
     const badge = document.createElement('div');
     badge.className = 'disp-confidence-badge';
@@ -344,10 +361,9 @@ function renderResult(data) {
   }
 
   // Verdict banner
-  const isSuspect  = !!data.is_suspected_phishing;
   const banner = document.getElementById('verdict-banner');
   let bannerCls, bannerIcon, probColor;
-  if (isPhishing) {
+  if (isHighRisk) {
     bannerCls = 'banner-phish';   bannerIcon = '⚠️';  probColor = '#f85149';
   } else if (isSuspect) {
     bannerCls = 'banner-suspect'; bannerIcon = '🔍';  probColor = '#e8a000';
@@ -358,7 +374,8 @@ function renderResult(data) {
   document.getElementById('vb-icon').textContent  = bannerIcon;
   document.getElementById('vb-title').textContent = data.label;
   document.getElementById('vb-email').textContent = data.email;
-  document.getElementById('vb-prob').textContent  = data.phishing_probability + '%';
+  document.getElementById('vb-prob-label').textContent = 'Sender Risk Score';
+  document.getElementById('vb-prob').textContent  = data.risk_score + '/100';
   document.getElementById('vb-prob').style.color  = probColor;
 
   // Remove previous suspect note if any
@@ -368,19 +385,17 @@ function renderResult(data) {
     const note = document.createElement('div');
     note.className = 'suspect-note';
     note.textContent =
-      'ML model classifies this as legitimate, but heuristic analysis detected ' +
-      data.high_risk_count + ' high-risk structural pattern(s) in the domain. ' +
-      'Manual verification is strongly recommended.';
+      'Sender and domain heuristics found suspicious structural patterns. ' +
+      'This score is not a trained-model probability; verify the full message headers.';
     banner.querySelector('.vb-left').appendChild(note);
   }
 
   // Probability bars
-  const phishPct = data.phishing_probability;
-  const legitPct = data.legitimate_probability;
-  animateBar('phish-bar', phishPct);
-  animateBar('legit-bar', legitPct);
-  document.getElementById('phish-pct').textContent = phishPct + '%';
-  document.getElementById('legit-pct').textContent = legitPct + '%';
+  const riskScore = data.risk_score;
+  animateBar('phish-bar', riskScore);
+  animateBar('legit-bar', 100 - riskScore);
+  document.getElementById('phish-pct').textContent = riskScore + '/100';
+  document.getElementById('legit-pct').textContent = (100 - riskScore) + '/100';
 
   // Risk summary pills
   const riskSummary = document.getElementById('risk-summary');
@@ -392,7 +407,7 @@ function renderResult(data) {
   } else if (data.is_disposable && data.is_suspected_disposable) {
     dispPill = `<span class="pill pill-disp-suspect">⚠️ Suspected Disposable</span>`;
   }
-  const suspectPill = isSuspect
+  const suspectPill = isSuspect || isHighRisk
     ? `<span class="pill pill-suspect">🔍 Suspected Phishing</span>`
     : '';
   riskSummary.innerHTML = `
@@ -401,7 +416,7 @@ function renderResult(data) {
       ${dispPill}
       <span class="pill pill-high">${h} high-risk</span>
       <span class="pill pill-med">${m} medium-risk</span>
-      <span class="pill pill-feat">${data.phish_feature_count} phishing features</span>
+      <span class="pill pill-feat">${data.phish_feature_count} risk-coded signals</span>
     </div>
   `;
 
@@ -413,7 +428,7 @@ function renderResult(data) {
     riskList.innerHTML = data.risk_indicators.map(r => `
       <div class="risk-item risk-${r.level}">
         <span class="risk-dot"></span>
-        <span class="risk-msg">${r.msg}</span>
+        <span class="risk-msg">${escapeHtml(r.msg)}</span>
       </div>
     `).join('');
   } else {
@@ -427,19 +442,13 @@ function renderResult(data) {
     const valClass = f.value === -1 ? 'fv-phish' : f.value === 1 ? 'fv-legit' : 'fv-sus';
     const valLabel = f.value === -1 ? '−1' : f.value === 1 ? '+1' : '0';
     const valTitle = f.value === -1 ? 'Phishing' : f.value === 1 ? 'Legit' : 'Suspicious';
-    const impPct = Math.round(f.importance * 1000) / 10;
-    const barWidth = Math.min(100, f.importance / 0.32 * 100);
     return `
       <div class="fb-row">
         <div class="fb-top">
-          <span class="fb-label">${f.label}</span>
+          <span class="fb-label">${escapeHtml(f.label)}</span>
           <span class="fb-val ${valClass}" title="${valTitle}">${valLabel}</span>
         </div>
-        <div class="fb-desc">${f.email_desc}</div>
-        <div class="fb-bar-track">
-          <div class="fb-bar" style="width:${barWidth}%;background:${f.value === -1 ? '#f85149' : f.value === 1 ? '#3fb950' : '#e3b341'}"></div>
-        </div>
-        <div class="fb-imp">${impPct}% importance</div>
+        <div class="fb-desc">${escapeHtml(f.email_desc)}</div>
       </div>
     `;
   }).join('');
@@ -461,7 +470,6 @@ async function loadMetrics() {
     const data = await res.json();
     renderMetricsTable(data.metrics);
     renderMetricsChart(data.metrics);
-    renderImportanceChart(data.feature_importances);
   } catch (e) {
     console.error('Failed to load metrics:', e);
   }
@@ -517,34 +525,6 @@ function renderMetricsChart(metrics) {
       scales: {
         y: { min: 0.88, max: 1.0, ticks: { color: '#a0aec0' }, grid: { color: 'rgba(255,255,255,0.06)' } },
         x: { ticks: { color: '#a0aec0' }, grid: { display: false } },
-      },
-    },
-  });
-}
-
-function renderImportanceChart(importances) {
-  const ctx = document.getElementById('importanceChart').getContext('2d');
-  const top10 = importances.slice(0, 10);
-  const gradient = ctx.createLinearGradient(0, 0, 400, 0);
-  gradient.addColorStop(0, 'rgba(99,179,237,0.9)');
-  gradient.addColorStop(1, 'rgba(154,230,180,0.6)');
-  if (importanceChart) importanceChart.destroy();
-  importanceChart = new Chart(ctx, {
-    type: 'bar',
-    data: {
-      labels: top10.map(f => f.label),
-      datasets: [{ label: 'Gini Importance', data: top10.map(f => f.importance), backgroundColor: gradient, borderRadius: 4 }],
-    },
-    options: {
-      indexAxis: 'y',
-      responsive: true,
-      plugins: {
-        legend: { display: false },
-        tooltip: { callbacks: { label: c => `Importance: ${c.parsed.x.toFixed(4)}` } },
-      },
-      scales: {
-        x: { ticks: { color: '#a0aec0' }, grid: { color: 'rgba(255,255,255,0.06)' } },
-        y: { ticks: { color: '#e2e8f0', font: { size: 11 } }, grid: { display: false } },
       },
     },
   });
@@ -611,20 +591,29 @@ function setContentExample(key) {
   if (!ex) return;
   document.getElementById('content-subject').value = ex.subject;
   document.getElementById('content-body').value = ex.body;
+  _rawEmailSource = '';
   runContentAnalysis();
 }
 
 function clearContent() {
   document.getElementById('content-subject').value = '';
   document.getElementById('content-body').value = '';
+  const rawInput = document.getElementById('raw-email-file');
+  if (rawInput) rawInput.value = '';
+  document.getElementById('raw-email-status').textContent = '';
+  _rawEmailSource = '';
   document.getElementById('content-result-area').classList.add('hidden');
   document.getElementById('content-loading-area').classList.add('hidden');
+}
+
+function buildContentPayload(subject, body, rawEmail) {
+  return { subject, body, raw_email: rawEmail || '' };
 }
 
 async function runContentAnalysis() {
   const subject = document.getElementById('content-subject').value.trim();
   const body    = document.getElementById('content-body').value.trim();
-  if (!subject && !body) {
+  if (!subject && !body && !_rawEmailSource) {
     document.getElementById('content-body').classList.add('shake');
     setTimeout(() => document.getElementById('content-body').classList.remove('shake'), 500);
     return;
@@ -642,7 +631,7 @@ async function runContentAnalysis() {
     const res = await fetch('/api/analyze-content', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ subject, body }),
+      body: JSON.stringify(buildContentPayload(subject, body, _rawEmailSource)),
     });
     if (!res.ok) {
       const err = await res.json();
@@ -667,7 +656,7 @@ const RISK_CONFIG = {
   critical: { icon: '☠️',  color: 'critical', scoreColor: '#f85149' },
 };
 
-const LEVEL_ICONS = { high: '🔴', medium: '🟡', low: '🔵' };
+const LEVEL_ICONS = { high: '🔴', medium: '🟡', low: '🔵', info: 'ℹ️' };
 
 function renderContentResult(data) {
   const cfg = RISK_CONFIG[data.risk_level] || RISK_CONFIG.medium;
@@ -716,9 +705,10 @@ function renderContentResult(data) {
     // Hold-out evaluation metrics for the content text classifier
     const m = data.ml_metrics || {};
     document.getElementById('content-ml-metrics').innerHTML = m.Accuracy != null ? `
-      <div class="ml-metric"><span class="ml-metric-k">Accuracy</span><span class="ml-metric-v">${(m.Accuracy*100).toFixed(1)}%</span></div>
-      <div class="ml-metric"><span class="ml-metric-k">F1</span><span class="ml-metric-v">${(m.F1*100).toFixed(1)}%</span></div>
-      <div class="ml-metric"><span class="ml-metric-k">ROC AUC</span><span class="ml-metric-v">${m.ROC_AUC.toFixed(4)}</span></div>
+      <div class="ml-metric"><span class="ml-metric-k">Phishing recall</span><span class="ml-metric-v">${(m.Phishing_Recall*100).toFixed(1)}%</span></div>
+      <div class="ml-metric"><span class="ml-metric-k">False-negative rate</span><span class="ml-metric-v">${(m.False_Negative_Rate*100).toFixed(1)}%</span></div>
+      <div class="ml-metric"><span class="ml-metric-k">PR AUC</span><span class="ml-metric-v">${m.PR_AUC.toFixed(4)}</span></div>
+      <div class="ml-metric"><span class="ml-metric-k">Threshold</span><span class="ml-metric-v">${m.decision_threshold.toFixed(3)}</span></div>
     ` : '';
 
     // Per-email token contributions (what pushed the score toward "phishing")
@@ -729,7 +719,7 @@ function renderContentResult(data) {
         `<div class="ml-contribs-title">Top tokens driving the ML score</div>` +
         `<div class="ml-contribs-list">` +
         contribs.map(c =>
-          `<span class="ml-token" title="weighted contribution: ${c.contribution}">${c.term}</span>`
+          `<span class="ml-token" title="weighted contribution: ${c.contribution}">${escapeHtml(c.term)}</span>`
         ).join('') +
         `</div>`;
     } else {
@@ -748,16 +738,16 @@ function renderContentResult(data) {
     grid.innerHTML = data.category_results.map(cat => `
       <div class="cat-card cat-${cat.level}">
         <div class="cat-header">
-          <span class="cat-icon">${cat.icon}</span>
+          <span class="cat-icon">${escapeHtml(cat.icon)}</span>
           <div class="cat-title-wrap">
-            <div class="cat-title">${cat.label}</div>
+            <div class="cat-title">${escapeHtml(cat.label)}</div>
             <div class="cat-count">${cat.count} signal${cat.count > 1 ? 's' : ''} matched</div>
           </div>
           <span class="cat-level-badge level-${cat.level}">${cat.level}</span>
         </div>
-        <div class="cat-desc">${cat.description}</div>
+        <div class="cat-desc">${escapeHtml(cat.description)}</div>
         <div class="cat-keywords">
-          ${cat.matched.map(kw => `<span class="kw-pill">${kw}</span>`).join('')}
+          ${cat.matched.map(kw => `<span class="kw-pill">${escapeHtml(kw)}</span>`).join('')}
         </div>
       </div>
     `).join('');
@@ -771,7 +761,7 @@ function renderContentResult(data) {
     extraList.innerHTML = data.extra_indicators.map(ind => `
       <div class="risk-item risk-${ind.level}">
         <span class="risk-dot"></span>
-        <span class="risk-msg">${ind.msg}</span>
+        <span class="risk-msg">${escapeHtml(ind.msg)}</span>
       </div>
     `).join('');
   } else {
@@ -786,7 +776,7 @@ function renderContentResult(data) {
     safetyList.innerHTML = data.safety_signals.map(s => `
       <div class="safety-item">
         <span class="safety-dot">✓</span>
-        <span class="safety-msg">${s}</span>
+        <span class="safety-msg">${escapeHtml(s)}</span>
       </div>
     `).join('');
   } else {

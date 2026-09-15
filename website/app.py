@@ -1,20 +1,23 @@
 """
 app.py – FastAPI backend for the Phishing Email Detector demo.
 
-Startup: loads/trains the Random Forest model on the UCI Phishing dataset.
+Sender addresses use explainable domain heuristics. Full messages additionally
+use RFC 5322 structure/authentication signals and, when enabled, a separately
+validated offline email-text classifier. Historical UCI website-model metrics
+remain available only as a clearly scoped course benchmark.
 Routes:
   GET  /                      → serve index.html
   GET  /api/metrics           → classifier performance metrics
   GET  /api/features          → feature metadata
   GET  /api/config            → public-safe feature configuration
-  POST /api/analyze-email     → extract features from email address & predict
-  POST /api/analyze-content   → heuristic analysis of email subject + body
-  POST /api/predict           → raw feature dict prediction (legacy)
+  POST /api/analyze-email     → explainable sender/domain risk analysis
+  POST /api/analyze-content   → message structure + content analysis
 """
 
 from __future__ import annotations
 
 import os
+import ipaddress
 import re
 import math
 import socket
@@ -23,10 +26,10 @@ import threading
 import time
 import warnings
 from collections import deque
-import numpy as np
+from html.parser import HTMLParser
+from urllib.parse import urlparse
 
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
-import pandas as pd
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
@@ -37,16 +40,16 @@ from config import load_settings
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 BASE_DIR = Path(__file__).parent
-DATA_DIR = BASE_DIR.parent / "phishing-detection" / "data"
 SETTINGS = load_settings()
 
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
-
-from content_model import build_content_pipeline_from_env, predict_content
+from content_model import (
+    load_content_pipeline_artifact,
+    predict_content,
+)
+from email_structure import analyze_raw_email
 
 RATE_LIMIT_PER_MINUTE = max(1, int(os.getenv("RATE_LIMIT_PER_MINUTE", "20")))
+RATE_LIMIT_BUCKET_CAPACITY = max(128, int(os.getenv("RATE_LIMIT_BUCKET_CAPACITY", "4096")))
 MAX_REQUEST_BYTES = max(1024, int(os.getenv("MAX_REQUEST_BYTES", "65536")))
 
 # ── Feature definitions (UCI Phishing Websites Dataset mapping) ───────────────
@@ -556,29 +559,9 @@ MODEL_METRICS = {
     "Decision Tree":      {"Accuracy": 0.9480, "Precision": 0.9481, "Recall": 0.9480, "F1": 0.9480, "ROC_AUC": 0.9865},
     "Logistic Regression":{"Accuracy": 0.9285, "Precision": 0.9287, "Recall": 0.9285, "F1": 0.9284, "ROC_AUC": 0.9808},
 }
-FEATURE_IMPORTANCES = [
-    {"feature": "sslfinal_state",            "label": "Known Legit Provider",       "importance": 0.3199},
-    {"feature": "url_of_anchor",             "label": "Username Too Long",          "importance": 0.2503},
-    {"feature": "web_traffic",               "label": "High-Traffic Mail Platform", "importance": 0.0708},
-    {"feature": "having_sub_domain",         "label": "Subdomain Depth",            "importance": 0.0459},
-    {"feature": "age_of_domain",             "label": "Domain Label Length",        "importance": 0.0407},
-    {"feature": "request_url",               "label": "Special Chars in Local",     "importance": 0.0382},
-    {"feature": "links_in_tags",             "label": "Brand Domain Spoofing",      "importance": 0.0317},
-    {"feature": "domain_registration_length","label": "Common TLD",                 "importance": 0.0241},
-    {"feature": "page_rank",                 "label": "Phishing Keywords in Domain","importance": 0.0215},
-    {"feature": "sfh",                       "label": "noreply Address",            "importance": 0.0183},
-    {"feature": "url_length",                "label": "Address Length",             "importance": 0.0157},
-    {"feature": "google_index",              "label": "Phishing Keywords in Local", "importance": 0.0143},
-    {"feature": "statistical_report",        "label": "Suspicious TLD",             "importance": 0.0128},
-    {"feature": "prefix_suffix",             "label": "Hyphen in Domain",           "importance": 0.0118},
-    {"feature": "abnormal_url",              "label": "Digit-Letter Mix in Domain", "importance": 0.0092},
-]
 
-# ── Global model state ────────────────────────────────────────────────────────
-_model: RandomForestClassifier = None
-_scaler: StandardScaler = None
-_train_feature_cols: list = None   # column order used during training
-_model_data_source: str | None = None
+# ── Global optional model state ───────────────────────────────────────────────
+_content_model_error: str | None = None
 
 def normalize_homoglyphs(text: str) -> str:
     """Convert typosquatting characters back to normal letters."""
@@ -600,8 +583,8 @@ def normalize_homoglyphs(text: str) -> str:
     return result
 
 
-# Email-content text classifier (TF-IDF + Logistic Regression).
-# Populated at startup via build_content_pipeline().
+# Optional email-content text classifier (TF-IDF + selected linear model).
+# Populated at startup only from a verified offline artifact.
 _content_pipeline: dict | None = None
 
 def _shannon_entropy(s: str) -> float:
@@ -1094,58 +1077,38 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
     return features, risk_indicators, is_disposable, auto_gen_disposable, disposable_service
 
 
-def _load_and_train():
-    global _model, _scaler, _train_feature_cols, _model_data_source
-    csv_path = DATA_DIR / "phishing_dataset.csv"
-    if csv_path.exists():
-        df = pd.read_csv(csv_path)
-        df.columns = [c.strip().lower() for c in df.columns]
-        _model_data_source = "real"
-    else:
-        if not SETTINGS.allow_synthetic_data:
-            raise RuntimeError(
-                "Real model data is missing. Provide phishing-detection/data/phishing_dataset.csv "
-                "or set ALLOW_SYNTHETIC_DATA=true for local development only."
-            )
-        print("Dataset not found, generating synthetic data…")
-        rng = np.random.RandomState(42)
-        n = 2500 if SETTINGS.app_env == "demo" else 11055
-        data = {col: rng.choice([-1, 0, 1], size=n, p=[0.45, 0.10, 0.45]) for col in FEATURE_NAMES}
-        data["result"] = rng.choice([-1, 1], size=n, p=[0.55, 0.45])
-        df = pd.DataFrame(data)
-        _model_data_source = "synthetic"
-
-    feature_cols = [c for c in df.columns if c != "result"]
-    _train_feature_cols = feature_cols
-    X = df[feature_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
-    y = df["result"].map({-1: 0, 1: 1}).fillna(0).astype(int)
-
-    X_train, _, y_train, _ = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
-    _scaler = StandardScaler()
-    X_train_scaled = _scaler.fit_transform(X_train)
-    demo_mode = SETTINGS.app_env == "demo"
-    _model = RandomForestClassifier(
-        n_estimators=40 if demo_mode else 100,
-        random_state=42,
-        n_jobs=1 if demo_mode else -1,
-    )
-    _model.fit(X_train_scaled, y_train)
-    print("Model trained and ready.")
-
-
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    _load_and_train()
-
-    global _content_pipeline
-    print("Training email-content text classifier (TF-IDF + Logistic Regression)…")
-    _content_pipeline = build_content_pipeline_from_env(seed=42)
-    m = _content_pipeline["metrics"]
-    print(
-        f"  → Content model ready: "
-        f"Acc={m['Accuracy']:.4f}  F1={m['F1']:.4f}  ROC_AUC={m['ROC_AUC']:.4f}  "
-        f"(train={m['n_train']}, test={m['n_test']})"
-    )
+    global _content_pipeline, _content_model_error
+    if SETTINGS.content_model_enabled:
+        if not SETTINGS.content_model_artifact or not SETTINGS.content_model_artifact_sha256:
+            _content_pipeline = None
+            _content_model_error = (
+                "Content ML is enabled but CONTENT_MODEL_ARTIFACT and "
+                "CONTENT_MODEL_ARTIFACT_SHA256 are not both configured."
+            )
+        else:
+            try:
+                _content_pipeline = load_content_pipeline_artifact(
+                    Path(SETTINGS.content_model_artifact),
+                    SETTINGS.content_model_artifact_sha256,
+                )
+                _content_model_error = None
+                print("Loaded verified offline email-content model artifact.")
+            except ValueError as exc:
+                _content_pipeline = None
+                _content_model_error = f"Content-model artifact rejected: {exc}"
+                print(_content_model_error)
+            except Exception as exc:
+                _content_pipeline = None
+                _content_model_error = (
+                    f"Content-model artifact unavailable ({type(exc).__name__})."
+                )
+                print(_content_model_error)
+    else:
+        _content_pipeline = None
+        _content_model_error = None
+        print("Content ML disabled; verified heuristic and message-structure analysis remain available.")
     yield
 
 
@@ -1162,6 +1125,44 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
 
 _rate_limit_lock = threading.Lock()
 _rate_limit_buckets: dict[str, deque[float]] = {}
+
+
+def _rate_limit_key(request: Request) -> str:
+    """Use the ASGI server's trusted peer address, never a raw forwarding header."""
+    client_ip = request.client.host if request.client else "unknown"
+    return f"{client_ip}:{request.url.path}"
+
+
+def _record_rate_limit_hit(
+    bucket_key: str,
+    *,
+    now: float,
+    buckets: dict[str, deque[float]],
+    limit: int,
+    capacity: int,
+    window_seconds: float,
+) -> bool:
+    cutoff = now - window_seconds
+    stale_keys = []
+    for key, hits in buckets.items():
+        while hits and hits[0] <= cutoff:
+            hits.popleft()
+        if not hits:
+            stale_keys.append(key)
+    for key in stale_keys:
+        buckets.pop(key, None)
+
+    if bucket_key not in buckets:
+        if len(buckets) >= capacity:
+            oldest_key = min(buckets, key=lambda key: buckets[key][-1])
+            buckets.pop(oldest_key, None)
+        buckets[bucket_key] = deque()
+
+    bucket = buckets[bucket_key]
+    if len(bucket) >= limit:
+        return False
+    bucket.append(now)
+    return True
 
 
 def _with_security_headers(response):
@@ -1196,33 +1197,23 @@ async def security_middleware(request: Request, call_next):
             ))
 
     if request.method == "POST" and request.url.path.startswith("/api/"):
-        forwarded = request.headers.get("x-forwarded-for", "")
-        client_ip = forwarded.split(",", 1)[0].strip()
-        if not client_ip:
-            client_ip = request.client.host if request.client else "unknown"
-        bucket_key = f"{client_ip}:{request.url.path}"
+        bucket_key = _rate_limit_key(request)
         now = time.monotonic()
-        cutoff = now - 60.0
 
         with _rate_limit_lock:
-            bucket = _rate_limit_buckets.setdefault(bucket_key, deque())
-            while bucket and bucket[0] <= cutoff:
-                bucket.popleft()
-            if len(bucket) >= RATE_LIMIT_PER_MINUTE:
+            if not _record_rate_limit_hit(
+                bucket_key,
+                now=now,
+                buckets=_rate_limit_buckets,
+                limit=RATE_LIMIT_PER_MINUTE,
+                capacity=RATE_LIMIT_BUCKET_CAPACITY,
+                window_seconds=60.0,
+            ):
                 return _with_security_headers(JSONResponse(
                     status_code=429,
                     content={"detail": "Too many requests; try again in a minute"},
                     headers={"Retry-After": "60"},
                 ))
-            bucket.append(now)
-
-            if len(_rate_limit_buckets) > 4096:
-                stale = [
-                    key for key, hits in _rate_limit_buckets.items()
-                    if not hits or hits[-1] <= cutoff
-                ]
-                for key in stale[:1024]:
-                    _rate_limit_buckets.pop(key, None)
 
     return _with_security_headers(await call_next(request))
 
@@ -1239,14 +1230,18 @@ async def serve_index():
 @app.get("/health")
 async def health():
     """Liveness/readiness probe for deployments and load balancers."""
-    ok = _model is not None and _scaler is not None
     return JSONResponse(
-        status_code=200 if ok else 503,
+        status_code=200,
         content={
-            "status": "ok" if ok else "starting",
-            "model_loaded": ok,
+            "status": "ok",
+            "model_loaded": _content_pipeline is not None,
             "content_model_loaded": _content_pipeline is not None,
-            "model_data_source": _model_data_source,
+            "content_model_error": _content_model_error,
+            "model_data_source": (
+                _content_pipeline.get("metrics", {}).get("data_source")
+                if _content_pipeline is not None else None
+            ),
+            "sender_analysis_method": "sender-domain-heuristics",
             "deployment_profile": SETTINGS.app_env,
             "email_verification_enabled": SETTINGS.enable_email_verification,
         },
@@ -1258,12 +1253,16 @@ async def health():
 async def get_metrics():
     payload = {
         "metrics": MODEL_METRICS,
-        "feature_importances": FEATURE_IMPORTANCES,
+        "benchmark_scope": "uci-phishing-websites-only",
+        "benchmark_note": (
+            "These historical notebook metrics describe the UCI Phishing Websites "
+            "dataset and are not email-sender accuracy claims."
+        ),
     }
     if _content_pipeline is not None:
         m = _content_pipeline["metrics"]
         payload["content_model"] = {
-            "name": "TF-IDF (word + char n-gram) + Logistic Regression (email body text)",
+            "name": f"TF-IDF (word + char n-gram) + {m.get('model', 'classifier')}",
             "metrics":     m,
             "data_source": m.get("data_source", ""),
             "top_terms":   _content_pipeline["top_terms"],
@@ -1280,6 +1279,7 @@ async def get_features():
 async def get_public_config():
     return JSONResponse({
         "email_verification_enabled": SETTINGS.enable_email_verification,
+        "content_model_enabled": SETTINGS.content_model_enabled,
         "full_version_local_only": True,
     })
 
@@ -1290,34 +1290,22 @@ class EmailRequest(BaseModel):
 
 @app.post("/api/analyze-email")
 async def analyze_email(request: EmailRequest):
-    if _model is None:
-        raise HTTPException(status_code=503, detail="Model not yet loaded")
-
     email = request.email.strip()
     if not email:
         raise HTTPException(status_code=400, detail="Email address is required")
 
     feature_dict, risk_indicators, is_disposable, is_suspected_disposable, disposable_service = extract_email_features(email)
 
-    # Build feature vector in the order the scaler was fitted on
-    cols = _train_feature_cols if _train_feature_cols else FEATURE_NAMES
+    # The UCI model is a phishing-*website* benchmark. Its URL/HTML feature
+    # weights are not valid probabilities for sender addresses, so this API
+    # deliberately reports an explainable heuristic risk score instead.
+    cols = FEATURE_NAMES
     feature_values = [feature_dict.get(name, 0) for name in cols]
-    X = np.array([feature_values], dtype=float)
-    X_scaled = _scaler.transform(X)
-
-    prediction = int(_model.predict(X_scaled)[0])
-    proba = _model.predict_proba(X_scaled)[0]
-    phishing_prob = float(proba[0])
-    legitimate_prob = float(proba[1])
-
-    # Annotate feature values with metadata
-    importances = _model.feature_importances_
-    cols = _train_feature_cols if _train_feature_cols else FEATURE_NAMES
     info_map = {f["name"]: f for f in FEATURE_INFO}
     feature_breakdown = []
-    for i, name in enumerate(cols):
+    for name in cols:
         info = info_map.get(name, {"label": name, "email_desc": "", "group": ""})
-        val = int(float(feature_values[i]))
+        val = int(float(feature_dict.get(name, 0)))
         # Choose description that matches the current value direction
         if val == 1:
             desc = info.get("email_desc_pos") or info.get("email_desc", "")
@@ -1329,34 +1317,36 @@ async def analyze_email(request: EmailRequest):
             "email_desc": desc,
             "group": info["group"],
             "value": val,
-            "importance": round(float(importances[i]), 4),
         })
+    feature_breakdown.sort(key=lambda item: {-1: 0, 0: 1, 1: 2}[item["value"]])
 
-    # Sort by importance
-    feature_breakdown.sort(key=lambda x: x["importance"], reverse=True)
-
-    # Risk level summary
     high_risks = sum(1 for r in risk_indicators if r["level"] == "high")
     med_risks = sum(1 for r in risk_indicators if r["level"] == "medium")
+    low_risks = sum(1 for r in risk_indicators if r["level"] == "low")
     phish_features = sum(1 for v in feature_values if v == -1)
-
-    # "Suspected phishing": ML classifies as legitimate, but ≥1 high-risk indicator
-    # flags a serious structural problem (fake business domain, brand impersonation, etc.)
-    is_suspected_phishing = (prediction == 1 and high_risks >= 1)
-
-    if is_suspected_phishing:
-        label = "Suspected Phishing"
-    elif prediction == 1:
-        label = "Legitimate Email"
+    risk_score = min(
+        100,
+        high_risks * 28
+        + med_risks * 10
+        + low_risks * 3
+        + (25 if is_disposable and not is_suspected_disposable else 0)
+        + (10 if is_suspected_disposable else 0),
+    )
+    if risk_score >= 80:
+        verdict, label = "critical", "Critical Sender Risk"
+    elif risk_score >= 60:
+        verdict, label = "high", "High Sender Risk"
+    elif risk_score >= 30:
+        verdict, label = "medium", "Suspicious Sender"
     else:
-        label = "Likely Phishing"
+        verdict, label = "low", "Low Sender Risk"
 
     return JSONResponse({
         "email": email,
-        "prediction": prediction,
+        "analysis_method": "sender-domain-heuristics",
+        "verdict": verdict,
         "label": label,
-        "phishing_probability": round(phishing_prob * 100, 1),
-        "legitimate_probability": round(legitimate_prob * 100, 1),
+        "risk_score": risk_score,
         "risk_indicators": risk_indicators,
         "high_risk_count": high_risks,
         "med_risk_count": med_risks,
@@ -1365,7 +1355,6 @@ async def analyze_email(request: EmailRequest):
         "is_disposable": is_disposable,
         "is_suspected_disposable": is_suspected_disposable,
         "disposable_service": disposable_service,
-        "is_suspected_phishing": is_suspected_phishing,
     })
 
 
@@ -1557,8 +1546,6 @@ CONTENT_RULES: dict = {
             "i found your contact", "i got your email from",
             "dying of cancer", "terminal illness", "last wish",
             "refugee", "stranded abroad", "stuck in",
-            "revert back", "kindly revert", "do the needful",
-            "i am mr", "i am mrs", "i am dr", "i am barrister",
         ],
     },
 }
@@ -1670,7 +1657,7 @@ def _has_generic_salutation(text: str) -> bool:
 
 
 def _detect_non_native_phrases(text: str) -> list[str]:
-    """Detect English phrases atypical of native speakers, common in overseas scam emails."""
+    """Report regional/formal English variants without treating them as risk."""
     markers = [
         "kindly revert", "kindly do", "kindly note", "kindly confirm",
         "kindly send", "kindly provide", "revert back to me",
@@ -1687,13 +1674,44 @@ def _detect_non_native_phrases(text: str) -> list[str]:
 
 
 def _has_mismatched_link_text(text: str) -> bool:
-    """Detect markdown-style [text](url) or HTML href patterns where link text ≠ domain."""
-    md_links = re.findall(r'\[([^\]]+)\]\((https?://[^)]+)\)', text)
-    for link_text, url in md_links:
-        domain_match = re.search(r'https?://([^/\s]+)', url)
-        if domain_match:
-            domain = domain_match.group(1).lower()
-            if link_text.lower() not in domain and domain not in link_text.lower():
+    """Detect markdown and HTML links whose visible URL names another host."""
+    links = list(re.findall(r'\[([^\]]+)\]\((https?://[^)]+)\)', text))
+
+    class LinkCollector(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.href = None
+            self.visible = []
+            self.links = []
+
+        def handle_starttag(self, tag, attrs):
+            if tag.lower() == "a":
+                self.href = dict(attrs).get("href")
+                self.visible = []
+
+        def handle_data(self, data):
+            if self.href is not None:
+                self.visible.append(data)
+
+        def handle_endtag(self, tag):
+            if tag.lower() == "a" and self.href is not None:
+                self.links.append(("".join(self.visible).strip(), self.href))
+                self.href = None
+                self.visible = []
+
+    collector = LinkCollector()
+    try:
+        collector.feed(text)
+        links.extend(collector.links)
+    except Exception:
+        pass
+
+    for link_text, url in links:
+        target_host = (urlparse(url).hostname or "").lower()
+        visible_match = re.search(r'https?://([^/\s<]+)', link_text, re.IGNORECASE)
+        if target_host and visible_match:
+            visible_host = visible_match.group(1).lower().rstrip(".,)")
+            if visible_host != target_host:
                 return True
     return False
 
@@ -1812,13 +1830,13 @@ def analyze_email_content(subject: str, body: str) -> dict:
             "msg": f"Generic call-to-action phrases used {cta_count}× ('click here', 'click now') — legitimate emails use descriptive link text",
         })
 
-    # 11. Non-native English patterns
+    # 11. Regional/formal English variants are context only. Language variety
+    # is neither malicious nor a reliable signal against modern LLM phishing.
     non_native = _detect_non_native_phrases(full_orig)
     if non_native:
-        total_score += min(len(non_native), 2)
         extra_indicators.append({
-            "level": "medium",
-            "msg": f"Non-native English phrasing detected ({len(non_native)} pattern{'s' if len(non_native)>1 else ''}): \"{non_native[0]}\"{'…' if len(non_native)>1 else ''} — common in overseas scam campaigns",
+            "level": "info",
+            "msg": f"Regional or formal English phrasing observed: \"{non_native[0]}\"{'...' if len(non_native)>1 else ''}; not included in the risk score.",
         })
 
     # 12. Character obfuscation / leetspeak
@@ -1830,11 +1848,11 @@ def analyze_email_content(subject: str, body: str) -> dict:
             "msg": f"Character substitution / homoglyph obfuscation detected for: {', '.join(set(obfuscated))} — e.g. P@yP@l, Amaz0n — used to evade spam filters",
         })
 
-    # ── Safety signals (each reduces score by 1) ─────────────────────────────
+    # Cosmetic legitimacy signals are context only. Attackers can copy these
+    # strings, so they must never lower the risk score by themselves.
     safety_found = [
         desc for (kw, desc) in CONTENT_SAFETY_SIGNALS if kw.lower() in full_lower
     ]
-    total_score = max(0, total_score - len(safety_found))
 
     if total_score == 0:
         risk_level, risk_label = "safe",     "No Phishing Indicators Found"
@@ -1863,43 +1881,95 @@ def analyze_email_content(subject: str, body: str) -> dict:
 class ContentRequest(BaseModel):
     subject: str = Field(default="", max_length=500)
     body: str = Field(default="", max_length=50_000)
+    raw_email: str = Field(default="", max_length=60_000)
+
+
+def fuse_content_risk(
+    *,
+    ml_phishing_probability: float | None,
+    ml_decision_threshold: float,
+    heuristic_score: int,
+) -> dict:
+    """Conservatively fuse independent evidence without averaging it away."""
+    heuristic_risk = min(1.0, max(0.0, heuristic_score / 16.0))
+    ml_risk = 0.0 if ml_phishing_probability is None else min(
+        1.0, max(0.0, ml_phishing_probability)
+    )
+    combined = max(heuristic_risk, ml_risk)
+
+    if combined >= 0.80:
+        level, label = "critical", "Critical Risk — Very Likely Phishing"
+    elif heuristic_risk >= 0.55 or (
+        ml_phishing_probability is not None and ml_risk >= ml_decision_threshold
+    ):
+        level, label = "high", "High Risk — Likely Phishing"
+    elif combined >= 0.30:
+        level, label = "medium", "Medium Risk — Suspicious Content"
+    elif combined >= 0.10:
+        level, label = "low", "Low Risk — Minor Concerns"
+    else:
+        level, label = "safe", "No Phishing Indicators Found"
+    return {
+        "combined_phishing_score": round(combined * 100, 1),
+        "risk_level": level,
+        "risk_label": label,
+        "fusion_method": "conservative-evidence-max",
+    }
 
 
 @app.post("/api/analyze-content")
 async def analyze_content_endpoint(request: ContentRequest):
     subject = request.subject.strip()
     body    = request.body.strip()
+    structure = None
+    if request.raw_email.strip():
+        structure = analyze_raw_email(
+            request.raw_email,
+            trusted_authserv_ids=SETTINGS.trusted_authserv_ids,
+        )
+        subject = subject or structure["subject"]
+        body = body or structure["body"]
     if not subject and not body:
         raise HTTPException(status_code=400, detail="Subject or body is required")
 
     # 1. Rule-based heuristic scan (explainable categories + extra indicators)
     result = analyze_email_content(subject, body)
+    result["input_mode"] = "raw-email" if structure else "subject-body"
+    result["structure_score"] = structure["structure_score"] if structure else 0
+    if structure:
+        result["extra_indicators"].extend(structure["indicators"])
+        result["total_score"] += structure["structure_score"]
+        result["message_structure"] = {
+            key: structure[key]
+            for key in (
+                "from", "reply_to", "return_path", "auth_results",
+                "authentication_trusted", "attachments",
+            )
+        }
+        if result["total_score"] > 15:
+            result["risk_level"], result["risk_label"] = "critical", "Critical Risk — Very Likely Phishing"
+        elif result["total_score"] > 8:
+            result["risk_level"], result["risk_label"] = "high", "High Risk — Likely Phishing"
+        elif result["total_score"] > 3:
+            result["risk_level"], result["risk_label"] = "medium", "Medium Risk — Suspicious Content"
 
-    # 2. ML text classifier (TF-IDF + Logistic Regression)
+    # 2. Optional ML text classifier (TF-IDF + selected linear model)
     if _content_pipeline is not None:
         ml = predict_content(_content_pipeline, subject, body)
         result.update(ml)
         result["ml_metrics"] = _content_pipeline["metrics"]
 
-        # 3. Blend heuristic score with the ML probability into a single verdict.
-        #    Heuristic score → ~0.05 weight per point, capped at 0.6.
-        #    ML phishing probability → 0-1 weight.
-        heur_norm = min(result["total_score"] * 0.05, 0.6)
-        ml_norm   = ml["ml_phishing_probability"] / 100.0
-        combined  = 0.55 * ml_norm + 0.45 * heur_norm
-        result["combined_phishing_score"] = round(combined * 100, 1)
-
-        # Promote/demote risk label based on the blended score.
-        if combined >= 0.75:
-            result["risk_level"], result["risk_label"] = "critical", "Critical Risk — Very Likely Phishing"
-        elif combined >= 0.55:
-            result["risk_level"], result["risk_label"] = "high",     "High Risk — Likely Phishing"
-        elif combined >= 0.30:
-            result["risk_level"], result["risk_label"] = "medium",   "Medium Risk — Suspicious Content"
-        elif combined >= 0.10:
-            result["risk_level"], result["risk_label"] = "low",      "Low Risk — Minor Concerns"
-        else:
-            result["risk_level"], result["risk_label"] = "safe",     "No Phishing Indicators Found"
+        result.update(fuse_content_risk(
+            ml_phishing_probability=ml["ml_phishing_probability"] / 100.0,
+            ml_decision_threshold=float(_content_pipeline.get("decision_threshold", 0.5)),
+            heuristic_score=result["total_score"],
+        ))
+    else:
+        result.update(fuse_content_risk(
+            ml_phishing_probability=None,
+            ml_decision_threshold=0.5,
+            heuristic_score=result["total_score"],
+        ))
 
     return JSONResponse(result)
 
@@ -1914,11 +1984,52 @@ class VerifyRequest(BaseModel):
 
 
 # ── Helper: SMTP mailbox probe ────────────────────────────────────────────────
-def _smtp_probe(email: str, mx_host: str, timeout: int = 8) -> dict:
+def _resolve_public_smtp_addresses(
+    mx_host: str,
+    *,
+    resolver=socket.getaddrinfo,
+) -> list[str]:
+    """Resolve a mail host once and retain only globally routable targets."""
+    addresses: list[str] = []
+    try:
+        answers = resolver(mx_host, 25, type=socket.SOCK_STREAM)
+    except (OSError, socket.gaierror):
+        return addresses
+
+    for _family, _socktype, _proto, _canonname, sockaddr in answers:
+        address = str(sockaddr[0]).split("%", 1)[0]
+        try:
+            is_global = ipaddress.ip_address(address).is_global
+        except ValueError:
+            continue
+        if is_global and address not in addresses:
+            addresses.append(address)
+    return addresses
+
+
+def _smtp_probe(
+    email: str,
+    mx_host: str,
+    smtp_address: str | None = None,
+    timeout: int = 8,
+) -> dict:
     result = {"connectable": False, "result": "unverifiable", "message": ""}
+    if smtp_address is None:
+        public_addresses = _resolve_public_smtp_addresses(mx_host)
+        smtp_address = public_addresses[0] if public_addresses else None
+    try:
+        is_public_target = bool(
+            smtp_address and ipaddress.ip_address(smtp_address).is_global
+        )
+    except ValueError:
+        is_public_target = False
+    if not is_public_target:
+        result["message"] = f"SMTP target for {mx_host} is non-public or could not be validated."
+        return result
+
     try:
         smtp = smtplib.SMTP(timeout=timeout)
-        smtp.connect(mx_host, 25)
+        smtp.connect(smtp_address, 25)
         result["connectable"] = True
         smtp.helo("verify.phishguard.local")
         smtp.mail("")
@@ -2239,29 +2350,6 @@ def verify_email_endpoint(req: VerifyRequest):
         out["overall"] = "suspicious"
 
     return JSONResponse(out)
-
-
-# ── Legacy predict endpoint ───────────────────────────────────────────────────
-class PredictRequest(BaseModel):
-    features: dict
-
-
-@app.post("/api/predict")
-async def predict(request: PredictRequest):
-    if _model is None:
-        raise HTTPException(status_code=503, detail="Model not yet loaded")
-    cols = _train_feature_cols if _train_feature_cols else FEATURE_NAMES
-    feature_values = [int(request.features.get(name, 0)) for name in cols]
-    X = np.array([feature_values], dtype=float)
-    X_scaled = _scaler.transform(X)
-    prediction = int(_model.predict(X_scaled)[0])
-    proba = _model.predict_proba(X_scaled)[0]
-    return JSONResponse({
-        "prediction": prediction,
-        "label": "Legitimate Email" if prediction == 1 else "Likely Phishing",
-        "phishing_probability": round(float(proba[0]) * 100, 1),
-        "legitimate_probability": round(float(proba[1]) * 100, 1),
-    })
 
 
 if __name__ == "__main__":

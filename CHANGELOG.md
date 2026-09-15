@@ -22,6 +22,132 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-15 08:57 PT] — Trusted email evidence and offline model artifacts
+
+### Why
+- Uploaded `Authentication-Results` headers could claim `dmarc=pass` and
+  suppress real authentication failures without proving which receiver created
+  the header.
+- Protected-brand display names and internationalized lookalike domains were
+  not represented in raw-message structural risk.
+- Local SMTP verification could connect to private DNS targets, the in-memory
+  rate limiter trusted raw forwarding headers, and web startup could download
+  data and train the content model.
+
+### Files changed
+- `website/email_structure.py` and `website/config.py`: add configurable trusted
+  authentication-service IDs plus protected-brand, IDNA, and Unicode-confusable
+  identity signals.
+- `website/app.py`: enforce public SMTP targets, bound rate-limit state, ignore
+  raw forwarding headers, load only verified offline content-model artifacts,
+  and remove the dead `/api/predict` route and UCI runtime model state.
+- `website/content_model.py` and `website/prebuild_demo_model.py`: add versioned
+  SHA-256-verified artifacts, disable pickle-cache loading by default, strengthen
+  near-duplicate grouping, and report per-source sample counts.
+- `website/tests/`, `.env.example`, `render.yaml`, and project documentation:
+  add adversarial regression coverage and document the new safe defaults.
+
+### Effect
+- Untrusted authentication claims cannot affect scoring; configured receiver
+  results retain forwarding-aware DMARC handling.
+- Display-name, Punycode, and common Unicode lookalikes produce visible phishing
+  evidence while canonical brand domains remain clean.
+- SMTP cannot open a socket to non-global addresses, rate-limit memory is
+  bounded, and default web startup remains rules-only without network or model
+  training work.
+- Optional ML is deployed as a trusted offline artifact whose digest and runtime
+  compatibility are checked before use.
+- A fresh 61,707-row offline evaluation with normalized family grouping retained
+  zero train/test group overlap and measured 99.67% phishing recall, 0.33%
+  false-negative rate, 98.80% precision, 99.21% accuracy, 0.9997 PR AUC, and a
+  learned F2 threshold of 0.3636 on the 12,342-row held-out fold.
+
+## [2026-09-04 13:52 PT] — Full corpus recall benchmark and campaign URL isolation
+
+### Why
+- The first full evaluation grouped PhishNChips rows by unique record ID even
+  when multiple variants shared the same phishing URL. That could allow one
+  campaign's variants to cross training and test boundaries.
+- The project needed a direct comparison between the default `0.5` decision
+  threshold and the learned recall-oriented threshold.
+
+### Files changed
+- `website/content_model.py`: groups PhishNChips variants by `url_raw` before
+  falling back to record ID/text hash; reports the grouping policy, default
+  threshold recall, and recall gain; defaults bundled synthetic-template
+  augmentation to off; bumps the cache key to v5.2.
+- `website/tests/test_detection_behavior.py`: verifies shared campaign URLs use
+  one group and the new threshold-comparison metrics are present.
+- `.env.example`: documents `CONTENT_MODEL_AUGMENT_SYNTHETIC=false`.
+- `README.md`: records the dated corpus evaluation and its limitations.
+
+### Effect
+- On the 12,342-row group-isolated holdout, the learned F2 threshold `0.3492`
+  achieved phishing recall `0.9980` and false-negative rate `0.0020`, compared
+  with recall `0.9951` at threshold `0.5` (`+0.0028`). Accuracy was `0.9921`,
+  precision `0.9869`, F1 `0.9924`, ROC AUC `0.9997`, PR AUC `0.9998`, and Brier
+  score `0.0058`; train/test group overlap was zero.
+- These remain offline mixed-corpus results rather than a production claim:
+  PhishNChips is synthetic, classic corpora lack campaign IDs, and the split is
+  not time-separated.
+
+## [2026-09-04 13:24 PT] — Evidence-preserving phishing detection and honest evaluation
+
+### Why
+- The sender endpoint applied a Random Forest trained on UCI phishing-website
+  URL/HTML features to similarly named email-address heuristics. That domain
+  mismatch made its displayed “phishing probability” and feature importances
+  invalid for email senders.
+- The content model split individual rows, allowing variants from the same
+  source/template family to appear in training and evaluation, and fitted its
+  TF-IDF vocabulary before cross-validation. Both could inflate reported
+  performance.
+- Full authentication headers, sender-identity alignment, MIME attachments,
+  and actual HTML link destinations were unavailable to the detector. Weak ML
+  output could also average away strong rule evidence, while attacker-copyable
+  footer text reduced risk.
+
+### Files changed
+- `website/app.py`: replaced sender-model probability output with a declared
+  heuristic risk score; added raw-message input, conservative max-evidence
+  fusion, honest UCI metric scope, rules-only readiness, HTML-link parsing, and
+  neutral handling of regional English and safety-footer phrases.
+- `website/email_structure.py`: added RFC 5322/MIME parsing, SPF/DKIM/DMARC
+  result checks, From/Reply-To/Return-Path alignment, multipart HTML coverage,
+  and dangerous-attachment indicators.
+- `website/content_model.py`: added campaign/template group IDs,
+  `StratifiedGroupKFold`, per-fold TF-IDF fitting, out-of-fold F2 threshold
+  selection, phishing recall/FNR/PR-AUC/Brier reporting, cache invalidation,
+  and removal of automatic downloads from an unaudited PhishFuzzer mirror.
+- `website/config.py`, `.env.example`, and `render.yaml`: added
+  `CONTENT_MODEL_ENABLED`; the public Render profile now uses validated
+  sender/structure/rule analysis without synthetic model training.
+- `website/static/index.html`, `website/static/app.js`, and
+  `website/static/style.css`: added `.eml` upload, sender-risk terminology,
+  recall-focused metrics, scoped the historical UCI website benchmark, removed
+  invalid sender importance claims, and escaped attacker-controlled indicator
+  text before HTML rendering.
+- `website/tests/test_detection_behavior.py`, `website/tests/test_app_security.py`,
+  `website/tests/test_config.py`, and `website/static/app.test.mjs`: added
+  regression coverage for the new semantics, raw-message evidence, grouping,
+  deployment mode, multipart HTML, forwarded-mail authentication, and output
+  escaping.
+- `README.md` and `phishing-detection/README.md`: documented the new detector,
+  evaluation scope, dataset limitations, and reproducible quality gates.
+
+### Effect
+- Sender results no longer claim unsupported ML probabilities. Complete email
+  files can expose high-value phishing evidence that plain text omits.
+- Evaluation prevents train/test campaign-family overlap, learns a
+  recall-oriented threshold without using the held-out set, and reports the
+  metrics needed to measure missed phishing.
+- Strong structural/authentication evidence cannot be diluted by a weak text
+  score, copied safety footers do not evade detection, and regional language is
+  not treated as malicious.
+- The zero-cost public deployment starts without a synthetic model while
+  retaining useful explainable detection, and the regression suite verifies
+  both model-enabled and rules-only behavior.
+
 ## [2026-06-20 15:15 PT] — README features-table sync with v4.3 content classifier
 
 ### Why

@@ -28,7 +28,10 @@ def _parse_bool(environ: Mapping[str, str], name: str, default: bool = False) ->
 class Settings:
     app_env: str
     enable_email_verification: bool
-    allow_synthetic_data: bool
+    content_model_enabled: bool = False
+    trusted_authserv_ids: frozenset[str] = frozenset()
+    content_model_artifact: str | None = None
+    content_model_artifact_sha256: str | None = None
 
     @property
     def is_production(self) -> bool:
@@ -49,10 +52,17 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     settings = Settings(
         app_env=app_env,
         enable_email_verification=_parse_bool(source, "ENABLE_EMAIL_VERIFICATION"),
-        allow_synthetic_data=_parse_bool(source, "ALLOW_SYNTHETIC_DATA"),
+        content_model_enabled=_parse_bool(source, "CONTENT_MODEL_ENABLED", False),
+        trusted_authserv_ids=frozenset(
+            item.strip().lower()
+            for item in source.get("TRUSTED_AUTHSERV_IDS", "").split(",")
+            if item.strip()
+        ),
+        content_model_artifact=(source.get("CONTENT_MODEL_ARTIFACT", "").strip() or None),
+        content_model_artifact_sha256=(
+            source.get("CONTENT_MODEL_ARTIFACT_SHA256", "").strip().lower() or None
+        ),
     )
-    if settings.is_production and settings.allow_synthetic_data:
-        raise ValueError("ALLOW_SYNTHETIC_DATA cannot be enabled when APP_ENV=production")
     if settings.is_public_service and settings.enable_email_verification:
         raise ValueError(
             "ENABLE_EMAIL_VERIFICATION cannot be enabled when APP_ENV is demo or production"

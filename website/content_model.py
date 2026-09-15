@@ -1,60 +1,118 @@
 """
 content_model.py — Machine-learning text classifier for email *content*.
 
-Data pipeline (priority order):
-  1. Real-world corpus from
-       phishing-detection/data/Phishing_Email.csv
-     (18,650 emails, 11,322 Safe + 7,328 Phishing — Hugging Face mirror of the
-      'Phishing Email Detection' Kaggle dataset, originally by 'Cyber Cop',
-      licensed LGPL-3.0).
-     If the file is missing it can be auto-downloaded via
-     `ensure_real_dataset()`.
-  2. As a fallback (or to AUGMENT the real data) the module also ships a
-     ~2,000-sample template-based synthetic corpus.
+Data pipeline:
+  1. Public phishing-email corpora loaded from phishing-detection/data.
+  2. Optional modern synthetic benchmark corpora and local augmentation.
+  3. Every sample carries a campaign/template group so paraphrases from one
+     source family cannot appear on both sides of evaluation.
 
 Model:
   • FeatureUnion of two TF-IDF vectorisers:
         – word 1-2 grams      (semantic phrases)
         – char_wb 3-5 grams   (catches obfuscation like P@yP@l, Amaz0n)
-  • Logistic Regression (liblinear, balanced class weights).
+  • Group-isolated model selection across three linear classifiers.
+  • A phishing threshold selected from training-fold predictions using F2,
+    which gives recall more weight than precision.
 
 Exports:
   build_content_pipeline(...) -> dict with keys:
       "vectorizer"      : fitted FeatureUnion
       "clf"             : fitted LogisticRegression
-      "metrics"         : { Accuracy, Precision, Recall, F1, ROC_AUC,
-                            n_train, n_test, data_source }
+      "metrics"         : includes phishing recall, false-negative rate,
+                            PR AUC, Brier score, threshold, and split metadata
       "top_terms"       : 25 most phishing-indicative tokens
 """
 
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import pickle
+import platform
 import random
+import re
 import time
 import urllib.request
+from collections import Counter
 from pathlib import Path
 from typing import List, Tuple
 
 import numpy as np
 import pandas as pd
+import sklearn
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score, roc_auc_score,
+    average_precision_score, brier_score_loss, precision_recall_curve,
 )
-from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split
+from sklearn.model_selection import (
+    StratifiedGroupKFold, cross_val_predict, cross_val_score,
+)
 from sklearn.naive_bayes import ComplementNB
-from sklearn.pipeline import FeatureUnion
+from sklearn.pipeline import FeatureUnion, Pipeline
 from sklearn.svm import LinearSVC
 
 # ── Data-source configuration ────────────────────────────────────────────────
 _DEFAULT_DATA_DIR = (Path(__file__).resolve().parent.parent
                      / "phishing-detection" / "data")
+_ARTIFACT_SCHEMA = "phishguard-content-model-v1"
+_PIPELINE_KEYS = {"vectorizer", "clf", "decision_threshold", "metrics", "top_terms"}
+
+
+def _major_minor(version: str) -> str:
+    return ".".join(version.split(".")[:2])
+
+
+def save_content_pipeline_artifact(pipeline: dict, path: Path | str) -> str:
+    """Write a versioned offline model artifact and return its SHA-256 digest."""
+    if not _PIPELINE_KEYS.issubset(pipeline):
+        missing = ", ".join(sorted(_PIPELINE_KEYS - set(pipeline)))
+        raise ValueError(f"Content-model pipeline is missing required fields: {missing}")
+    envelope = {
+        "schema": _ARTIFACT_SCHEMA,
+        "python": _major_minor(platform.python_version()),
+        "scikit_learn": _major_minor(sklearn.__version__),
+        "pipeline": pipeline,
+    }
+    payload = pickle.dumps(envelope, protocol=pickle.HIGHEST_PROTOCOL)
+    digest = hashlib.sha256(payload).hexdigest()
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(destination.suffix + ".tmp")
+    temporary.write_bytes(payload)
+    temporary.replace(destination)
+    return digest
+
+
+def load_content_pipeline_artifact(
+    path: Path | str,
+    expected_sha256: str,
+) -> dict:
+    """Verify a trusted build artifact before deserializing and validating it."""
+    expected = (expected_sha256 or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", expected):
+        raise ValueError("A complete content-model SHA-256 digest is required")
+    payload = Path(path).read_bytes()
+    actual = hashlib.sha256(payload).hexdigest()
+    if not hmac.compare_digest(actual, expected):
+        raise ValueError("Content-model SHA-256 digest does not match")
+
+    envelope = pickle.loads(payload)
+    if not isinstance(envelope, dict) or envelope.get("schema") != _ARTIFACT_SCHEMA:
+        raise ValueError("Unsupported content-model artifact schema")
+    if envelope.get("python") != _major_minor(platform.python_version()):
+        raise ValueError("Content-model artifact Python version is incompatible")
+    if envelope.get("scikit_learn") != _major_minor(sklearn.__version__):
+        raise ValueError("Content-model artifact scikit-learn version is incompatible")
+    pipeline = envelope.get("pipeline")
+    if not isinstance(pipeline, dict) or not _PIPELINE_KEYS.issubset(pipeline):
+        raise ValueError("Content-model artifact has an invalid pipeline payload")
+    return pipeline
 
 # Each entry is (csv_name, downloader_url_or_None, schema_hint)
 #   schema_hint == "phishing_email_csv"  : columns ['Email Text', 'Email Type']
@@ -74,7 +132,8 @@ _DATASETS = [
      "https://zenodo.org/records/8339691/files/Nazario.csv",
      "champa_csv"),
 
-    # 2026 LLM-generated / modern attack-grounded benchmarks
+    # Modern synthetic email benchmarks. Treat these as augmentation/evaluation
+    # data, not as evidence of performance on naturally occurring mail.
     ("phishnchips_core.csv",
      "https://huggingface.co/datasets/AreLit/PhishNChips/"
      "resolve/main/core_emails.csv?download=true",
@@ -87,18 +146,11 @@ _DATASETS = [
      "https://huggingface.co/datasets/AreLit/PhishNChips/"
      "resolve/main/infrastructure_phishing_expanded.csv?download=true",
      "phishnchips_csv"),
-    ("phishfuzzer_train.csv",
-     "https://huggingface.co/datasets/hai123xz/PhishFuzzer-split/"
-     "resolve/main/train.csv?download=true",
-     "phishfuzzer_csv"),
-    ("phishfuzzer_val.csv",
-     "https://huggingface.co/datasets/hai123xz/PhishFuzzer-split/"
-     "resolve/main/val.csv?download=true",
-     "phishfuzzer_csv"),
-    ("phishfuzzer_test.csv",
-     "https://huggingface.co/datasets/hai123xz/PhishFuzzer-split/"
-     "resolve/main/test.csv?download=true",
-     "phishfuzzer_csv"),
+    # Supported when supplied locally, but not auto-downloaded from the
+    # previously configured unaudited mirror.
+    ("phishfuzzer_train.csv", None, "phishfuzzer_csv"),
+    ("phishfuzzer_val.csv", None, "phishfuzzer_csv"),
+    ("phishfuzzer_test.csv", None, "phishfuzzer_csv"),
 ]
 
 
@@ -138,9 +190,19 @@ def ensure_real_dataset(data_dir: Path | None = None,
     return primary_path
 
 
+def _text_group(text: str, source: str) -> str:
+    normalized = str(text).strip().lower()
+    normalized = re.sub(r"\b[\w.+-]+@[\w.-]+\.[a-z]{2,}\b", " <email> ", normalized)
+    normalized = re.sub(r"\b(?:https?://|www\.)\S+", " <url> ", normalized)
+    normalized = re.sub(r"\b\d+\b", " <number> ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:20]
+    return f"{source}:{digest}"
+
+
 def _load_one_corpus(path: Path, schema: str
-                     ) -> Tuple[List[str], List[int]] | None:
-    """Load a single CSV and return (texts, labels) where label 1 = phishing."""
+                     ) -> Tuple[List[str], List[int], List[str]] | None:
+    """Load one corpus as texts, labels, and leak-resistant family groups."""
     if not path.exists():
         return None
     try:
@@ -153,7 +215,10 @@ def _load_one_corpus(path: Path, schema: str
             )
             df = df.dropna(subset=["label"])
             df["label"] = df["label"].astype(int)
-            return df["Email Text"].astype(str).tolist(), df["label"].tolist()
+            texts = df["Email Text"].astype(str).tolist()
+            return texts, df["label"].tolist(), [
+                _text_group(text, path.name) for text in texts
+            ]
 
         elif schema == "champa_csv":
             df = pd.read_csv(path)
@@ -172,15 +237,19 @@ def _load_one_corpus(path: Path, schema: str
                 case=False, regex=True, na=False)]
 
             df["label"] = df["label"].astype(int)
-            return df["text"].tolist(), df["label"].tolist()
+            texts = df["text"].tolist()
+            return texts, df["label"].tolist(), [
+                _text_group(text, path.name) for text in texts
+            ]
 
         elif schema == "phishnchips_csv":
-            # PhishNChips v5.2 (April 2026) — email_content is a JSON blob.
+            # PhishNChips v5.2 — synthetic email_content stored as JSON.
             df = pd.read_csv(path)
             df = df.dropna(subset=["email_content", "phish_label"])
             texts:  List[str] = []
             labels: List[int] = []
-            for raw, lab in zip(df["email_content"], df["phish_label"]):
+            groups: List[str] = []
+            for row_index, (raw, lab) in enumerate(zip(df["email_content"], df["phish_label"])):
                 try:
                     obj = json.loads(raw) if isinstance(raw, str) else raw
                 except Exception:
@@ -192,10 +261,20 @@ def _load_one_corpus(path: Path, schema: str
                     continue
                 texts.append(text)
                 labels.append(int(lab))
-            return texts, labels
+                campaign_url = str(
+                    df.iloc[row_index].get("url_raw", "") or ""
+                ).strip().lower()
+                sample_id = str(df.iloc[row_index].get("id", "") or "").strip()
+                groups.append(
+                    f"{path.name}:url:{hashlib.sha256(campaign_url.encode()).hexdigest()[:20]}"
+                    if campaign_url and campaign_url != "nan"
+                    else f"{path.name}:id:{sample_id}" if sample_id
+                    else _text_group(text, path.name)
+                )
+            return texts, labels, groups
 
         elif schema == "phishfuzzer_csv":
-            # PhishFuzzer (Nov 2026) — three-class: Phishing / Spam / Valid.
+            # Optional local PhishFuzzer export — Phishing / Spam / Valid.
             # Map Phishing → 1, Valid → 0, drop Spam (spam ≠ phishing and
             # mixing them dilutes the binary signal we care about).
             df = pd.read_csv(path)
@@ -206,7 +285,12 @@ def _load_one_corpus(path: Path, schema: str
             df["text"]    = (df["Subject"] + "\n\n" + df["Body"]).str.strip()
             df = df[df["text"].str.len() > 20]
             df["label"] = (df["Type"] == "Phishing").astype(int)
-            return df["text"].tolist(), df["label"].tolist()
+            texts = df["text"].tolist()
+            if "Original_ID" in df.columns:
+                groups = [f"phishfuzzer:{value}" for value in df["Original_ID"].astype(str)]
+            else:
+                groups = [_text_group(text, path.name) for text in texts]
+            return texts, df["label"].tolist(), groups
 
     except Exception as exc:
         print(f"  ✗ Failed to load {path.name}: {exc}")
@@ -216,24 +300,26 @@ def _load_one_corpus(path: Path, schema: str
 
 def load_real_corpus(csv_path: Path | None = None,
                      max_rows: int | None = None,
-                     ) -> Tuple[List[str], List[int], str] | None:
+                     ) -> Tuple[List[str], List[int], List[str], str] | None:
     """
     Load and merge all available real datasets.
-    Returns (texts, labels, source_description) or None if no data is found.
+    Returns (texts, labels, groups, source_description) or None if unavailable.
     Labels: 1 = phishing, 0 = legitimate.
     """
     data_dir = (csv_path.parent if csv_path else _DEFAULT_DATA_DIR)
     all_texts:  List[str] = []
     all_labels: List[int] = []
+    all_groups: List[str] = []
     per_source: List[str] = []
 
     for name, _url, schema in _DATASETS:
         loaded = _load_one_corpus(data_dir / name, schema)
         if loaded is None:
             continue
-        texts, labels = loaded
+        texts, labels, groups = loaded
         all_texts.extend(texts)
         all_labels.extend(labels)
+        all_groups.extend(groups)
         n_phish = sum(labels)
         per_source.append(
             f"{name} (n={len(texts)}: {n_phish} phishing / {len(labels)-n_phish} legitimate)"
@@ -247,9 +333,10 @@ def load_real_corpus(csv_path: Path | None = None,
         idx = rng.choice(len(all_texts), size=max_rows, replace=False)
         all_texts  = [all_texts[i]  for i in idx]
         all_labels = [all_labels[i] for i in idx]
+        all_groups = [all_groups[i] for i in idx]
 
-    source = "Real corpora: " + " + ".join(per_source)
-    return all_texts, all_labels, source
+    source = "Corpus files: " + " + ".join(per_source)
+    return all_texts, all_labels, all_groups, source
 
 
 # ── Vocabulary pools used to instantiate templates ────────────────────────────
@@ -919,9 +1006,9 @@ _LEGIT_TEMPLATES: List[Tuple[str, str]] = [
      "(link in calendar invite)\n\nCancel or reschedule: calendly.com/"
      "rescheduling/abcdef\n\nPowered by Calendly"),
 
-    # ── 2026-Q2 hardening: brand-issued transactional patterns that the
-    #    PhishFuzzer corpus impersonates a lot. We need real exemplars in
-    #    the legit class to keep the brand-name signal balanced.
+    # ── Brand-issued transactional patterns that synthetic attack corpora
+    #    often imitate. Legitimate templates keep brand names from becoming
+    #    a phishing-only shortcut.
 
     ("Your Amazon.com order has shipped",
      "Hello {name},\n\nYour package is on the way! "
@@ -1049,7 +1136,12 @@ def _instantiate(template: Tuple[str, str], rng: random.Random) -> str:
     return text
 
 
-def generate_content_corpus(seed: int = 42, n_variants: int = 160) -> Tuple[List[str], List[int]]:
+def generate_content_corpus(
+    seed: int = 42,
+    n_variants: int = 160,
+    *,
+    return_groups: bool = False,
+):
     """
     Return (texts, labels) where label = 1 → phishing, 0 → legitimate.
     Each template is instantiated `n_variants` times with randomised placeholders.
@@ -1058,25 +1150,30 @@ def generate_content_corpus(seed: int = 42, n_variants: int = 160) -> Tuple[List
 
     texts:  List[str] = []
     labels: List[int] = []
+    groups: List[str] = []
 
-    for tmpl in _PHISHING_TEMPLATES:
+    for template_index, tmpl in enumerate(_PHISHING_TEMPLATES):
         for _ in range(n_variants):
             texts.append(_instantiate(tmpl, rng))
             labels.append(1)
+            groups.append(f"synthetic:phishing:{template_index}")
 
     # Match the legitimate count to the phishing count so the corpus is balanced.
     n_phishing = len(texts)
     per_legit  = max(1, n_phishing // len(_LEGIT_TEMPLATES))
-    for tmpl in _LEGIT_TEMPLATES:
+    for template_index, tmpl in enumerate(_LEGIT_TEMPLATES):
         for _ in range(per_legit):
             texts.append(_instantiate(tmpl, rng))
             labels.append(0)
+            groups.append(f"synthetic:legitimate:{template_index}")
 
     # Light shuffle for good measure
-    combined = list(zip(texts, labels))
+    combined = list(zip(texts, labels, groups))
     rng.shuffle(combined)
-    texts, labels = zip(*combined)
+    texts, labels, groups = zip(*combined)
 
+    if return_groups:
+        return list(texts), list(labels), list(groups)
     return list(texts), list(labels)
 
 
@@ -1106,7 +1203,7 @@ def _build_vectorizer() -> FeatureUnion:
     return FeatureUnion([("word", word_tfidf), ("char", char_tfidf)])
 
 
-_CACHE_VERSION = "v4.3-2026-brand-saturated-logreg-preferred"  # bump to invalidate stale caches
+_CACHE_VERSION = "v5.2-campaign-grouped-f2-threshold"  # bump to invalidate stale caches
 
 
 def _cache_path() -> Path:
@@ -1135,7 +1232,7 @@ def build_content_pipeline(
     seed: int          = 42,
     *,
     use_real: bool     = True,
-    augment_synthetic: bool = True,
+    augment_synthetic: bool = False,
     n_variants: int    = 160,
     max_real_rows: int | None = None,
     auto_download: bool       = True,
@@ -1185,19 +1282,24 @@ def build_content_pipeline(
     sources: List[str] = []
     texts:  List[str]  = []
     labels: List[int]  = []
+    groups: List[str]  = []
 
     if use_real:
         real = load_real_corpus(max_rows=max_real_rows)
         if real is not None:
-            r_texts, r_labels, src = real
+            r_texts, r_labels, r_groups, src = real
             texts.extend(r_texts)
             labels.extend(r_labels)
+            groups.extend(r_groups)
             sources.append(src)
 
     if (not texts) or augment_synthetic:
-        s_texts, s_labels = generate_content_corpus(seed=seed, n_variants=n_variants)
+        s_texts, s_labels, s_groups = generate_content_corpus(
+            seed=seed, n_variants=n_variants, return_groups=True,
+        )
         texts.extend(s_texts)
         labels.extend(s_labels)
+        groups.extend(s_groups)
         sources.append(
             f"Synthetic corpus (n={len(s_texts)}: "
             f"{sum(s_labels)} phishing / {len(s_labels)-sum(s_labels)} legitimate)"
@@ -1206,20 +1308,16 @@ def build_content_pipeline(
     if not texts:
         raise RuntimeError("No training data could be assembled.")
 
-    # Shuffle so train/test split sees a mix of sources
-    rng = random.Random(seed)
-    combined = list(zip(texts, labels))
-    rng.shuffle(combined)
-    texts, labels = zip(*combined)
-    texts, labels = list(texts), list(labels)
-
-    X_train_txt, X_test_txt, y_train, y_test = train_test_split(
-        texts, labels, test_size=0.2, random_state=seed, stratify=labels,
-    )
-
-    vectorizer = _build_vectorizer()
-    X_train = vectorizer.fit_transform(X_train_txt)
-    X_test  = vectorizer.transform(X_test_txt)
+    # Keep every campaign/template family in exactly one side of the split.
+    # This prevents paraphrases of a single seed from inflating test metrics.
+    outer_cv = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=seed)
+    train_idx, test_idx = next(outer_cv.split(texts, labels, groups))
+    X_train_txt = [texts[i] for i in train_idx]
+    X_test_txt = [texts[i] for i in test_idx]
+    y_train = [labels[i] for i in train_idx]
+    y_test = np.asarray([labels[i] for i in test_idx])
+    train_groups = [groups[i] for i in train_idx]
+    test_groups = [groups[i] for i in test_idx]
 
     # ── Model selection ──────────────────────────────────────────────────────
     # Try three competitive linear models and pick the best by 3-fold CV ROC AUC
@@ -1240,12 +1338,17 @@ def build_content_pipeline(
         ])
 
     cv_results = []
-    cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=seed)
+    cv = StratifiedGroupKFold(n_splits=3, shuffle=True, random_state=seed)
     print("Model selection — 3-fold CV ROC AUC on the training fold:")
     for name, est in candidates:
         t0 = time.time()
+        estimator = Pipeline([
+            ("vectorizer", _build_vectorizer()),
+            ("classifier", est),
+        ])
         scores = cross_val_score(
-            est, X_train, y_train, cv=cv, scoring="roc_auc",
+            estimator, X_train_txt, y_train, groups=train_groups,
+            cv=cv, scoring="roc_auc",
             n_jobs=1 if fast_mode else -1,
         )
         mean = float(scores.mean())
@@ -1268,11 +1371,39 @@ def build_content_pipeline(
     best_name = best["name"]
     print(f"Selected best model: {best_name} (CV AUC = {best['cv_auc_mean']:.4f})"
           + ("  [LogReg preferred on tie]" if best is lr and best is not best_raw else ""))
-    clf = dict(candidates)[best_name]
-    clf.fit(X_train, y_train)
+    best_estimator = Pipeline([
+        ("vectorizer", _build_vectorizer()),
+        ("classifier", dict(candidates)[best_name]),
+    ])
 
-    y_pred  = clf.predict(X_test)
-    y_proba = clf.predict_proba(X_test)[:, 1]
+    # Select the phishing decision threshold from out-of-fold predictions,
+    # optimizing F2 so missed phishing carries more cost than false alarms.
+    oof_proba = cross_val_predict(
+        best_estimator, X_train_txt, y_train, groups=train_groups, cv=cv,
+        method="predict_proba", n_jobs=1 if fast_mode else -1,
+    )[:, 1]
+    precisions, recalls, thresholds = precision_recall_curve(y_train, oof_proba)
+    if len(thresholds):
+        f2 = (5 * precisions[:-1] * recalls[:-1]) / np.maximum(
+            4 * precisions[:-1] + recalls[:-1], 1e-12,
+        )
+        decision_threshold = float(thresholds[int(np.argmax(f2))])
+    else:
+        decision_threshold = 0.5
+    decision_threshold = min(0.95, max(0.05, decision_threshold))
+
+    best_estimator.fit(X_train_txt, y_train)
+    y_proba = best_estimator.predict_proba(X_test_txt)[:, 1]
+    y_pred = (y_proba >= decision_threshold).astype(int)
+    default_y_pred = (y_proba >= 0.5).astype(int)
+    phishing_recall = float(recall_score(
+        y_test, y_pred, pos_label=1, zero_division=0,
+    ))
+    default_phishing_recall = float(recall_score(
+        y_test, default_y_pred, pos_label=1, zero_division=0,
+    ))
+    vectorizer = best_estimator.named_steps["vectorizer"]
+    clf = best_estimator.named_steps["classifier"]
 
     metrics = {
         "Accuracy":   round(float(accuracy_score(y_test, y_pred)), 4),
@@ -1280,8 +1411,25 @@ def build_content_pipeline(
         "Recall":     round(float(recall_score(y_test, y_pred, zero_division=0)), 4),
         "F1":         round(float(f1_score(y_test, y_pred, zero_division=0)), 4),
         "ROC_AUC":    round(float(roc_auc_score(y_test, y_proba)), 4),
+        "PR_AUC":     round(float(average_precision_score(y_test, y_proba)), 4),
+        "Brier":      round(float(brier_score_loss(y_test, y_proba)), 4),
+        "Phishing_Recall": round(phishing_recall, 4),
+        "False_Negative_Rate": round(1 - phishing_recall, 4),
+        "Default_Threshold_Phishing_Recall": round(default_phishing_recall, 4),
+        "Recall_Gain_vs_0_5": round(phishing_recall - default_phishing_recall, 4),
+        "decision_threshold": round(decision_threshold, 4),
         "n_train":    int(len(y_train)),
         "n_test":     int(len(y_test)),
+        "split_strategy": "stratified-group-5-fold",
+        "grouping_policy": (
+            "source record/template family or campaign URL when available; "
+            "normalized family hash fallback with URLs, email addresses, and "
+            "volatile numeric tokens collapsed"
+        ),
+        "group_overlap": len(set(train_groups) & set(test_groups)),
+        "source_sample_counts": dict(sorted(Counter(
+            group.split(":", 1)[0] for group in groups
+        ).items())),
         "data_source": " + ".join(sources),
         "model":      best_name,
         "model_selection": cv_results,
@@ -1313,6 +1461,7 @@ def build_content_pipeline(
     pipeline = {
         "vectorizer": vectorizer,
         "clf":        clf,
+        "decision_threshold": decision_threshold,
         "metrics":    metrics,
         "top_terms":  top_terms,
     }
@@ -1336,8 +1485,8 @@ def build_content_pipeline_from_env(seed: int = 42) -> dict:
 
     ``PHISHGUARD_DEPLOYMENT_PROFILE=free-demo`` keeps the full request/response
     behaviour but avoids downloading the large public corpora on a 512 MB
-    hobby instance.  The default profile is unchanged and still uses the full
-    real-data pipeline.
+    hobby instance. The builder runs only as an explicit offline operation;
+    loading its pickle cache requires a separate opt-in.
     """
     profile = os.getenv("PHISHGUARD_DEPLOYMENT_PROFILE", "full").strip().lower()
     free_demo = profile in {"free", "free-demo", "demo"}
@@ -1367,11 +1516,11 @@ def build_content_pipeline_from_env(seed: int = 42) -> dict:
     return build_content_pipeline(
         seed=seed,
         use_real=use_real,
-        augment_synthetic=env_bool("CONTENT_MODEL_AUGMENT_SYNTHETIC", True),
+        augment_synthetic=env_bool("CONTENT_MODEL_AUGMENT_SYNTHETIC", False),
         n_variants=env_int("CONTENT_MODEL_N_VARIANTS", 24 if free_demo else 160),
         max_real_rows=max_real_rows,
         auto_download=env_bool("CONTENT_MODEL_AUTO_DOWNLOAD", not free_demo),
-        use_cache=True,
+        use_cache=env_bool("CONTENT_MODEL_USE_CACHE", False),
         fast_mode=env_bool("CONTENT_MODEL_FAST_MODE", free_demo),
     )
 
@@ -1420,7 +1569,8 @@ def predict_content(pipeline: dict, subject: str, body: str) -> dict:
     proba = pipeline["clf"].predict_proba(X)[0]
     phishing_prob   = float(proba[1])
     legitimate_prob = float(proba[0])
-    prediction = int(pipeline["clf"].predict(X)[0])  # 1 = phishing, 0 = legitimate
+    threshold = float(pipeline.get("decision_threshold", 0.5))
+    prediction = int(phishing_prob >= threshold)  # 1 = phishing, 0 = legitimate
 
     # Per-token contribution for this email (for explainability)
     feature_names = _flat_feature_names(pipeline["vectorizer"])
@@ -1431,6 +1581,7 @@ def predict_content(pipeline: dict, subject: str, body: str) -> dict:
             "ml_legitimate_probability": round(legitimate_prob * 100, 1),
             "ml_label":  "Likely Phishing" if prediction == 1 else "Likely Legitimate",
             "ml_prediction":       prediction,
+            "ml_decision_threshold": round(threshold * 100, 1),
             "ml_top_contributors": [],
         }
     x_dense = X.toarray()[0]
@@ -1466,5 +1617,6 @@ def predict_content(pipeline: dict, subject: str, body: str) -> dict:
         "ml_legitimate_probability": round(legitimate_prob * 100, 1),
         "ml_label":                  "Likely Phishing" if prediction == 1 else "Likely Legitimate",
         "ml_prediction":             prediction,
+        "ml_decision_threshold":     round(threshold * 100, 1),
         "ml_top_contributors":       top_contribs,
     }

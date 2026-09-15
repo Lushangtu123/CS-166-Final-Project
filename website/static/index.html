@@ -33,26 +33,26 @@
       <span class="gradient-text">Detection</span>
     </h1>
     <p class="hero-subtitle">
-      An ML-powered phishing email detector that automatically extracts 30 structural
-      features from any email address and uses a Random Forest classifier to determine
-      whether it is a phishing or scam email.
+      Analyze sender/domain risk or upload a complete email for authentication-header,
+      identity-alignment, link, attachment, and content checks. An optional text model
+      is evaluated with campaign-isolated splits and a phishing-recall-first threshold.
     </p>
     <div class="hero-stats">
       <div class="stat-card">
         <div class="stat-value">97.47%</div>
-        <div class="stat-label">Accuracy</div>
+        <div class="stat-label">Website Benchmark Accuracy</div>
       </div>
       <div class="stat-card">
         <div class="stat-value">0.9977</div>
-        <div class="stat-label">ROC AUC</div>
+        <div class="stat-label">Website Benchmark ROC AUC</div>
       </div>
       <div class="stat-card">
         <div class="stat-value">11,055</div>
-        <div class="stat-label">Training Samples</div>
+        <div class="stat-label">UCI Website Samples</div>
       </div>
       <div class="stat-card">
         <div class="stat-value">30</div>
-        <div class="stat-label">Extracted Features</div>
+        <div class="stat-label">Sender Risk Signals</div>
       </div>
     </div>
     <a href="#demo" class="btn btn-primary">Check an Email Address</a>
@@ -63,12 +63,12 @@
       <div class="orbit-ring">
         <div class="orbit-center">
           <span>🛡</span>
-          <div class="orbit-label">Random Forest</div>
+          <div class="orbit-label">Layered Signals</div>
         </div>
       </div>
       <!-- Dots are outside the ring so they never inherit its rotation -->
       <div class="orbit-dot dot-1">Domain</div>
-      <div class="orbit-dot dot-2">SSL</div>
+      <div class="orbit-dot dot-2">Auth</div>
       <div class="orbit-dot dot-3">Keywords</div>
       <div class="orbit-dot dot-4">Structure</div>
     </div>
@@ -80,7 +80,7 @@
   <div class="container">
     <div class="section-header">
       <h2>Live Demo</h2>
-      <p>Analyze an email address for structural phishing signals, or paste the full email content for a keyword-based risk scan.</p>
+      <p>Analyze a sender address, paste subject/body text, or upload the original .eml message for the strongest available evidence.</p>
     </div>
 
     <!-- Tab Switcher -->
@@ -142,7 +142,7 @@
           </div>
         </div>
         <div class="vb-right">
-          <div class="vb-prob-label">Phishing Probability</div>
+          <div class="vb-prob-label" id="vb-prob-label">Sender Risk Score</div>
           <div class="vb-prob" id="vb-prob"></div>
         </div>
       </div>
@@ -152,17 +152,17 @@
         <!-- Col 1: Probability Bars + Risk Pills + Disposable Check -->
         <div class="result-col">
           <div class="col-card">
-            <h4 class="col-title">Probability</h4>
+            <h4 class="col-title">Heuristic Evidence</h4>
             <div class="prob-bars">
               <div class="prob-row">
-                <span class="prob-label phish-label">Phishing</span>
+                <span class="prob-label phish-label">Risk</span>
                 <div class="prob-bar-track">
                   <div class="prob-bar phish-bar" id="phish-bar"></div>
                 </div>
                 <span class="prob-pct" id="phish-pct"></span>
               </div>
               <div class="prob-row">
-                <span class="prob-label legit-label">Legit</span>
+                <span class="prob-label legit-label">No detected risk</span>
                 <div class="prob-bar-track">
                   <div class="prob-bar legit-bar" id="legit-bar"></div>
                 </div>
@@ -287,7 +287,7 @@
         <!-- Col 3: Feature Breakdown -->
         <div class="result-col">
           <div class="col-card">
-            <h4 class="col-title">Top Features (by importance)</h4>
+            <h4 class="col-title">Most Relevant Sender Signals</h4>
             <div id="feature-breakdown-list" class="feature-breakdown"></div>
           </div>
         </div>
@@ -356,6 +356,11 @@
     <div class="tab-panel hidden" id="panel-email-content">
 
       <div class="content-input-card">
+        <div class="raw-email-upload-row">
+          <label class="content-label" for="raw-email-file">Full email file (recommended)</label>
+          <input id="raw-email-file" class="raw-email-file" type="file" accept=".eml,message/rfc822,text/plain" />
+          <div id="raw-email-status" class="raw-email-status">Upload an .eml file to include authentication headers, sender alignment, HTML links, and attachment metadata.</div>
+        </div>
         <div class="content-input-subject-row">
           <label class="content-label" for="content-subject">Subject</label>
           <input
@@ -458,12 +463,10 @@
           <div class="col-card content-method-note">
             <h4 class="col-title">About This Analysis</h4>
             <p class="method-note-text">
-              This analysis combines a <strong>TF-IDF + Logistic Regression</strong>
-              text classifier with a <strong>keyword &amp; heuristic</strong> scan.
-              The ML model produces a phishing probability from the raw email text;
-              the heuristic layer adds explainable category signals (urgency phrases,
-              credential requests, brand impersonation, etc.). The final risk verdict
-              blends both signals.
+              This analysis combines RFC 5322 headers, sender alignment, HTML links,
+              attachments, and explainable content signals. When a validated text model
+              is configured, its group-isolated probability and learned threshold are
+              added without allowing weak text evidence to erase strong structural risk.
             </p>
           </div>
         </div>
@@ -485,8 +488,8 @@
 <section class="section section-dark" id="performance">
   <div class="container">
     <div class="section-header">
-      <h2>Model Performance</h2>
-      <p>Comparison of four classifiers on a held-out 20% test set (2,211 samples).</p>
+      <h2>Archived Website Benchmark</h2>
+      <p>Historical course-notebook results on the UCI Phishing Websites dataset (2,211 held-out rows). These are not email-sender accuracy claims.</p>
     </div>
 
     <div class="metrics-grid">
@@ -514,8 +517,12 @@
           <canvas id="metricsChart"></canvas>
         </div>
         <div class="chart-card">
-          <h3 class="chart-title">Top 10 Feature Importances (Random Forest)</h3>
-          <canvas id="importanceChart"></canvas>
+          <h3 class="chart-title">Scope Matters</h3>
+          <p class="method-note-text">
+            The UCI model learned URL and web-page features. PhishGuard does not reuse
+            those learned weights for sender addresses. Sender checks are explicitly
+            labeled heuristics; email-text metrics appear only when that model is enabled.
+          </p>
         </div>
       </div>
     </div>
@@ -526,8 +533,8 @@
 <section class="section" id="features">
   <div class="container">
     <div class="section-header">
-      <h2>30 Extracted Features</h2>
-      <p>The system automatically extracts three groups of 30 features from the email address. Each feature is encoded as −1 (phishing indicator), 0 (suspicious), or +1 (legitimate indicator).</p>
+      <h2>Explainable Sender Signals</h2>
+      <p>The sender-only mode evaluates 30 address and domain indicators. They are heuristic evidence—not probabilities learned from the UCI website dataset.</p>
     </div>
 
     <div class="feature-cards-grid">
@@ -596,25 +603,25 @@
     </div>
 
     <div class="top3-section">
-      <h3>Top 3 Most Discriminative Features</h3>
+      <h3>Highest-Priority Sender Checks</h3>
       <div class="top3-grid">
         <div class="top3-card">
           <div class="top3-rank">#1</div>
           <div class="top3-name">Known Legitimate Provider</div>
-          <div class="top3-imp">Importance: 0.3199</div>
-          <div class="top3-desc">Whether the sender domain is a well-known mail service (Gmail, Outlook, QQ, etc.). The single strongest predictor — phishing emails rarely come from trusted providers.</div>
+          <div class="top3-imp">Explainable heuristic</div>
+          <div class="top3-desc">Recognizes common providers as context while still requiring users to inspect the complete message for spoofing and compromised-account attacks.</div>
         </div>
         <div class="top3-card">
           <div class="top3-rank">#2</div>
-          <div class="top3-name">Username Length</div>
-          <div class="top3-imp">Importance: 0.2503</div>
-          <div class="top3-desc">Phishing email usernames are often unusually long. Normal user-created usernames are typically under 30 characters.</div>
+          <div class="top3-name">Brand/Domain Mismatch</div>
+          <div class="top3-imp">High-risk heuristic</div>
+          <div class="top3-desc">Flags brand names embedded in unrelated or look-alike domains, a more direct sender-risk signal than username length alone.</div>
         </div>
         <div class="top3-card">
           <div class="top3-rank">#3</div>
-          <div class="top3-name">High-Traffic Mail Platform</div>
-          <div class="top3-imp">Importance: 0.0708</div>
-          <div class="top3-desc">Major platforms like Gmail and Outlook are strong legitimacy signals. Phishing domains are almost never ranked in any traffic index.</div>
+          <div class="top3-name">Authentication & Identity Alignment</div>
+          <div class="top3-imp">Available with raw .eml input</div>
+          <div class="top3-desc">Checks SPF, DKIM, and DMARC results plus From, Reply-To, and Return-Path domain mismatches.</div>
         </div>
       </div>
     </div>
@@ -626,50 +633,50 @@
   <div class="container">
     <div class="section-header">
       <h2>How It Works</h2>
-      <p>A six-stage end-to-end machine learning pipeline.</p>
+      <p>A layered detection pipeline designed to preserve strong phishing evidence.</p>
     </div>
 
     <div class="pipeline-steps">
       <div class="step">
         <div class="step-num">01</div>
         <div class="step-body">
-          <div class="step-title">Dataset Acquisition</div>
-          <div class="step-desc">UCI Phishing Websites Dataset (ID 327) — 11,055 labeled samples, 30 features. Downloaded via <code>ucimlrepo</code> with local CSV caching and a synthetic fallback generator.</div>
+          <div class="step-title">Input Parsing</div>
+          <div class="step-desc">Accept a sender address, subject/body text, or a complete RFC 5322 message. Raw messages expose headers, MIME parts, HTML, and attachment names.</div>
         </div>
       </div>
       <div class="step">
         <div class="step-num">02</div>
         <div class="step-body">
-          <div class="step-title">Exploratory Data Analysis</div>
-          <div class="step-desc">Class distribution (44.3% phishing / 55.7% legitimate), zero missing values, full 31×31 correlation heatmap, and per-feature-group signal analysis.</div>
+          <div class="step-title">Sender Identity Checks</div>
+          <div class="step-desc">Evaluate suspicious domains, look-alike brands, risky TLDs, disposable patterns, and From / Reply-To / Return-Path alignment.</div>
         </div>
       </div>
       <div class="step">
         <div class="step-num">03</div>
         <div class="step-body">
-          <div class="step-title">Preprocessing</div>
-          <div class="step-desc">Label remapping (−1 → 0 phishing, 1 → 1 legitimate), stratified 80/20 split, StandardScaler fitted on training data only — no data leakage.</div>
+          <div class="step-title">Message Structure Checks</div>
+          <div class="step-desc">Inspect SPF/DKIM/DMARC results, dangerous attachments, IP and shortened URLs, and visible-link versus destination mismatches.</div>
         </div>
       </div>
       <div class="step">
         <div class="step-num">04</div>
         <div class="step-body">
-          <div class="step-title">Model Training</div>
-          <div class="step-desc">Four classifiers: Logistic Regression, Random Forest (100 trees), SVM (RBF kernel), Decision Tree. All trained in under 3 seconds on an Apple M-series processor.</div>
+          <div class="step-title">Explainable Content Rules</div>
+          <div class="step-desc">Score urgency, credential requests, threats, obfuscation, and other suspicious behaviors. Attacker-controlled footer text cannot lower the score.</div>
         </div>
       </div>
       <div class="step">
         <div class="step-num">05</div>
         <div class="step-body">
-          <div class="step-title">Email Feature Extraction</div>
-          <div class="step-desc">The 30 UCI structural features are mapped to email address analysis: domain reputation, keyword detection, username entropy, brand spoofing checks — all offline, no network calls required.</div>
+          <div class="step-title">Optional Text Model</div>
+          <div class="step-desc">Fit TF-IDF inside group-isolated cross-validation, keep campaign/template families together, and learn an F2-optimized phishing threshold from training folds.</div>
         </div>
       </div>
       <div class="step">
         <div class="step-num">06</div>
         <div class="step-body">
-          <div class="step-title">Real-Time Inference</div>
-          <div class="step-desc">FastAPI REST backend serves the trained Random Forest. Input any email address and receive an instant verdict with per-feature explanations and risk indicators.</div>
+          <div class="step-title">Conservative Evidence Fusion</div>
+          <div class="step-desc">Use the strongest credible evidence so a weak model score cannot average away clear structural or authentication risk.</div>
         </div>
       </div>
     </div>
