@@ -22,6 +22,34 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-17 13:32 PT] — Smoother scroll reveal in "How It Works"
+
+### Why
+- User observed that the pipeline step text appeared abruptly when scrolling
+  into the "How It Works" section.
+- Root cause: `.step` (and `.stat-card`, `.feature-category-card`,
+  `.top3-card`) declare their own `transition` for hover effects. Being later
+  in the stylesheet with equal specificity, they overrode `.reveal`'s
+  transition, so opacity snapped in instantly while only the transform eased.
+  In addition, stagger delays were fixed at load time by child index, so a
+  step entering the viewport alone still waited up to 350 ms.
+
+### Files changed
+- `website/static/style.css` — `.reveal` now animates via a `reveal-in`
+  keyframe (0.8 s, `cubic-bezier(0.16, 1, 0.3, 1)`, 18px rise) with
+  `animation-delay: var(--reveal-delay)`, independent of element transitions;
+  reduced-motion block updated accordingly.
+- `website/static/app.js` — `setupScrollReveal()` computes stagger per
+  IntersectionObserver batch (60 ms between siblings that enter together, 0 ms
+  for a lone entrant), and removes `.reveal/.in-view` on `animationend` so
+  hover transforms work normally afterwards; threshold relaxed to 0.05 /
+  `-6%` root margin.
+
+### Effect
+- Opacity and position now ease together for every revealed element; steps
+  scrolled into view one at a time start animating immediately.
+- `node --test website/static/app.test.mjs` 6/6 passing; `node --check` OK.
+
 ## [2026-09-17 13:07 PT] — Modern fluid restyle (supersedes the HUD theme)
 
 ### Why
