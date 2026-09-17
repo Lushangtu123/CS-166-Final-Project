@@ -22,6 +22,48 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-17 12:41 PT] — Calm sci-fi HUD restyle of the web frontend
+
+### Why
+- User request: give the frontend a stronger science-fiction feel without
+  making it tiring to read or watch.
+- The previous theme was a generic GitHub-dark palette with a single fast
+  orbit animation and no visual hierarchy between labels, numbers, and prose.
+
+### Files changed
+- `website/static/style.css` — rewritten around a "calm HUD" design system:
+  deep-space palette (`#070b14` base, `#4fd1ff` cyan / `#3fd58f` mint accents),
+  fixed low-alpha aurora glow and fading 48px instrument grid on `body::before`
+  / `body::after`, `hud-frame` corner brackets, monospace uppercase labels for
+  all section/column/metric headers, radar hero (concentric rings, 20 s conic
+  sweep, 60 s orbiting signal pills), glowing probability bars, HUD-style
+  loading ring, `::file-selector-button` styling, `:focus-visible` outlines,
+  and a `prefers-reduced-motion` block that freezes ambient motion and pins
+  orbit pills to static positions.
+- `website/static/index.html` — cache-busted assets to `?v=15`; added
+  `color-scheme`/`theme-color` metas, inline SVG shield brand mark with a
+  `SIGNAL CONSOLE` tag, hero badge with a slow pulse dot, secondary
+  "How It Works" hero button, numbered `section-eyebrow` labels (01–04), and
+  `hud-frame` on the input, disposable-info, and chart cards.
+- `website/static/app.js` — aligned hardcoded verdict/score colours and the
+  Chart.js bar, grid, legend, and tooltip colours to the new palette. No
+  behavioural logic changed.
+
+### Effect
+- Fatigue controls: decorative layers stay at ≤ 11 % alpha, every ambient
+  animation is ≥ 20 s per cycle (aurora drift 48 s, radar sweep 20 s, orbit
+  60 s, pulse dot 2.8 s at low amplitude), no flicker/scanline effects, body
+  text remains 15px sans-serif on a near-black background, and reduced-motion
+  users get a fully static page.
+- Layout regressions fixed while restyling: the `No detected risk` probability
+  label no longer wraps to three lines (`.prob-label` 36px → 96px) and the
+  content-tab `Analyze Content` button is no longer collapsed to text height
+  (now 40px tall).
+- Verified with headless Chrome at 1440px and 414px on the hero, sender
+  critical-risk result, content critical-risk result, benchmark, features,
+  pipeline, and mobile views; `node --test website/static/app.test.mjs`
+  remains 6/6 passing and the backend suite still passes.
+
 ## [2026-09-15 19:36 PT] — Raw-sender, ASCII-link, and MIME hardening
 
 ### Why
