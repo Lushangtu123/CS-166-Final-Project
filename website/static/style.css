@@ -93,15 +93,22 @@ code {
 
 /* Scroll reveal. Implemented as a keyframe animation (not a transition) so
    elements that declare their own hover transitions cannot override the
-   opacity easing; JS removes the classes on animationend so hover transforms
-   work normally afterwards. --reveal-delay is set per batch by JS. */
+   opacity easing. JS toggles: .in-view (entered), .from-above (entered from
+   the top edge, so it rises down instead of up), .settled (animation done →
+   fill dropped so hover transforms work). --reveal-delay is set per batch. */
 .reveal { opacity: 0; }
 .reveal.in-view {
   animation: reveal-in 0.8s cubic-bezier(0.16, 1, 0.3, 1) both;
   animation-delay: var(--reveal-delay, 0ms);
 }
+.reveal.in-view.from-above { animation-name: reveal-in-down; }
+.reveal.in-view.settled { animation: none; opacity: 1; }
 @keyframes reveal-in {
   from { opacity: 0; transform: translateY(18px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes reveal-in-down {
+  from { opacity: 0; transform: translateY(-18px); }
   to   { opacity: 1; transform: none; }
 }
 

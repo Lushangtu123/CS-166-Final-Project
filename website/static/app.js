@@ -21,7 +21,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 });
 
 // ── Scroll reveal ────────────────────────────────────────────────────────────
-// Elements fade/slide in the first time they enter the viewport. Without
+// Elements fade/slide in each time they enter the viewport, from the side they
+// arrive on; once fully out of view they reset so the effect replays. Without
 // IntersectionObserver (or with reduced-motion) nothing is hidden, so content
 // is always reachable.
 const REVEAL_SELECTORS = [
@@ -45,6 +46,14 @@ function setupScrollReveal() {
   });
 
   const observer = new IntersectionObserver(entries => {
+    // Elements that fully left the viewport are reset so they can replay.
+    entries
+      .filter(entry => !entry.isIntersecting)
+      .forEach(entry => {
+        entry.target.classList.remove('in-view', 'settled', 'from-above');
+        entry.target.style.removeProperty('--reveal-delay');
+      });
+
     // Stagger only among siblings that enter the viewport in the same batch,
     // so an element scrolled into view on its own starts immediately.
     const perParent = new Map();
@@ -56,19 +65,22 @@ function setupScrollReveal() {
         const parent = el.parentElement;
         const index = perParent.get(parent) || 0;
         perParent.set(parent, index + 1);
+        const rootTop = entry.rootBounds ? entry.rootBounds.top : 0;
+        const fromAbove = entry.boundingClientRect.top < rootTop;
         el.style.setProperty('--reveal-delay', `${Math.min(index, 6) * 60}ms`);
-        el.addEventListener('animationend', event => {
-          if (event.target !== el) return;
-          el.classList.remove('reveal', 'in-view');
-          el.style.removeProperty('--reveal-delay');
-        });
+        el.classList.remove('settled');
+        el.classList.toggle('from-above', fromAbove);
         el.classList.add('in-view');
-        observer.unobserve(el);
       });
-  }, { rootMargin: '0px 0px -6% 0px', threshold: 0.05 });
+  }, { rootMargin: '0px 0px -6% 0px', threshold: 0 });
 
   targets.forEach(el => {
     el.classList.add('reveal');
+    // Once the entrance finishes, drop the animation fill so the element's own
+    // hover transforms work; the element stays visible until it leaves view.
+    el.addEventListener('animationend', event => {
+      if (event.target === el) el.classList.add('settled');
+    });
     observer.observe(el);
   });
 }
