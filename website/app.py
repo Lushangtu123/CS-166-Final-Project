@@ -294,7 +294,7 @@ ABUSED_CCTLDS = {'ru', 'cn', 'tk', 'ml', 'ga', 'cf', 'gq', 'pw', 'xyz'}
 SHORT_SERVICES = {'bit.ly', 'tinyurl.com', 'goo.gl', 'ow.ly', 't.co', 'short.io'}
 
 # ── Disposable / temporary email domain database (500+ domains) ───────────────
-DISPOSABLE_DOMAINS = {
+_DISPOSABLE_DOMAIN_SOURCE = {
     # ── Mailinator family ──────────────────────────────────────────────────────
     'mailinator.com', 'mailinator.net', 'mailinator.org', 'mailinator2.com',
     'mailinater.com', 'suremail.info', 'binkmail.com', 'safetymail.info',
@@ -476,7 +476,7 @@ DISPOSABLE_DOMAINS = {
     'mailpipe.me', 'mailprotech.com', 'mailquack.com',
     'mailrock.biz', 'mailrox.com', 'mailsac.com',
     'mailseal.de', 'mailshuttle.com', 'mailslapping.com',
-    'mailsnull.com', 'mailsSource.com', 'mailstash.com',
+    'mailsnull.com', 'mailssource.com', 'mailstash.com',
     'mailsucker.net', 'mailtemp.eu', 'mailtome.de',
     'mailzapper.com', 'mailzeug.de',
 
@@ -535,30 +535,48 @@ DISPOSABLE_DOMAINS = {
     'zopqwhgqdn.com', 'zxcvbnm.co',     'zzi.us',
 }
 
-# Substrings that strongly suggest a disposable/temp-mail provider (checked against domain label)
-DISPOSABLE_DOMAIN_SUBSTRINGS = (
-    'tempmail', 'temp-mail', 'tempemail', 'tempinbox', 'tempbox',
-    'temporary', 'temporaryemail', 'tempr', 'tempsky',
-    'trashmail', 'trash-mail', 'trashcan', 'trashme', 'trashy',
-    'discardmail', 'discard', 'dispos',
-    'throwaway', 'throwam', 'throw-mail', 'throwamail',
-    'burnermail', 'burn-mail', 'burnmail', 'burnmy',
-    'spammail', 'spambox', 'spamgourmet', 'spamfree', 'spamkill',
-    'spamevader', 'spamnot', 'spamoff', 'spamthis', 'fakemail',
-    'fakeinbox', 'fake-inbox', 'fakeemail',
-    'guerrilla', 'sharklaser',
-    'dropmail', 'maildrop', 'getnada', 'nada.email', 'voidmail',
-    'mailinator', 'mailnull', 'mailnesia', 'mailinater',
-    'mailzilla', 'mailslap', 'mailsac', 'mailtemp', 'mailfort',
-    'disposable', 'anonbox', 'anonymbox', 'anonymail',
-    'incognitomail', 'selfdestructing', 'willselfdestruct',
-    'wegwerf', 'zehnminuten',
-    '10minute', 'tenminute', 'minutemail', '20minute', '30minute',
-    'harakiri', 'mailexpire', 'suicidemail',
-    'yopmail', 'jetable',
-    'lastmail', 'mohmal', 'emailwarden', 'inboxkitten',
-    'tmailinator', 'mailtothis', 'spammotel',
+PRIVACY_RELAY_DOMAINS = frozenset({
+    "anonaddy.com", "anonaddy.me", "duck.com", "duckmail.sytes.net",
+    "mozmail.com", "relay.firefox.com", "simplelogin.co", "simplelogin.fr",
+    "simplelogin.io",
+})
+_REGISTRY_DOMAIN_RE = re.compile(
+    r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z"
 )
+DISPOSABLE_DOMAINS = frozenset(
+    domain.strip().lower().rstrip(".")
+    for domain in _DISPOSABLE_DOMAIN_SOURCE
+    if _REGISTRY_DOMAIN_RE.fullmatch(domain.strip().lower().rstrip("."))
+) - PRIVACY_RELAY_DOMAINS
+
+_DISPOSABLE_DOMAIN_PATTERNS = tuple(re.compile(pattern) for pattern in (
+    r"^(?:temp|temporary)-?(?:mail|email|inbox|box)\d*$",
+    r"^(?:trash|discard|throwaway|burner)-?(?:mail|email|inbox|box)\d*$",
+    r"^(?:mail)-?(?:temp|trash|drop)\d*$",
+    r"^(?:fake)-?(?:mail|email|inbox)\d*$",
+    r"^(?:10|20|30|60)(?:minute|min)-?mail(?:box)?\d*$",
+))
+
+
+def _match_domain_registry(domain: str, candidates) -> str | None:
+    """Return the most specific exact or subdomain-boundary registry match."""
+    normalized = (domain or "").strip().lower().rstrip(".")
+    matches = [
+        candidate
+        for candidate in candidates
+        if normalized == candidate or normalized.endswith("." + candidate)
+    ]
+    return max(matches, key=len, default=None)
+
+
+def _matches_disposable_domain_pattern(domain: str) -> bool:
+    labels = (domain or "").strip().lower().rstrip(".").split(".")
+    return any(
+        pattern.fullmatch(label)
+        for label in labels
+        for pattern in _DISPOSABLE_DOMAIN_PATTERNS
+    )
 
 # ── Pre-computed model metrics ────────────────────────────────────────────────
 MODEL_METRICS = {
@@ -604,10 +622,10 @@ def _shannon_entropy(s: str) -> float:
     return -sum((f / len(s)) * math.log2(f / len(s)) for f in freq.values())
 
 
-def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | None]:
+def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | None, dict]:
     """
     Extract 30 phishing-indicator features from an email address.
-    Returns (feature_dict, risk_indicators, is_disposable, auto_gen_disposable, disposable_service_or_None).
+    Returns feature data plus the compatible booleans and detailed disposable classification.
     Each feature value ∈ {-1 (phishing), 0 (suspicious), 1 (legitimate)}.
     """
     email = email.strip().lower()
@@ -616,11 +634,30 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
     # Parse local part and domain
     at_count = email.count('@')
     if at_count == 0:
-        local, domain = email, ''
+        raw_local, domain = email, ''
     else:
         parts = email.split('@')
-        local = parts[0]
+        raw_local = parts[0]
         domain = parts[-1]
+
+    base_local, plus_separator, alias_tag = raw_local.partition("+")
+    is_subaddress = bool(
+        plus_separator
+        and base_local
+        and alias_tag
+        and re.fullmatch(r"[a-z0-9._%+\-]+", alias_tag)
+    )
+    address_alias_type = "subaddress" if is_subaddress else None
+    tag_stripped_local = base_local if is_subaddress else raw_local
+    local = tag_stripped_local
+    if domain == "gmail.com":
+        local = local.replace(".", "")
+    scoring_local = local if domain == "gmail.com" else tag_stripped_local
+    scoring_email = (
+        f"{scoring_local}@{domain}"
+        if at_count == 1
+        else email
+    )
 
     # Check for IP address domain before splitting
     is_ip_domain = bool(re.match(r'^\d{1,3}(\.\d{1,3}){3}$', domain))
@@ -635,6 +672,12 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
         base_domain = '.'.join(domain_parts[-2:]) if len(domain_parts) >= 2 else domain
         domain_label = domain_parts[-2] if len(domain_parts) >= 2 else domain
 
+    matched_disposable_domain = _match_domain_registry(domain, DISPOSABLE_DOMAINS)
+    matched_privacy_relay = _match_domain_registry(domain, PRIVACY_RELAY_DOMAINS)
+    matched_legit_provider = _match_domain_registry(domain, LEGIT_PROVIDERS)
+    matched_high_traffic = _match_domain_registry(domain, HIGH_TRAFFIC)
+    matched_mail_service = matched_disposable_domain or matched_privacy_relay
+
     features = {}
 
     # 1. having_ip_address
@@ -644,7 +687,7 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
         risk_indicators.append({"level": "high", "msg": f"Domain is a raw IP address ({domain}) instead of a hostname"})
 
     # 2. url_length
-    total_len = len(email)
+    total_len = len(scoring_email)
     features['url_length'] = -1 if total_len > 50 else (0 if total_len > 30 else 1)
     if total_len > 50:
         risk_indicators.append({"level": "medium", "msg": f"Email address is unusually long ({total_len} chars) — typical addresses are under 50 characters"})
@@ -671,27 +714,37 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
         risk_indicators.append({"level": "low", "msg": f"Domain contains a hyphen ({base_domain}) — major providers typically do not use hyphens in their domains"})
 
     # 7. having_sub_domain
-    subdomain_count = 0 if is_ip_domain else max(0, len(domain_parts) - 2)
+    subdomain_count = (
+        0
+        if is_ip_domain or matched_privacy_relay
+        else max(0, len(domain_parts) - 2)
+    )
     features['having_sub_domain'] = -1 if subdomain_count > 1 else (0 if subdomain_count == 1 else 1)
     if subdomain_count > 1:
         risk_indicators.append({"level": "medium", "msg": f"Domain has {subdomain_count} subdomain levels — phishing sites commonly use deep subdomains to impersonate brands"})
 
     # 8. https_token
-    has_http_in_email = 'http' in email
+    has_http_in_email = 'http' in scoring_email
     features['https_token'] = -1 if has_http_in_email else 1
     if has_http_in_email:
         risk_indicators.append({"level": "medium", "msg": "Email address contains the token 'http' — used to create visual confusion"})
 
     # 9. sslfinal_state (known legitimate provider)
-    is_known = (base_domain in LEGIT_PROVIDERS or
-                domain.endswith('.edu') or domain.endswith('.gov'))
+    is_known = bool(
+        matched_legit_provider
+        or matched_disposable_domain
+        or matched_privacy_relay
+        or domain.endswith('.edu')
+        or domain.endswith('.gov')
+    )
     features['sslfinal_state'] = 1 if is_known else -1
     if not is_known:
         risk_indicators.append({"level": "medium", "msg": f"Domain ({base_domain}) is not a recognized legitimate mail provider"})
 
     # 10. domain_registration_length (TLD)
-    features['domain_registration_length'] = 1 if tld in COMMON_TLDS else -1
-    if tld and tld not in COMMON_TLDS:
+    has_common_tld = tld in COMMON_TLDS or bool(matched_privacy_relay)
+    features['domain_registration_length'] = 1 if has_common_tld else -1
+    if tld and not has_common_tld:
         risk_indicators.append({"level": "medium", "msg": f"TLD '.{tld}' is uncommon — phishing emails often use obscure or cheap TLDs"})
 
     # 11. age_of_domain (domain length as proxy)
@@ -707,10 +760,12 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
         risk_indicators.append({"level": "low", "msg": f"Domain label contains digits ({domain_label}) — legitimate brand domains are usually letters only"})
 
     # 13. web_traffic (high-traffic provider)
-    features['web_traffic'] = 1 if base_domain in HIGH_TRAFFIC else -1
+    features['web_traffic'] = 1 if (matched_high_traffic or matched_privacy_relay) else -1
 
     # 14. page_rank (suspicious keywords in domain)
-    domain_susp = [kw for kw in SUSPICIOUS_KEYWORDS if kw in domain.replace('.', '')]
+    domain_susp = [] if matched_privacy_relay else [
+        kw for kw in SUSPICIOUS_KEYWORDS if kw in domain.replace('.', '')
+    ]
     features['page_rank'] = -1 if domain_susp else 1
     if domain_susp:
         risk_indicators.append({"level": "high", "msg": f"Domain contains phishing keywords: {', '.join(domain_susp[:3])}"})
@@ -728,15 +783,11 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
 
     # 17. favicon (excessive digits in local)
     num_ratio = sum(c.isdigit() for c in local) / max(len(local), 1)
-    features['favicon'] = -1 if num_ratio > 0.4 else 1
-    if num_ratio > 0.4:
-        risk_indicators.append({"level": "medium", "msg": f"Username has an abnormally high digit ratio ({num_ratio:.0%})"})
+    features['favicon'] = 1
 
     # 18. port (entropy of local part) — threshold matches the auto-gen heuristic
     local_entropy = _shannon_entropy(local)
-    features['port'] = -1 if local_entropy > 3.0 else 1
-    if local_entropy > 3.0:
-        risk_indicators.append({"level": "medium", "msg": f"Username has high randomness (entropy {local_entropy:.2f}) — likely auto-generated or randomly assigned"})
+    features['port'] = 1
 
     # 19. request_url (special chars in local)
     allowed = set('abcdefghijklmnopqrstuvwxyz0123456789._-+')
@@ -747,8 +798,11 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
 
     # 20. url_of_anchor (local part length)
     local_len = len(local)
-    features['url_of_anchor'] = -1 if local_len > 30 else (0 if local_len > 15 else 1)
-    if local_len > 30:
+    features['url_of_anchor'] = (
+        1 if matched_mail_service
+        else (-1 if local_len > 30 else (0 if local_len > 15 else 1))
+    )
+    if local_len > 30 and not matched_mail_service:
         risk_indicators.append({"level": "low", "msg": f"Username is unusually long ({local_len} characters) — typical usernames are under 30 characters"})
 
     # 21. links_in_tags (brand spoofing)
@@ -781,9 +835,8 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
     # 23. submitting_to_email (repeated chars)
     max_repeat = max((local.count(c) for c in set(local)), default=0)
     repeat_ratio = max_repeat / max(len(local), 1)
-    features['submitting_to_email'] = -1 if repeat_ratio > 0.5 and len(local) > 3 else 1
-    if repeat_ratio > 0.5 and len(local) > 3:
-        risk_indicators.append({"level": "low", "msg": "Username contains heavily repeated characters — possibly auto-generated"})
+    repeated_local = repeat_ratio > 0.5 and len(local) > 3
+    features['submitting_to_email'] = 1
 
     # 24. abnormal_url (digit-letter mix + homoglyph in domain label)
     digit_letter_mix = bool(re.search(r'(?<=[a-z])\d|(?<=\d)[a-z]', domain_label))
@@ -808,9 +861,7 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
 
     # 27. rightclick (auto-generated pattern: lowercase letters + digits)
     auto_gen = bool(re.match(r'^[a-z]{2,5}\d{4,12}$', local))
-    features['rightclick'] = -1 if auto_gen else 1
-    if auto_gen:
-        risk_indicators.append({"level": "medium", "msg": f"Username '{local}' matches an auto-generated pattern (short letters + digits)"})
+    features['rightclick'] = 1
 
     # 28. popupwindow (too many domain word segments)
     domain_words = re.findall(r'[a-z]+', domain_label)
@@ -822,7 +873,7 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
 
     # 30. links_pointing_to_page (basic email format validity)
     email_valid = bool(re.match(
-        r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$', email
+        r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$', scoring_email
     ))
     features['links_pointing_to_page'] = 1 if email_valid else -1
     if not email_valid:
@@ -928,22 +979,33 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
                 ),
             })
 
-    # ── Disposable email detection (separate from the 30 ML features) ─────────
-    # 1. Exact match against known domain list
-    is_disposable = base_domain in DISPOSABLE_DOMAINS
+    # ── Disposable email classification (separate from the 30 ML features) ────
+    disposable_status = "no_known_match"
+    disposable_confidence = "unknown"
+    matched_provider_domain = None
+    if matched_disposable_domain:
+        disposable_status = "known_disposable_provider"
+        disposable_confidence = "confirmed"
+        matched_provider_domain = matched_disposable_domain
+    elif matched_privacy_relay:
+        disposable_status = "privacy_relay"
+        disposable_confidence = "confirmed"
+        matched_provider_domain = matched_privacy_relay
+
+    is_disposable = disposable_status == "known_disposable_provider"
+    is_suspected_disposable = False
 
     # 2. Auto-generated username heuristic:
     #    High-entropy all-lowercase-letters username (no vowel pattern, no digits,
     #    length 8-20) on an unknown domain  →  very likely a randomly-generated
     #    disposable address even if the domain is not in the list.
-    auto_gen_disposable = False
-    if not is_disposable and local:
-        is_unknown_domain = base_domain not in LEGIT_PROVIDERS and base_domain not in HIGH_TRAFFIC
+    if not matched_disposable_domain and not matched_privacy_relay and local:
+        is_unknown_domain = not matched_legit_provider and not matched_high_traffic
 
-        # ── Multi-factor randomness scoring (unknown domain required) ──────────
+        # ── Multi-factor randomness scoring ───────────────────────────────────
         # Regex now allows . _ - separators (e.g. word.word, word-word patterns)
-        # Each factor contributes 1 point; flag as suspected when score ≥ 2.
-        if is_unknown_domain and bool(re.match(r'^[a-z0-9._-]{8,25}$', local)):
+        # Unknown domains use threshold 2; recognized providers use threshold 4.
+        if bool(re.fullmatch(r'[a-z0-9._-]{8,25}', local)):
 
             letters_only = ''.join(c for c in local if c.isalpha())
             digit_count  = sum(c.isdigit() for c in local)
@@ -992,13 +1054,26 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
                 'doe','johnson','williams','miller','moore','thomas','wright',
                 'walker','hall','allen','young','adams','nelson','carter',
             }
-            sep_parts = re.split(r'[._-]', local)
-            is_real_name = (
+            sep_parts = re.split(r'[._-]', tag_stripped_local)
+            is_separated_real_name = (
                 len(sep_parts) == 2 and
                 all(p.isalpha() and len(p) >= 2 for p in sep_parts) and
                 ((sep_parts[0] in _FIRST and sep_parts[1] in _LAST) or
                  (sep_parts[0] in _LAST  and sep_parts[1] in _FIRST))
             )
+            canonical_name = re.sub(r'[._-]', '', tag_stripped_local)
+            is_concatenated_real_name = any(
+                (
+                    canonical_name.startswith(first)
+                    and canonical_name[len(first):] in _LAST
+                )
+                or (
+                    canonical_name.endswith(first)
+                    and canonical_name[:-len(first)] in _LAST
+                )
+                for first in _FIRST
+            )
+            is_real_name = is_separated_real_name or is_concatenated_real_name
 
             if not is_real_name:
                 # Factor 1 – Shannon entropy indicates near-uniform character spread
@@ -1047,9 +1122,15 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
 
                 rnd_score = sum([f_entropy, f_vowels, f_digits, f_unique, f_noword, f_word_combo])
 
-                if rnd_score >= 2:
-                    auto_gen_disposable = True
-                    is_disposable = True
+                threshold = 2 if is_unknown_domain else 4
+                if rnd_score >= threshold:
+                    disposable_status = "suspicious_mailbox_pattern"
+                    disposable_confidence = "heuristic"
+                    is_suspected_disposable = True
+                    features['favicon'] = -1 if num_ratio > 0.4 else 1
+                    features['port'] = -1 if local_entropy > 3.0 else 1
+                    features['submitting_to_email'] = -1 if repeated_local else 1
+                    features['rightclick'] = -1 if auto_gen else 1
                     factors_hit = []
                     if f_entropy:    factors_hit.append(f"entropy {entropy:.2f}")
                     if f_vowels:     factors_hit.append(f"vowel {vowel_ratio:.0%}")
@@ -1058,31 +1139,66 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
                     if f_noword:     factors_hit.append("no real word")
                     if f_word_combo: factors_hit.append("unusual word combo")
                     risk_indicators.insert(0, {
-                        "level": "high",
+                        "level": "medium",
                         "msg": (
                             f"Username '{local}' matches {rnd_score}/6 randomness factors "
-                            f"({', '.join(factors_hit)}) on an unknown domain — "
-                            f"likely auto-generated disposable address"
+                            f"({', '.join(factors_hit)}) — the mailbox pattern looks "
+                            f"automatically generated, but account age and lifetime "
+                            f"cannot be confirmed"
                         ),
                     })
 
-    # 3. Pattern-based detection for unlisted providers
-    if not is_disposable and domain_label:
-        dl = domain_label.lower()
-        is_disposable = any(pat in dl for pat in DISPOSABLE_DOMAIN_SUBSTRINGS)
+    if (
+        disposable_status == "no_known_match"
+        and _matches_disposable_domain_pattern(domain)
+    ):
+        disposable_status = "suspicious_domain_pattern"
+        disposable_confidence = "heuristic"
+        is_suspected_disposable = True
+        risk_indicators.insert(0, {
+            "level": "medium",
+            "msg": (
+                f"Domain ({domain}) resembles a temporary-email provider name, "
+                f"but is not in the confirmed provider registry"
+            ),
+        })
 
-    disposable_service = base_domain if is_disposable else None
-    if is_disposable:
-        # Treat as strongest phishing signal — override statistical_report
+    disposable_service = matched_disposable_domain if is_disposable else None
+    if disposable_status == "known_disposable_provider":
         features['statistical_report'] = -1
-        if not auto_gen_disposable:
-            # Only insert domain-based banner when it wasn't already inserted above
-            risk_indicators.insert(0, {
-                "level": "high",
-                "msg": f"Disposable/temporary email address detected ({base_domain}) — these are anonymous, untrackable, and frequently used to bypass verification",
-            })
+        risk_indicators.insert(0, {
+            "level": "high",
+            "msg": f"Known disposable-email provider detected ({matched_disposable_domain}).",
+        })
+    elif disposable_status == "privacy_relay":
+        risk_indicators.insert(0, {
+            "level": "info",
+            "msg": (
+                f"Privacy relay or masked-address provider detected "
+                f"({matched_privacy_relay}); this is not phishing evidence by itself."
+            ),
+        })
 
-    return features, risk_indicators, is_disposable, auto_gen_disposable, disposable_service
+    if address_alias_type:
+        risk_indicators.append({
+            "level": "info",
+            "msg": "Address uses plus subaddressing; the tag is not a phishing signal.",
+        })
+
+    classification = {
+        "disposable_status": disposable_status,
+        "disposable_confidence": disposable_confidence,
+        "matched_provider_domain": matched_provider_domain,
+        "address_alias_type": address_alias_type,
+    }
+    return (
+        features,
+        risk_indicators,
+        is_disposable,
+        is_suspected_disposable,
+        disposable_service,
+        classification,
+    )
 
 
 @asynccontextmanager
@@ -1302,7 +1418,14 @@ def _analyze_sender_address(email: str) -> dict:
     if not email:
         raise HTTPException(status_code=400, detail="Email address is required")
 
-    feature_dict, risk_indicators, is_disposable, is_suspected_disposable, disposable_service = extract_email_features(email)
+    (
+        feature_dict,
+        risk_indicators,
+        is_disposable,
+        is_suspected_disposable,
+        disposable_service,
+        disposable_classification,
+    ) = extract_email_features(email)
 
     # The UCI model is a phishing-*website* benchmark. Its URL/HTML feature
     # weights are not valid probabilities for sender addresses, so this API
@@ -1337,8 +1460,6 @@ def _analyze_sender_address(email: str) -> dict:
         high_risks * 28
         + med_risks * 10
         + low_risks * 3
-        + (25 if is_disposable and not is_suspected_disposable else 0)
-        + (10 if is_suspected_disposable else 0),
     )
     if risk_score >= 80:
         verdict, label = "critical", "Critical Sender Risk"
@@ -1363,6 +1484,7 @@ def _analyze_sender_address(email: str) -> dict:
         "is_disposable": is_disposable,
         "is_suspected_disposable": is_suspected_disposable,
         "disposable_service": disposable_service,
+        **disposable_classification,
     }
 
 

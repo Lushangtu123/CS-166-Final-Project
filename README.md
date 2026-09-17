@@ -25,8 +25,16 @@ probability. Signals include:
 
 - look-alike brand names and phishing keywords in untrusted domains;
 - risky TLDs, IP-literal domains, excessive subdomains, and unusual syntax;
-- known or suspected disposable addresses;
-- auto-generated username patterns.
+- confirmed disposable-provider domains, separated from privacy relays;
+- anchored disposable-domain patterns and multi-factor auto-generated mailbox
+  patterns, reported as suspicion rather than proof;
+- plus-address aliases and Gmail dot normalization without added risk.
+
+Disposable-email results include `disposable_status`,
+`disposable_confidence`, `matched_provider_domain`, and
+`address_alias_type`. A domain-list match confirms only the provider category;
+it does not establish how long an individual mailbox exists or that its sender
+is malicious.
 
 The response declares `analysis_method: sender-domain-heuristics` so callers do
 not confuse the score with model confidence. A low sender score does not prove a
@@ -247,7 +255,9 @@ bounded rate limiting, verified model artifacts, HTML destination mismatch,
 ASCII brand lookalikes, URL userinfo, attachment MIME types, raw-message sender
 fusion, footer spoofing, regional-language neutrality, conservative evidence
 fusion, group isolation, deployment flags, and frontend payload/rendering
-behavior.
+behavior. Disposable-address regressions cover multi-label provider domains,
+random-looking Gmail and Outlook mailboxes, privacy relays, plus aliases, Gmail
+dot variants, and collision domains that must remain unclassified.
 
 ## Historical benchmark results
 

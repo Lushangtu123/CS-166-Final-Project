@@ -22,6 +22,41 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-17 08:48 PT] — Evidence-based disposable email classification
+
+### Why
+- Disposable-provider lookup reduced domains to their last two labels, missing
+  providers such as `10minutemail.co.uk` and `guerrillamail.co.uk`.
+- Broad substring checks falsely classified unrelated domains, while random
+  Gmail and Outlook mailbox names were not surfaced at all.
+- Privacy relays, plus aliases, and Gmail dot variants could be presented as
+  disposable or risky without enough evidence, and the UI implied unsupported
+  mailbox-expiration guarantees.
+
+### Files changed
+- `website/app.py`: add boundary-aware full-domain registry matching, normalized
+  and disjoint disposable/privacy-relay registries, anchored domain heuristics,
+  provider-aware mailbox-pattern thresholds, plus-address and Gmail-dot
+  normalization, and explicit classification metadata.
+- `website/static/app.js` and `website/static/index.html`: render confirmed,
+  suspected, privacy-relay, and no-known-match states separately with cautious
+  explanations of what the evidence can establish.
+- `website/tests/test_detection_behavior.py` and
+  `website/static/app.test.mjs`: add regression coverage for multi-label
+  providers, random Gmail/Outlook names, relay services, aliases, domain
+  collisions, rendered labels, and education copy.
+- `README.md`: document the response fields, semantics, and limitations.
+
+### Effect
+- Known disposable providers are confirmed by an exact or label-boundary domain
+  match; suspicious mailbox or domain shapes remain explicitly heuristic.
+- Random-looking Gmail and Outlook addresses are surfaced without being called
+  confirmed disposable accounts, while ordinary addresses remain low risk.
+- Privacy relays are informational and contribute no phishing score by
+  themselves; plus tags and Gmail dots likewise do not increase risk.
+- The backend regression suite passes 83 tests and the frontend suite passes
+  9 tests.
+
 ## [2026-09-15 19:36 PT] — Raw-sender, ASCII-link, and MIME hardening
 
 ### Why

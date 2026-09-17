@@ -35,6 +35,166 @@ class SenderRiskAnalysisTests(unittest.TestCase):
         self.assertEqual(result["verdict"], "low")
 
 
+class DisposableEmailClassificationTests(unittest.TestCase):
+    def analyze(self, address: str) -> dict:
+        return app._analyze_sender_address(address)
+
+    def assert_status(self, result: dict, expected: str) -> None:
+        self.assertIn("disposable_status", result)
+        self.assertEqual(result["disposable_status"], expected)
+
+    def test_multilabel_disposable_domains_are_confirmed(self):
+        for address, matched_domain in (
+            ("user@10minutemail.co.uk", "10minutemail.co.uk"),
+            ("user@guerrillamail.co.uk", "guerrillamail.co.uk"),
+            ("user@inbound.mailinator.com", "mailinator.com"),
+        ):
+            with self.subTest(address=address):
+                result = self.analyze(address)
+                self.assert_status(result, "known_disposable_provider")
+                self.assertEqual(result["disposable_confidence"], "confirmed")
+                self.assertEqual(result["matched_provider_domain"], matched_domain)
+                self.assertTrue(result["is_disposable"])
+                self.assertFalse(result["is_suspected_disposable"])
+
+    def test_random_major_provider_mailbox_is_suspicious_not_confirmed(self):
+        for address in (
+            "xq7m9v2k4p8z@gmail.com",
+            "xq7m9v2k4p8z@outlook.com",
+        ):
+            with self.subTest(address=address):
+                result = self.analyze(address)
+                self.assert_status(result, "suspicious_mailbox_pattern")
+                self.assertEqual(result["disposable_confidence"], "heuristic")
+                self.assertFalse(result["is_disposable"])
+                self.assertTrue(result["is_suspected_disposable"])
+                self.assertNotIn(result["verdict"], {"high", "critical"})
+                self.assertEqual(result["med_risk_count"], 1)
+                self.assertEqual(result["risk_score"], 10)
+
+    def test_confirmed_provider_contributes_one_disposable_indicator(self):
+        for address in ("user@mailinator.com", "xq7m9v2k4p8z@mailinator.com"):
+            with self.subTest(address=address):
+                result = self.analyze(address)
+                self.assert_status(result, "known_disposable_provider")
+                self.assertEqual(result["high_risk_count"], 1)
+                self.assertEqual(result["med_risk_count"], 0)
+                self.assertEqual(result["risk_score"], 28)
+
+    def test_ordinary_major_provider_mailboxes_remain_unconfirmed(self):
+        for address in ("alice.smith@gmail.com", "alice.smith@outlook.com"):
+            with self.subTest(address=address):
+                result = self.analyze(address)
+                self.assert_status(result, "no_known_match")
+                self.assertEqual(result["disposable_confidence"], "unknown")
+                self.assertFalse(result["is_disposable"])
+                self.assertFalse(result["is_suspected_disposable"])
+                self.assertEqual(result["verdict"], "low")
+                self.assertEqual(result["risk_score"], 0)
+
+    def test_privacy_relays_are_informational_not_phishing_evidence(self):
+        for matched_domain in sorted(app.PRIVACY_RELAY_DOMAINS):
+            address = f"user@{matched_domain}"
+            with self.subTest(address=address):
+                result = self.analyze(address)
+                self.assert_status(result, "privacy_relay")
+                self.assertEqual(result["matched_provider_domain"], matched_domain)
+                self.assertFalse(result["is_disposable"])
+                self.assertFalse(result["is_suspected_disposable"])
+                self.assertEqual(result["risk_score"], 0)
+
+        for address in (
+            "xq7m9v2k4p8z@relay.firefox.com",
+            "user@sub.relay.firefox.com",
+        ):
+            with self.subTest(address=address):
+                result = self.analyze(address)
+                self.assert_status(result, "privacy_relay")
+                self.assertEqual(result["risk_score"], 0)
+                self.assertEqual(result["phish_feature_count"], 0)
+
+    def test_subaddressing_does_not_increase_sender_risk(self):
+        base = self.analyze("alice.smith@outlook.com")
+        for address in (
+            "alice.smith+shopping@outlook.com",
+            "alice.smith+http@outlook.com",
+            "alice.smith+sale%2026@outlook.com",
+            "alice.smith+this-is-a-very-long-but-benign-routing-tag@outlook.com",
+        ):
+            with self.subTest(address=address):
+                tagged = self.analyze(address)
+                self.assertIn("address_alias_type", tagged)
+                self.assertEqual(tagged["address_alias_type"], "subaddress")
+                self.assertEqual(tagged["risk_score"], base["risk_score"])
+                self.assertEqual(tagged["disposable_status"], base["disposable_status"])
+
+    def test_gmail_dot_variant_uses_the_same_sender_risk(self):
+        for compact_address, dotted_address in (
+            ("alicesmith@gmail.com", "alice.smith@gmail.com"),
+            ("andrewburns@gmail.com", "andrew.burns@gmail.com"),
+            (
+                "christopherrichardson@gmail.com",
+                "c.h.r.i.s.t.o.p.h.e.r.r.i.c.h.a.r.d.s.o.n@gmail.com",
+            ),
+        ):
+            with self.subTest(dotted_address=dotted_address):
+                compact = self.analyze(compact_address)
+                dotted = self.analyze(dotted_address)
+
+                self.assertEqual(dotted["risk_score"], compact["risk_score"])
+                self.assertEqual(dotted["disposable_status"], "no_known_match")
+                self.assertEqual(dotted["verdict"], "low")
+
+    def test_composite_randomness_does_not_duplicate_component_indicators(self):
+        result = self.analyze("zzzzzzz1a2b3@example.com")
+        messages = [indicator["msg"].lower() for indicator in result["risk_indicators"]]
+
+        self.assert_status(result, "suspicious_mailbox_pattern")
+        self.assertEqual(sum("randomness factors" in msg for msg in messages), 1)
+        self.assertFalse(any("repeated characters" in msg for msg in messages))
+
+    def test_disposable_substrings_do_not_confirm_unrelated_domains(self):
+        for address in (
+            "user@discardrecords.com",
+            "user@lastmailbox.com",
+            "user@jetableconsulting.com",
+            "user@mailinator.com.evil.example",
+            "user@relay.firefox.com.evil.example",
+        ):
+            with self.subTest(address=address):
+                result = self.analyze(address)
+                self.assert_status(result, "no_known_match")
+                self.assertFalse(result["is_disposable"])
+                self.assertNotIn(result["verdict"], {"high", "critical"})
+
+    def test_anchored_temporary_domain_pattern_is_heuristic_only(self):
+        for address in (
+            "user@tempmail2026.example",
+            "user@temp-mail2026.example",
+            "user@temporary-email2026.example",
+            "user@trash-mail2026.example",
+            "user@fake-inbox2026.example",
+        ):
+            with self.subTest(address=address):
+                result = self.analyze(address)
+                self.assert_status(result, "suspicious_domain_pattern")
+                self.assertEqual(result["disposable_confidence"], "heuristic")
+                self.assertFalse(result["is_disposable"])
+                self.assertTrue(result["is_suspected_disposable"])
+
+    def test_domain_registries_are_normalized_and_disjoint(self):
+        privacy_relays = getattr(app, "PRIVACY_RELAY_DOMAINS", set())
+
+        self.assertTrue(privacy_relays)
+        self.assertTrue(all(domain == domain.strip().lower().rstrip(".")
+                            for domain in app._DISPOSABLE_DOMAIN_SOURCE))
+        self.assertTrue(all(app._REGISTRY_DOMAIN_RE.fullmatch(domain)
+                            for domain in app._DISPOSABLE_DOMAIN_SOURCE))
+        self.assertTrue(all(domain == domain.lower() for domain in app.DISPOSABLE_DOMAINS))
+        self.assertTrue(all(domain == domain.lower() for domain in privacy_relays))
+        self.assertTrue(app.DISPOSABLE_DOMAINS.isdisjoint(privacy_relays))
+
+
 class ContentRuleRobustnessTests(unittest.TestCase):
     def test_attacker_supplied_footer_does_not_reduce_risk(self):
         lure = (

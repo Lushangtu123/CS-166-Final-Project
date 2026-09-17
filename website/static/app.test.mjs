@@ -35,6 +35,7 @@ function loadFrontend() {
   };
   const document = {
     addEventListener() {},
+    createElement: () => new FakeElement(),
     getElementById,
     querySelector: () => new FakeElement(),
     querySelectorAll: () => [],
@@ -112,10 +113,59 @@ test('sender analysis renders an honest heuristic risk score', () => {
     feature_breakdown: [],
     is_disposable: false,
     is_suspected_disposable: false,
+    disposable_status: 'no_known_match',
+    disposable_confidence: 'unknown',
+    matched_provider_domain: null,
+    address_alias_type: null,
   });
 
   assert.equal(elements.get('vb-prob-label').textContent, 'Sender Risk Score');
   assert.equal(elements.get('vb-prob').textContent, '92/100');
+  assert.equal(elements.get('disp-check-label').textContent, 'No known disposable-provider match');
+  assert.doesNotMatch(elements.get('disp-check-label').textContent, /not a disposable/i);
+});
+
+test('privacy relay classification is informational', () => {
+  const { context, elements } = loadFrontend();
+
+  context.renderResult({
+    email: 'user@relay.firefox.com', verdict: 'low', label: 'Low Sender Risk',
+    risk_score: 0, risk_indicators: [], high_risk_count: 0, med_risk_count: 0,
+    phish_feature_count: 0, feature_breakdown: [], is_disposable: false,
+    is_suspected_disposable: false, disposable_status: 'privacy_relay',
+    disposable_confidence: 'confirmed', matched_provider_domain: 'relay.firefox.com',
+    address_alias_type: null,
+  });
+
+  assert.equal(elements.get('disp-check-label').textContent, 'Privacy relay / masked address');
+  assert.match(elements.get('disp-check-detail').textContent, /not phishing evidence/i);
+});
+
+test('suspicious mailbox classification communicates uncertainty', () => {
+  const { context, elements } = loadFrontend();
+
+  context.renderResult({
+    email: 'xq7m9v2k4p8z@gmail.com', verdict: 'low', label: 'Low Sender Risk',
+    risk_score: 10, risk_indicators: [], high_risk_count: 0, med_risk_count: 1,
+    phish_feature_count: 2, feature_breakdown: [], is_disposable: false,
+    is_suspected_disposable: true, disposable_status: 'suspicious_mailbox_pattern',
+    disposable_confidence: 'heuristic', matched_provider_domain: null,
+    address_alias_type: null,
+  });
+
+  assert.equal(
+    elements.get('disp-check-label').textContent,
+    'Mailbox pattern is suspicious; lifetime unknown',
+  );
+  assert.match(elements.get('disp-check-detail').textContent, /cannot be confirmed/i);
+});
+
+test('disposable education copy does not claim mailbox lifetime from a domain match', () => {
+  const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+
+  assert.doesNotMatch(html, /500\+ detected/i);
+  assert.doesNotMatch(html, /They require no registration and expire/i);
+  assert.match(html, /does not prove that an individual mailbox expires/i);
 });
 
 test('content payload includes an uploaded raw email', () => {

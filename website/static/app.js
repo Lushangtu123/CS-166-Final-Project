@@ -315,10 +315,8 @@ function renderResult(data) {
   _verifyEmail = data.email;
   resetVerifyCard();
 
-  // Disposable email check card — 3 states:
-  //   confirmed (purple)  → is_disposable && !is_suspected_disposable
-  //   suspected  (amber)  → is_disposable &&  is_suspected_disposable
-  //   clean      (green)  → !is_disposable
+  // Disposable classification is evidence-scoped: a registry match is
+  // different from a privacy relay, a heuristic pattern, or no known match.
   const dispIcon  = document.getElementById('disp-check-icon');
   const dispLabel = document.getElementById('disp-check-label');
   const dispDet   = document.getElementById('disp-check-detail');
@@ -329,35 +327,53 @@ function renderResult(data) {
   if (oldBadge) oldBadge.remove();
 
   const domain = (data.email || '').split('@')[1] || '';
+  const disposableStatus = data.disposable_status || (
+    data.is_disposable
+      ? (data.is_suspected_disposable ? 'suspicious_mailbox_pattern' : 'known_disposable_provider')
+      : 'no_known_match'
+  );
+  const aliasNote = data.address_alias_type === 'subaddress'
+    ? ' This address uses a plus tag, which is an alias and not a phishing signal.'
+    : '';
 
-  if (data.is_disposable && !data.is_suspected_disposable) {
-    // ── Confirmed disposable ──────────────────────────────────────
+  if (disposableStatus === 'known_disposable_provider') {
     dispRow.className  = 'disp-check-row disp-is-disposable';
     dispCard.className = 'col-card disposable-check-card is-disposable';
     dispIcon.textContent  = '🗑';
-    dispLabel.textContent = 'Disposable / Temporary Email';
-    dispDet.textContent   = `Provider: ${data.disposable_service}  —  This inbox is anonymous, expires automatically, and is frequently used to bypass verification. Do not trust emails from this address.`;
+    dispLabel.textContent = 'Known disposable-email provider';
+    dispDet.textContent   = `Provider registry match: ${data.matched_provider_domain || data.disposable_service || domain}. The individual mailbox lifetime is not known.${aliasNote}`;
 
-  } else if (data.is_disposable && data.is_suspected_disposable) {
-    // ── Suspected disposable (heuristic) ─────────────────────────
+  } else if (disposableStatus === 'privacy_relay') {
+    dispRow.className  = 'disp-check-row disp-not-disposable';
+    dispCard.className = 'col-card disposable-check-card not-disposable';
+    dispIcon.textContent  = '🛡️';
+    dispLabel.textContent = 'Privacy relay / masked address';
+    dispDet.textContent   = `Provider: ${data.matched_provider_domain || domain}. Privacy relays protect a user's primary address and are not phishing evidence by themselves.${aliasNote}`;
+
+  } else if (disposableStatus === 'suspicious_mailbox_pattern') {
     dispRow.className  = 'disp-check-row disp-suspected-disposable';
     dispCard.className = 'col-card disposable-check-card suspected-disposable';
     dispIcon.textContent  = '⚠️';
-    dispLabel.textContent = 'Suspected Disposable / Auto-Generated';
-    dispDet.innerHTML  = `Domain <strong>${escapeHtml(domain)}</strong> is not in the known disposable provider list, but the username appears to be randomly auto-generated (high entropy, almost no vowels). This pattern is commonly used with disposable or throwaway inboxes.`;
-    // Confidence badge
+    dispLabel.textContent = 'Mailbox pattern is suspicious; lifetime unknown';
+    dispDet.textContent = `The username has several automatically generated characteristics. Account age and disposability cannot be confirmed from the address alone.${aliasNote}`;
     const badge = document.createElement('div');
     badge.className = 'disp-confidence-badge';
     badge.textContent = 'Heuristic Detection · Not Confirmed';
     dispCard.appendChild(badge);
 
+  } else if (disposableStatus === 'suspicious_domain_pattern') {
+    dispRow.className  = 'disp-check-row disp-suspected-disposable';
+    dispCard.className = 'col-card disposable-check-card suspected-disposable';
+    dispIcon.textContent  = '⚠️';
+    dispLabel.textContent = 'Disposable-style domain name; not confirmed';
+    dispDet.textContent = `Domain "${domain}" resembles a temporary-email service name but is not in the confirmed provider registry.${aliasNote}`;
+
   } else {
-    // ── Not disposable ────────────────────────────────────────────
     dispRow.className  = 'disp-check-row disp-not-disposable';
     dispCard.className = 'col-card disposable-check-card not-disposable';
     dispIcon.textContent  = '✉️';
-    dispLabel.textContent = 'Not a Disposable Address';
-    dispDet.textContent   = `Domain "${domain}" was not found in the disposable email database (500+ providers tracked).`;
+    dispLabel.textContent = 'No known disposable-provider match';
+    dispDet.textContent   = `Domain "${domain}" did not match the local provider registry. Account age and intent cannot be determined from the address alone.${aliasNote}`;
   }
 
   // Verdict banner
@@ -402,10 +418,12 @@ function renderResult(data) {
   const h = data.high_risk_count;
   const m = data.med_risk_count;
   let dispPill = '';
-  if (data.is_disposable && !data.is_suspected_disposable) {
+  if (disposableStatus === 'known_disposable_provider') {
     dispPill = `<span class="pill pill-disp">🗑 Disposable</span>`;
-  } else if (data.is_disposable && data.is_suspected_disposable) {
+  } else if (disposableStatus === 'suspicious_mailbox_pattern' || disposableStatus === 'suspicious_domain_pattern') {
     dispPill = `<span class="pill pill-disp-suspect">⚠️ Suspected Disposable</span>`;
+  } else if (disposableStatus === 'privacy_relay') {
+    dispPill = `<span class="pill pill-feat">🛡️ Privacy relay</span>`;
   }
   const suspectPill = isSuspect || isHighRisk
     ? `<span class="pill pill-suspect">🔍 Suspected Phishing</span>`
