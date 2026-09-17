@@ -40,6 +40,8 @@
 }
 
 html { scroll-behavior: smooth; }
+/* Keep anchor targets clear of the floating navbar */
+[id] { scroll-margin-top: 84px; }
 
 body {
   position: relative; z-index: 0;
@@ -479,7 +481,7 @@ code {
 /* Prob bars */
 .prob-bars { margin-bottom: 16px; }
 .prob-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-.prob-label { font-size: 12px; font-weight: 600; width: 96px; flex-shrink: 0; line-height: 1.25; }
+.prob-label { font-size: 12px; font-weight: 600; width: 108px; flex-shrink: 0; line-height: 1.25; }
 .phish-label { color: var(--red); }
 .legit-label { color: var(--accent2); }
 .prob-bar-track { flex: 1; height: 8px; background: rgba(255,255,255,0.08); border-radius: var(--pill); overflow: hidden; }

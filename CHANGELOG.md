@@ -22,6 +22,53 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-17 13:07 PT] — Modern fluid restyle (supersedes the HUD theme)
+
+### Why
+- User follow-up: the HUD/instrument look should give way to something more
+  modern, closer to Apple's marketing pages — large type, generous space,
+  frosted-glass surfaces, and flowing motion — while staying easy on the eyes.
+
+### Files changed
+- `website/static/style.css` — rewritten again around a fluid, editorial system:
+  `#06080f` base with three fixed radial colour fields (`.bg-fluid .blob-*`)
+  that drift on 46/52/58 s alternating loops; floating pill-shaped glass navbar
+  (`backdrop-filter: blur(22px)`); hero headline at `clamp(40px, 5.6vw, 72px)`
+  with `-0.035em` tracking and a 14 s flowing gradient on the accent word; new
+  hero orb (`.orb` conic gradient, `blur(34px)`, 18 s border-radius morph +
+  90 s rotation) under a glass core with four gently floating chips; pill
+  buttons and tags; segmented demo tabs with a sliding highlight driven by
+  `:has(.demo-tab:nth-child(2).active)`; `.reveal/.in-view` transitions;
+  `[id] { scroll-margin-top: 84px }` so anchors clear the sticky nav; removed
+  the instrument grid, corner brackets, and monospace uppercase labels; kept a
+  full `prefers-reduced-motion` fallback that disables all ambient motion and
+  shows revealed content immediately.
+- `website/static/index.html` — assets bumped to `?v=16`; added the
+  `.bg-fluid` layer; replaced the radar markup with `.orb-scene`; dropped the
+  `SIGNAL CONSOLE` tag and `hud-frame` classes; softened section eyebrows to
+  "Try it / Benchmark / Signals / Pipeline"; hero copy now reads
+  "Phishing email detection, explained."
+- `website/static/app.js` — added `setupScrollReveal()`: an
+  `IntersectionObserver` adds `.in-view` the first time a target enters the
+  viewport, with 70 ms stagger per child inside `.hero-stats`, `.charts-row`,
+  `.feature-cards-grid`, `.top3-grid`, and `.pipeline-steps`. It is skipped when
+  `IntersectionObserver` is unavailable or reduced motion is requested, so
+  nothing is ever left hidden. Scroll listener is now `passive`.
+
+### Effect
+- Verified in a real Chrome session (1920×1171) and recorded: cards fade/slide
+  in as they scroll into view, the background glow and orb motion are
+  perceptible but slow, the segmented control slides between tabs, and both
+  sender and content critical-risk results render without overlap or
+  stuck-invisible elements.
+- Fatigue budget unchanged in spirit: colour fields ≤ 20 % alpha at their
+  centre and fully transparent by 68 %, every ambient loop ≥ 9 s (chip float
+  9 s, ring breathe 12 s, gradient 14 s, orb morph 18 s, drift ≥ 46 s), reveal
+  transitions 0.9 s with a decelerating ease, no flicker.
+- `node --test website/static/app.test.mjs` remains 6/6 passing (the reveal
+  code is guarded so the `vm`-based test harness is unaffected);
+  `node --check` passes.
+
 ## [2026-09-17 12:41 PT] — Calm sci-fi HUD restyle of the web frontend
 
 ### Why
