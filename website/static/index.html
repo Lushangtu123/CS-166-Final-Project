@@ -4,16 +4,27 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>PhishGuard – Phishing Email Detector</title>
-  <link rel="stylesheet" href="/static/style.css?v=14" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="theme-color" content="#06080f" />
+  <link rel="stylesheet" href="/static/style.css?v=16" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
+
+<!-- Fluid ambient background: three slow-drifting colour fields -->
+<div class="bg-fluid" aria-hidden="true">
+  <span class="blob blob-1"></span>
+  <span class="blob blob-2"></span>
+  <span class="blob blob-3"></span>
+</div>
 
 <!-- ── Navigation ──────────────────────────────────────────────────────────── -->
 <nav class="navbar">
   <div class="nav-inner">
     <div class="nav-brand">
-      <span class="shield-icon">🛡</span>
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5 4.5 5.5v6c0 4.6 3.2 8.6 7.5 9.9 4.3-1.3 7.5-5.3 7.5-9.9v-6L12 2.5z"/><path d="m9 12 2 2 4-4.5"/></svg>
+      </span>
       <span class="brand-text">PhishGuard</span>
     </div>
     <ul class="nav-links">
@@ -28,9 +39,10 @@
 <!-- ── Hero ────────────────────────────────────────────────────────────────── -->
 <section class="hero">
   <div class="hero-content">
+    <div class="hero-badge"><span class="pulse-dot" aria-hidden="true"></span> Layered detection · rules, structure, optional ML</div>
     <h1 class="hero-title">
-      Phishing Email<br>
-      <span class="gradient-text">Detection</span>
+      Phishing email detection,<br>
+      <span class="gradient-text">explained.</span>
     </h1>
     <p class="hero-subtitle">
       Analyze sender/domain risk or upload a complete email for authentication-header,
@@ -55,22 +67,24 @@
         <div class="stat-label">Sender Risk Signals</div>
       </div>
     </div>
-    <a href="#demo" class="btn btn-primary">Check an Email Address</a>
+    <div class="hero-actions">
+      <a href="#demo" class="btn btn-primary">Check an Email Address</a>
+      <a href="#about" class="btn btn-outline">How It Works</a>
+    </div>
   </div>
-  <div class="hero-visual">
-    <!-- Outer container is static; ring spins inside; dots are fixed siblings -->
-    <div class="orbit-container">
-      <div class="orbit-ring">
-        <div class="orbit-center">
-          <span>🛡</span>
-          <div class="orbit-label">Layered Signals</div>
-        </div>
+  <div class="hero-visual" aria-hidden="true">
+    <div class="orb-scene">
+      <div class="orb"></div>
+      <div class="orb-ring"></div>
+      <div class="orb-ring orb-ring-2"></div>
+      <div class="orb-core">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5 4.5 5.5v6c0 4.6 3.2 8.6 7.5 9.9 4.3-1.3 7.5-5.3 7.5-9.9v-6L12 2.5z"/><path d="m9 12 2 2 4-4.5"/></svg>
+        <div class="orb-label">Layered signals</div>
       </div>
-      <!-- Dots are outside the ring so they never inherit its rotation -->
-      <div class="orbit-dot dot-1">Domain</div>
-      <div class="orbit-dot dot-2">Auth</div>
-      <div class="orbit-dot dot-3">Keywords</div>
-      <div class="orbit-dot dot-4">Structure</div>
+      <div class="orb-chip chip-1"><span class="chip-dot"></span>Domain</div>
+      <div class="orb-chip chip-2"><span class="chip-dot"></span>Authentication</div>
+      <div class="orb-chip chip-3"><span class="chip-dot"></span>Links & keywords</div>
+      <div class="orb-chip chip-4"><span class="chip-dot"></span>Structure</div>
     </div>
   </div>
 </section>
@@ -79,6 +93,7 @@
 <section class="section" id="demo">
   <div class="container">
     <div class="section-header">
+      <div class="section-eyebrow">Try it</div>
       <h2>Live Demo</h2>
       <p>Analyze a sender address, paste subject/body text, or upload the original .eml message for the strongest available evidence.</p>
     </div>
@@ -488,6 +503,7 @@
 <section class="section section-dark" id="performance">
   <div class="container">
     <div class="section-header">
+      <div class="section-eyebrow">Benchmark</div>
       <h2>Archived Website Benchmark</h2>
       <p>Historical course-notebook results on the UCI Phishing Websites dataset (2,211 held-out rows). These are not email-sender accuracy claims.</p>
     </div>
@@ -533,6 +549,7 @@
 <section class="section" id="features">
   <div class="container">
     <div class="section-header">
+      <div class="section-eyebrow">Signals</div>
       <h2>Explainable Sender Signals</h2>
       <p>The sender-only mode evaluates 30 address and domain indicators. They are heuristic evidence—not probabilities learned from the UCI website dataset.</p>
     </div>
@@ -632,6 +649,7 @@
 <section class="section section-dark" id="about">
   <div class="container">
     <div class="section-header">
+      <div class="section-eyebrow">Pipeline</div>
       <h2>How It Works</h2>
       <p>A layered detection pipeline designed to preserve strong phishing evidence.</p>
     </div>
@@ -709,6 +727,6 @@
   </div>
 </footer>
 
-<script src="/static/app.js?v=14"></script>
+<script src="/static/app.js?v=16"></script>
 </body>
 </html>
