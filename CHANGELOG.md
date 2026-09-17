@@ -22,6 +22,51 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-17 15:00 PT] — Scan illustration, score rings, count-ups, light/dark theme
+
+### Why
+- Follow-up to the icon pass: the user asked to implement the remaining
+  visual suggestions (narrative hero graphic, ring-style scores, animated
+  numbers, and automatic light/dark switching).
+
+### Files changed
+- `website/static/index.html` — hero visual replaced by `.scan-card` (a
+  glass message card with avatar, skeleton lines, one flagged link line, a
+  green header check, a red alert badge, and a sweeping `.scan-beam`) while
+  keeping the orb glow, rings, and floating chips; sender and content banners
+  now wrap the score in a `.score-ring` SVG (`#vb-ring`, `#crb-ring`); hero
+  stat values carry `data-count/data-decimals/data-suffix`; nav gains a
+  `#theme-toggle` (sun / moon / "A" auto badge); `<head>` bootstrap script
+  resolves `data-theme` from `localStorage['phishguard-theme']` or
+  `prefers-color-scheme` before first paint; `color-scheme` is `light dark`
+  with two `theme-color` metas; assets bumped to `?v=18`.
+- `website/static/app.js` — `setupTheme/applyTheme/cycleTheme` (auto → light
+  → dark, persisted, follows system changes in auto); `animateNumber()`
+  (cubic ease-out, always ends on the exact formatted value; immediate when
+  `requestAnimationFrame` is missing or reduced motion is set) used for hero
+  stats via `setupCountUps()` and for `vb-prob` / `crb-score`; `setRing()`
+  drives `stroke-dashoffset` on the ring (heuristic-only content totals are
+  scaled against a ceiling of 30).
+- `website/static/style.css` — theme tokens added (`--glass-bg`,
+  `--field-bg`, `--fill`, `--line`, `--track`, `--on-accent`, …) and all
+  hard-coded dark rgba surfaces converted to them; `:root[data-theme="light"]`
+  palette (`#f4f6fb` base, `#0f172a` text, accent `#0a7fd6`, multiply-blend
+  colour fields) plus a handful of light-specific overrides; `.scan-*`
+  illustration styles (6.5 s beam sweep, 11 s card float, 3.2 s flag pulse);
+  `.score-ring` (104 px, 6.5 px stroke, 1.1 s eased fill); `.theme-toggle`
+  with cross-fading sun/moon; reduced-motion block covers the new animations.
+
+### Effect
+- Verified in headless Chrome for both themes: hero illustration and chips
+  render, hero stats count up to `97.47% / 0.9977 / 11,055 / 30`, the sender
+  ring fills to 100/100 (`stroke-dashoffset` 0) with `100/100` centred, the
+  legitimate-newsletter content result shows a green `0%` ring, and the
+  toggle reflects the active mode.
+- Theme resolves before first paint (no flash), follows the OS in auto mode,
+  and persists a manual choice.
+- `node --test website/static/app.test.mjs` 9/9 passing (count-ups set final
+  values synchronously in the vm harness); `node --check` OK.
+
 ## [2026-09-17 14:51 PT] — Unified SVG icon system replaces emoji
 
 ### Why

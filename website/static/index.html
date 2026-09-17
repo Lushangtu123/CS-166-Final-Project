@@ -4,9 +4,20 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>PhishGuard – Phishing Email Detector</title>
-  <meta name="color-scheme" content="dark" />
-  <meta name="theme-color" content="#06080f" />
-  <link rel="stylesheet" href="/static/style.css?v=17" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="theme-color" content="#06080f" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" content="#f4f6fb" media="(prefers-color-scheme: light)" />
+  <script>
+    // Resolve the colour theme before first paint to avoid a flash.
+    (function () {
+      var stored = null;
+      try { stored = localStorage.getItem('phishguard-theme'); } catch (e) {}
+      var system = window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      document.documentElement.dataset.theme = (stored === 'light' || stored === 'dark') ? stored : system;
+      document.documentElement.dataset.themeMode = stored || 'auto';
+    })();
+  </script>
+  <link rel="stylesheet" href="/static/style.css?v=18" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -27,12 +38,19 @@
       </span>
       <span class="brand-text">PhishGuard</span>
     </div>
-    <ul class="nav-links">
-      <li><a href="#demo">Live Demo</a></li>
-      <li><a href="#performance">Performance</a></li>
-      <li><a href="#features">Features</a></li>
-      <li><a href="#about">How It Works</a></li>
-    </ul>
+    <div class="nav-right">
+      <ul class="nav-links">
+        <li><a href="#demo">Live Demo</a></li>
+        <li><a href="#performance">Performance</a></li>
+        <li><a href="#features">Features</a></li>
+        <li><a href="#about">How It Works</a></li>
+      </ul>
+      <button class="theme-toggle" id="theme-toggle" type="button" onclick="cycleTheme()" aria-label="Switch colour theme" title="Theme: auto">
+        <svg class="ico ico-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></svg>
+        <svg class="ico ico-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></svg>
+        <span class="theme-toggle-auto" aria-hidden="true">A</span>
+      </button>
+    </div>
   </div>
 </nav>
 
@@ -51,19 +69,19 @@
     </p>
     <div class="hero-stats">
       <div class="stat-card">
-        <div class="stat-value">97.47%</div>
+        <div class="stat-value" data-count="97.47" data-decimals="2" data-suffix="%">97.47%</div>
         <div class="stat-label">Website Benchmark Accuracy</div>
       </div>
       <div class="stat-card">
-        <div class="stat-value">0.9977</div>
+        <div class="stat-value" data-count="0.9977" data-decimals="4">0.9977</div>
         <div class="stat-label">Website Benchmark ROC AUC</div>
       </div>
       <div class="stat-card">
-        <div class="stat-value">11,055</div>
+        <div class="stat-value" data-count="11055" data-decimals="0">11,055</div>
         <div class="stat-label">UCI Website Samples</div>
       </div>
       <div class="stat-card">
-        <div class="stat-value">30</div>
+        <div class="stat-value" data-count="30" data-decimals="0">30</div>
         <div class="stat-label">Sender Risk Signals</div>
       </div>
     </div>
@@ -77,9 +95,26 @@
       <div class="orb"></div>
       <div class="orb-ring"></div>
       <div class="orb-ring orb-ring-2"></div>
-      <div class="orb-core">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5 4.5 5.5v6c0 4.6 3.2 8.6 7.5 9.9 4.3-1.3 7.5-5.3 7.5-9.9v-6L12 2.5z"/><path d="m9 12 2 2 4-4.5"/></svg>
-        <div class="orb-label">Layered signals</div>
+      <!-- Stylised message being scanned: header lines, a body, one flagged link -->
+      <div class="scan-card">
+        <div class="scan-head">
+          <span class="scan-avatar"></span>
+          <span class="scan-lines"><i class="scan-line-skel w-60"></i><i class="scan-line-skel w-40 dim"></i></span>
+          <span class="scan-badge scan-badge-ok">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 12.5 3.8 3.8L18.5 8"/></svg>
+          </span>
+        </div>
+        <div class="scan-body">
+          <i class="scan-line-skel w-90"></i>
+          <i class="scan-line-skel w-75"></i>
+          <i class="scan-line-skel w-55 flagged"></i>
+          <i class="scan-line-skel w-80"></i>
+          <i class="scan-line-skel w-35 dim"></i>
+        </div>
+        <span class="scan-badge scan-badge-alert">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v6"/><path d="M12 17h.01"/></svg>
+        </span>
+        <div class="scan-beam"></div>
       </div>
       <div class="orb-chip chip-1"><span class="chip-dot"></span>Domain</div>
       <div class="orb-chip chip-2"><span class="chip-dot"></span>Authentication</div>
@@ -157,8 +192,14 @@
           </div>
         </div>
         <div class="vb-right">
+          <div class="score-ring" aria-hidden="true">
+            <svg viewBox="0 0 100 100">
+              <circle class="ring-track" cx="50" cy="50" r="44"/>
+              <circle class="ring-fg" id="vb-ring" cx="50" cy="50" r="44"/>
+            </svg>
+            <div class="vb-prob" id="vb-prob"></div>
+          </div>
           <div class="vb-prob-label" id="vb-prob-label">Sender Risk Score</div>
-          <div class="vb-prob" id="vb-prob"></div>
         </div>
       </div>
 
@@ -426,8 +467,14 @@
             </div>
           </div>
           <div class="crb-right">
+            <div class="score-ring" aria-hidden="true">
+              <svg viewBox="0 0 100 100">
+                <circle class="ring-track" cx="50" cy="50" r="44"/>
+                <circle class="ring-fg" id="crb-ring" cx="50" cy="50" r="44"/>
+              </svg>
+              <div class="crb-score" id="crb-score"></div>
+            </div>
             <div class="crb-score-label">Risk Score</div>
-            <div class="crb-score" id="crb-score"></div>
           </div>
         </div>
 
@@ -727,6 +774,6 @@
   </div>
 </footer>
 
-<script src="/static/app.js?v=17"></script>
+<script src="/static/app.js?v=18"></script>
 </body>
 </html>

@@ -57,9 +57,108 @@ const CATEGORY_ICONS = {
   tech_scam: 'monitor', job_scam: 'briefcase', social_engineering: 'brain',
 };
 
+// ── Theme (auto / light / dark) ──────────────────────────────────────────────
+// The <head> bootstrap script sets data-theme before first paint; this keeps it
+// in sync with system changes and drives the nav toggle.
+const THEME_KEY = 'phishguard-theme';
+
+function resolveTheme(mode) {
+  if (mode === 'light' || mode === 'dark') return mode;
+  const prefersLight = typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: light)').matches;
+  return prefersLight ? 'light' : 'dark';
+}
+
+function applyTheme(mode) {
+  const root = document.documentElement;
+  if (!root || !root.dataset) return;
+  root.dataset.theme = resolveTheme(mode);
+  root.dataset.themeMode = mode;
+  const toggle = document.getElementById('theme-toggle');
+  if (toggle) toggle.title = `Theme: ${mode}`;
+}
+
+function cycleTheme() {
+  const order = ['auto', 'light', 'dark'];
+  const root = document.documentElement;
+  const current = (root && root.dataset && root.dataset.themeMode) || 'auto';
+  const next = order[(order.indexOf(current) + 1) % order.length];
+  try {
+    if (next === 'auto') localStorage.removeItem(THEME_KEY);
+    else localStorage.setItem(THEME_KEY, next);
+  } catch (error) { /* storage unavailable; theme still applies for this page */ }
+  applyTheme(next);
+}
+
+function setupTheme() {
+  const root = document.documentElement;
+  const mode = (root && root.dataset && root.dataset.themeMode) || 'auto';
+  applyTheme(mode);
+  if (typeof matchMedia === 'function') {
+    matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
+      const currentMode = (root.dataset && root.dataset.themeMode) || 'auto';
+      if (currentMode === 'auto') applyTheme('auto');
+    });
+  }
+}
+
+// ── Animated numbers & rings ─────────────────────────────────────────────────
+function prefersReducedMotion() {
+  return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+// Counts el from 0 to target over `duration` ms and always finishes on the
+// exact formatted value. Falls back to setting the value immediately when
+// requestAnimationFrame is unavailable or reduced motion is requested.
+function animateNumber(el, target, format, duration = 1100) {
+  if (!el) return;
+  const finish = () => { el.textContent = format(target); };
+  if (typeof requestAnimationFrame !== 'function' || prefersReducedMotion() || !(target > 0)) {
+    finish();
+    return;
+  }
+  const start = performance.now();
+  const step = now => {
+    const t = Math.min(1, (now - start) / duration);
+    const eased = 1 - Math.pow(1 - t, 3);
+    el.textContent = format(target * eased);
+    if (t < 1) requestAnimationFrame(step); else finish();
+  };
+  requestAnimationFrame(step);
+}
+
+function setupCountUps() {
+  document.querySelectorAll('[data-count]').forEach(el => {
+    const target = parseFloat(el.dataset.count);
+    const decimals = parseInt(el.dataset.decimals || '0', 10);
+    const suffix = el.dataset.suffix || '';
+    if (Number.isNaN(target)) return;
+    animateNumber(el, target, value =>
+      value.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals }) + suffix,
+      1400);
+  });
+}
+
+const RING_CIRCUMFERENCE = 2 * Math.PI * 44;
+
+// Fills a .ring-fg circle to `pct` (0–100) in `color`.
+function setRing(id, pct, color) {
+  const ring = document.getElementById(id);
+  if (!ring) return;
+  const clamped = Math.max(0, Math.min(100, Number(pct) || 0));
+  ring.style.strokeDasharray = `${RING_CIRCUMFERENCE}`;
+  ring.style.stroke = color;
+  // Start from empty so the fill animates via the CSS transition on the next frame.
+  ring.style.strokeDashoffset = `${RING_CIRCUMFERENCE}`;
+  const fill = () => { ring.style.strokeDashoffset = `${RING_CIRCUMFERENCE * (1 - clamped / 100)}`; };
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => requestAnimationFrame(fill));
+  else fill();
+}
+
 // ── Init ─────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
+  setupTheme();
   setupScrollReveal();
+  setupCountUps();
   await loadPublicConfig();
   await loadMetrics();
   setupSmoothScroll();
@@ -491,8 +590,9 @@ function renderResult(data) {
   document.getElementById('vb-title').textContent = data.label;
   document.getElementById('vb-email').textContent = data.email;
   document.getElementById('vb-prob-label').textContent = 'Sender Risk Score';
-  document.getElementById('vb-prob').textContent  = data.risk_score + '/100';
+  animateNumber(document.getElementById('vb-prob'), data.risk_score, v => `${Math.round(v)}/100`);
   document.getElementById('vb-prob').style.color  = probColor;
+  setRing('vb-ring', data.risk_score, probColor);
 
   // Remove previous suspect note if any
   const oldNote = banner.querySelector('.suspect-note');
@@ -802,9 +902,14 @@ function renderContentResult(data) {
   document.getElementById('crb-sub').textContent = subParts.join(' • ');
   const scoreEl = document.getElementById('crb-score');
   // Prefer the blended ML+heuristic score when available; fall back to raw heuristic total.
-  scoreEl.textContent = data.combined_phishing_score != null
-    ? `${data.combined_phishing_score}%`
-    : data.total_score;
+  if (data.combined_phishing_score != null) {
+    animateNumber(scoreEl, data.combined_phishing_score, v => `${Math.round(v)}%`);
+    setRing('crb-ring', data.combined_phishing_score, cfg.scoreColor);
+  } else {
+    animateNumber(scoreEl, data.total_score, v => `${Math.round(v)}`);
+    // Heuristic totals are open-ended; scale against the practical ceiling of 30.
+    setRing('crb-ring', Math.min(100, (data.total_score / 30) * 100), cfg.scoreColor);
+  }
   scoreEl.style.color = cfg.scoreColor;
 
   // ── ML Classifier Card ───────────────────────────────────────────────────
