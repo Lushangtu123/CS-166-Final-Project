@@ -4,7 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>PhishGuard – Phishing Email Detector</title>
-  <link rel="stylesheet" href="/static/style.css?v=14" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="theme-color" content="#070b14" />
+  <link rel="stylesheet" href="/static/style.css?v=15" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -13,8 +15,11 @@
 <nav class="navbar">
   <div class="nav-inner">
     <div class="nav-brand">
-      <span class="shield-icon">🛡</span>
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5 4.5 5.5v6c0 4.6 3.2 8.6 7.5 9.9 4.3-1.3 7.5-5.3 7.5-9.9v-6L12 2.5z"/><path d="m9 12 2 2 4-4.5"/></svg>
+      </span>
       <span class="brand-text">PhishGuard</span>
+      <span class="brand-tag">SIGNAL CONSOLE</span>
     </div>
     <ul class="nav-links">
       <li><a href="#demo">Live Demo</a></li>
@@ -28,6 +33,7 @@
 <!-- ── Hero ────────────────────────────────────────────────────────────────── -->
 <section class="hero">
   <div class="hero-content">
+    <div class="hero-badge"><span class="pulse-dot" aria-hidden="true"></span> Layered detection · rules + structure + optional ML</div>
     <h1 class="hero-title">
       Phishing Email<br>
       <span class="gradient-text">Detection</span>
@@ -55,14 +61,17 @@
         <div class="stat-label">Sender Risk Signals</div>
       </div>
     </div>
-    <a href="#demo" class="btn btn-primary">Check an Email Address</a>
+    <div class="hero-actions">
+      <a href="#demo" class="btn btn-primary">Check an Email Address</a>
+      <a href="#about" class="btn btn-outline">How It Works</a>
+    </div>
   </div>
   <div class="hero-visual">
     <!-- Outer container is static; ring spins inside; dots are fixed siblings -->
     <div class="orbit-container">
       <div class="orbit-ring">
         <div class="orbit-center">
-          <span>🛡</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.5 4.5 5.5v6c0 4.6 3.2 8.6 7.5 9.9 4.3-1.3 7.5-5.3 7.5-9.9v-6L12 2.5z"/><path d="m9 12 2 2 4-4.5"/></svg>
           <div class="orbit-label">Layered Signals</div>
         </div>
       </div>
@@ -79,6 +88,7 @@
 <section class="section" id="demo">
   <div class="container">
     <div class="section-header">
+      <div class="section-eyebrow">01 · Live Demo</div>
       <h2>Live Demo</h2>
       <p>Analyze a sender address, paste subject/body text, or upload the original .eml message for the strongest available evidence.</p>
     </div>
@@ -97,7 +107,7 @@
     <div class="tab-panel" id="panel-email-address">
 
     <!-- Email Input -->
-    <div class="email-input-card">
+    <div class="email-input-card hud-frame">
       <div class="email-input-row">
         <div class="email-input-wrap">
           <span class="email-icon">✉</span>
@@ -296,7 +306,7 @@
     </div>
 
     <!-- Disposable email info card (always visible, anchor target) -->
-    <div class="disposable-info-card" id="disposable-info">
+    <div class="disposable-info-card hud-frame" id="disposable-info">
       <div class="di-header">
         <span class="di-icon">🗑</span>
         <div>
@@ -355,7 +365,7 @@
     <!-- ── Tab 2: Email Content ─────────────────────────────────────────────── -->
     <div class="tab-panel hidden" id="panel-email-content">
 
-      <div class="content-input-card">
+      <div class="content-input-card hud-frame">
         <div class="raw-email-upload-row">
           <label class="content-label" for="raw-email-file">Full email file (recommended)</label>
           <input id="raw-email-file" class="raw-email-file" type="file" accept=".eml,message/rfc822,text/plain" />
@@ -488,6 +498,7 @@
 <section class="section section-dark" id="performance">
   <div class="container">
     <div class="section-header">
+      <div class="section-eyebrow">02 · Performance</div>
       <h2>Archived Website Benchmark</h2>
       <p>Historical course-notebook results on the UCI Phishing Websites dataset (2,211 held-out rows). These are not email-sender accuracy claims.</p>
     </div>
@@ -512,11 +523,11 @@
       </div>
 
       <div class="charts-row">
-        <div class="chart-card">
+        <div class="chart-card hud-frame">
           <h3 class="chart-title">Classifier Performance Comparison</h3>
           <canvas id="metricsChart"></canvas>
         </div>
-        <div class="chart-card">
+        <div class="chart-card hud-frame">
           <h3 class="chart-title">Scope Matters</h3>
           <p class="method-note-text">
             The UCI model learned URL and web-page features. PhishGuard does not reuse
@@ -533,6 +544,7 @@
 <section class="section" id="features">
   <div class="container">
     <div class="section-header">
+      <div class="section-eyebrow">03 · Features</div>
       <h2>Explainable Sender Signals</h2>
       <p>The sender-only mode evaluates 30 address and domain indicators. They are heuristic evidence—not probabilities learned from the UCI website dataset.</p>
     </div>
@@ -632,6 +644,7 @@
 <section class="section section-dark" id="about">
   <div class="container">
     <div class="section-header">
+      <div class="section-eyebrow">04 · Pipeline</div>
       <h2>How It Works</h2>
       <p>A layered detection pipeline designed to preserve strong phishing evidence.</p>
     </div>
@@ -709,6 +722,6 @@
   </div>
 </footer>
 
-<script src="/static/app.js?v=14"></script>
+<script src="/static/app.js?v=15"></script>
 </body>
 </html>

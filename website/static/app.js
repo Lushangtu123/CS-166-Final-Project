@@ -364,11 +364,11 @@ function renderResult(data) {
   const banner = document.getElementById('verdict-banner');
   let bannerCls, bannerIcon, probColor;
   if (isHighRisk) {
-    bannerCls = 'banner-phish';   bannerIcon = '⚠️';  probColor = '#f85149';
+    bannerCls = 'banner-phish';   bannerIcon = '⚠️';  probColor = '#ff5c6c';
   } else if (isSuspect) {
-    bannerCls = 'banner-suspect'; bannerIcon = '🔍';  probColor = '#e8a000';
+    bannerCls = 'banner-suspect'; bannerIcon = '🔍';  probColor = '#f0c05a';
   } else {
-    bannerCls = 'banner-legit';   bannerIcon = '✅';  probColor = '#3fb950';
+    bannerCls = 'banner-legit';   bannerIcon = '✅';  probColor = '#3fd58f';
   }
   banner.className = 'verdict-banner ' + bannerCls;
   document.getElementById('vb-icon').textContent  = bannerIcon;
@@ -500,15 +500,15 @@ function renderMetricsChart(metrics) {
   const metricKeys = ['Accuracy', 'Precision', 'Recall', 'F1', 'ROC_AUC'];
   const labels = ['Accuracy', 'Precision', 'Recall', 'F1', 'ROC AUC'];
   const colors = [
-    'rgba(99,179,237,0.85)', 'rgba(154,230,180,0.85)',
-    'rgba(252,211,77,0.85)', 'rgba(252,129,74,0.85)',
+    'rgba(79,209,255,0.80)', 'rgba(63,213,143,0.80)',
+    'rgba(240,192,90,0.80)', 'rgba(180,140,255,0.80)',
   ];
   const datasets = classifiers.map((clf, i) => ({
     label: clf,
     data: metricKeys.map(k => metrics[clf][k]),
     backgroundColor: colors[i],
-    borderColor: colors[i].replace('0.85', '1'),
-    borderWidth: 2,
+    borderColor: colors[i].replace('0.80', '1'),
+    borderWidth: 1.5,
     borderRadius: 4,
   }));
   if (metricsChart) metricsChart.destroy();
@@ -518,13 +518,19 @@ function renderMetricsChart(metrics) {
     options: {
       responsive: true,
       plugins: {
-        legend: { position: 'bottom', labels: { color: '#cbd5e0', font: { size: 11 } } },
-        tooltip: { callbacks: { label: c => `${c.dataset.label}: ${c.parsed.y.toFixed(4)}` } },
-
+        legend: { position: 'bottom', labels: { color: '#8da2bd', font: { size: 11 }, boxWidth: 12, boxHeight: 12 } },
+        tooltip: {
+          backgroundColor: 'rgba(12,18,32,0.95)',
+          borderColor: 'rgba(79,209,255,0.35)',
+          borderWidth: 1,
+          titleColor: '#e3ecf7',
+          bodyColor: '#8da2bd',
+          callbacks: { label: c => `${c.dataset.label}: ${c.parsed.y.toFixed(4)}` },
+        },
       },
       scales: {
-        y: { min: 0.88, max: 1.0, ticks: { color: '#a0aec0' }, grid: { color: 'rgba(255,255,255,0.06)' } },
-        x: { ticks: { color: '#a0aec0' }, grid: { display: false } },
+        y: { min: 0.88, max: 1.0, ticks: { color: '#8da2bd' }, grid: { color: 'rgba(122,170,255,0.08)' } },
+        x: { ticks: { color: '#8da2bd' }, grid: { display: false } },
       },
     },
   });
@@ -649,11 +655,11 @@ async function runContentAnalysis() {
 }
 
 const RISK_CONFIG = {
-  safe:     { icon: '✅', color: 'safe',     scoreColor: '#3fb950' },
-  low:      { icon: '🔵', color: 'low',      scoreColor: '#63b3ed' },
-  medium:   { icon: '⚠️',  color: 'medium',  scoreColor: '#e3b341' },
-  high:     { icon: '🔴', color: 'high',     scoreColor: '#f97316' },
-  critical: { icon: '☠️',  color: 'critical', scoreColor: '#f85149' },
+  safe:     { icon: '✅', color: 'safe',     scoreColor: '#3fd58f' },
+  low:      { icon: '🔵', color: 'low',      scoreColor: '#6fb6ff' },
+  medium:   { icon: '⚠️',  color: 'medium',  scoreColor: '#f0c05a' },
+  high:     { icon: '🔴', color: 'high',     scoreColor: '#ff8a4c' },
+  critical: { icon: '☠️',  color: 'critical', scoreColor: '#ff5c6c' },
 };
 
 const LEVEL_ICONS = { high: '🔴', medium: '🟡', low: '🔵', info: 'ℹ️' };
