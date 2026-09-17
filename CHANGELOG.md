@@ -22,6 +22,36 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-17 14:08 PT] — Scroll reveal replays on every pass
+
+### Why
+- User report: the fade/slide-in effect only played the first time content
+  scrolled into view; scrolling back up and down again showed nothing.
+- Cause: `setupScrollReveal()` called `observer.unobserve()` and stripped the
+  `.reveal` class after the first entrance, which was a one-shot design.
+
+### Files changed
+- `website/static/app.js` — `setupScrollReveal()` keeps observing every target
+  (`threshold: 0`); when an element fully leaves the viewport it drops
+  `.in-view/.settled/.from-above` so it resets, and on re-entry it replays with
+  the per-batch stagger. The entrance direction is detected from
+  `boundingClientRect.top` vs `rootBounds.top` and sets `.from-above` when the
+  element arrives from the top edge. `animationend` now adds `.settled` instead
+  of removing classes.
+- `website/static/style.css` — added `.reveal.in-view.from-above` →
+  `reveal-in-down` keyframes (−18px rise) and `.reveal.in-view.settled`
+  (`animation: none; opacity: 1`) so hover transforms keep working after the
+  entrance.
+- `website/static/index.html` — cache-busted assets to `?v=17`.
+
+### Effect
+- Verified with a headless-Chrome DOM check on the `.step` elements:
+  first visit → `reveal in-view settled`; scroll to top → `reveal` (reset);
+  second visit → `reveal in-view` then `settled` after the 0.8 s animation.
+- Elements entering while scrolling up now drift down into place rather than
+  rising from below.
+- `node --test website/static/app.test.mjs` 9/9 passing; `node --check` OK.
+
 ## [2026-09-17 13:39 PT] — Integrate fluid frontend with disposable classification
 
 ### Why
