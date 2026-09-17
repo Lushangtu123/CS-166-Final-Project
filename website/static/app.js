@@ -40,20 +40,32 @@ function setupScrollReveal() {
   const targets = new Set(document.querySelectorAll(REVEAL_SELECTORS.join(',')));
   REVEAL_GROUPS.forEach(groupSelector => {
     document.querySelectorAll(groupSelector).forEach(group => {
-      Array.from(group.children).forEach((child, index) => {
-        child.style.transitionDelay = `${Math.min(index, 7) * 70}ms`;
-        targets.add(child);
-      });
+      Array.from(group.children).forEach(child => targets.add(child));
     });
   });
 
   const observer = new IntersectionObserver(entries => {
-    entries.forEach(entry => {
-      if (!entry.isIntersecting) return;
-      entry.target.classList.add('in-view');
-      observer.unobserve(entry.target);
-    });
-  }, { rootMargin: '0px 0px -8% 0px', threshold: 0.08 });
+    // Stagger only among siblings that enter the viewport in the same batch,
+    // so an element scrolled into view on its own starts immediately.
+    const perParent = new Map();
+    entries
+      .filter(entry => entry.isIntersecting)
+      .sort((a, b) => (a.target.compareDocumentPosition(b.target) & 4 ? -1 : 1))
+      .forEach(entry => {
+        const el = entry.target;
+        const parent = el.parentElement;
+        const index = perParent.get(parent) || 0;
+        perParent.set(parent, index + 1);
+        el.style.setProperty('--reveal-delay', `${Math.min(index, 6) * 60}ms`);
+        el.addEventListener('animationend', event => {
+          if (event.target !== el) return;
+          el.classList.remove('reveal', 'in-view');
+          el.style.removeProperty('--reveal-delay');
+        });
+        el.classList.add('in-view');
+        observer.unobserve(el);
+      });
+  }, { rootMargin: '0px 0px -6% 0px', threshold: 0.05 });
 
   targets.forEach(el => {
     el.classList.add('reveal');

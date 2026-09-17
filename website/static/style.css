@@ -91,13 +91,19 @@ code {
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 6px; }
 ::selection { background: rgba(90,209,255,0.28); color: #fff; }
 
-/* Scroll reveal */
-.reveal {
-  opacity: 0; transform: translateY(26px);
-  transition: opacity 0.9s var(--ease), transform 0.9s var(--ease);
-  will-change: opacity, transform;
+/* Scroll reveal. Implemented as a keyframe animation (not a transition) so
+   elements that declare their own hover transitions cannot override the
+   opacity easing; JS removes the classes on animationend so hover transforms
+   work normally afterwards. --reveal-delay is set per batch by JS. */
+.reveal { opacity: 0; }
+.reveal.in-view {
+  animation: reveal-in 0.8s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: var(--reveal-delay, 0ms);
 }
-.reveal.in-view { opacity: 1; transform: none; }
+@keyframes reveal-in {
+  from { opacity: 0; transform: translateY(18px); }
+  to   { opacity: 1; transform: none; }
+}
 
 .pulse-dot {
   display: inline-block; width: 7px; height: 7px; border-radius: 50%;
@@ -910,7 +916,8 @@ code {
   html { scroll-behavior: auto; }
   .blob, .orb, .orb-ring, .orb-chip, .pulse-dot, .gradient-text,
   .hero-content, .hero-visual { animation: none !important; }
-  .reveal { opacity: 1; transform: none; transition: none; }
+  .reveal { opacity: 1; }
+  .reveal.in-view { animation: none; }
   .demo-tabs::before, .btn, .stat-card, .feature-category-card, .top3-card, .cat-card, .step, .example-tag { transition: none; }
   .btn-primary:hover, .btn-outline:hover, .stat-card:hover, .feature-category-card:hover, .top3-card:hover,
   .cat-card:hover, .step:hover, .example-tag:hover, .btn-verify:hover { transform: none; }
