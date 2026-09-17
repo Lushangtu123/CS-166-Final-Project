@@ -911,6 +911,90 @@ code {
 .vv-warn       { background: rgba(240,192,90,0.10); color: var(--yellow);  border: 1px solid rgba(240,192,90,0.3); }
 .vv-suspicious { background: rgba(255,92,108,0.12); color: #ff7d8a;        border: 1px solid rgba(255,92,108,0.4); }
 
+/* ── Icon system ─────────────────────────────────────────────────────────── */
+/* Stroke icons share one weight; tiles give them an app-icon-like backdrop. */
+.ico { width: 1.1em; height: 1.1em; display: inline-block; vertical-align: -0.2em; flex-shrink: 0; }
+.ico-lead { width: 18px; height: 18px; margin-top: 1px; }
+
+.icon-tile {
+  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+  width: 44px; height: 44px; border-radius: 14px;
+  background: var(--surface-2); color: var(--text);
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
+}
+.icon-tile .ico { width: 22px; height: 22px; vertical-align: 0; }
+.tile-high   { background: rgba(255,138,76,0.14);  color: var(--orange); border-color: rgba(255,138,76,0.22); }
+.tile-medium { background: rgba(240,192,90,0.14);  color: var(--yellow); border-color: rgba(240,192,90,0.22); }
+.tile-low    { background: rgba(111,182,255,0.14); color: var(--info);   border-color: rgba(111,182,255,0.22); }
+.tile-purple { background: rgba(180,140,255,0.14); color: var(--purple); border-color: rgba(180,140,255,0.22); }
+.tile-grad-cyan, .tile-grad-mint, .tile-grad-violet {
+  color: #06080f; border-color: transparent;
+  box-shadow: 0 10px 24px rgba(0,0,0,0.30), inset 0 1px 0 rgba(255,255,255,0.35);
+}
+.tile-grad-cyan   { background: linear-gradient(135deg, #8fe6ff, #5ad1ff 55%, #38a8ff); }
+.tile-grad-mint   { background: linear-gradient(135deg, #9df0c6, #3fd58f 55%, #22b877); }
+.tile-grad-violet { background: linear-gradient(135deg, #d3bfff, #b48cff 55%, #8c6bff); }
+.tile-grad-cyan .ico, .tile-grad-mint .ico, .tile-grad-violet .ico { stroke-width: 2; }
+
+/* Placements */
+.demo-tab .ico { width: 17px; height: 17px; vertical-align: 0; }
+.email-icon { display: inline-flex; align-items: center; }
+.email-icon .ico { width: 18px; height: 18px; vertical-align: 0; }
+.pill .ico { width: 12px; height: 12px; vertical-align: -0.12em; margin-right: 2px; }
+.btn-verify .ico { width: 15px; height: 15px; vertical-align: 0; }
+.best-badge {
+  display: inline-flex; align-items: center; gap: 4px; margin-left: 8px;
+  padding: 2px 8px; border-radius: var(--pill); font-size: 10.5px; font-weight: 600;
+  background: rgba(90,209,255,0.12); color: var(--accent); vertical-align: middle;
+}
+.best-badge .ico { width: 12px; height: 12px; vertical-align: 0; }
+
+.fc-icon.icon-tile { width: 48px; height: 48px; border-radius: 15px; }
+.di-icon.icon-tile { width: 52px; height: 52px; border-radius: 16px; }
+.cat-icon.icon-tile { width: 40px; height: 40px; border-radius: 12px; margin-top: 0; }
+
+.disp-check-icon {
+  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+  width: 44px; height: 44px; border-radius: 14px;
+  background: var(--surface-2); border: 1px solid rgba(255,255,255,0.08);
+}
+.disp-check-icon .ico { width: 22px; height: 22px; vertical-align: 0; }
+.is-disposable        .disp-check-icon { color: var(--purple);  background: rgba(180,140,255,0.14); border-color: rgba(180,140,255,0.22); }
+.suspected-disposable .disp-check-icon { color: var(--yellow);  background: rgba(240,192,90,0.14);  border-color: rgba(240,192,90,0.22); }
+.not-disposable       .disp-check-icon { color: var(--accent2); background: rgba(63,213,143,0.14);  border-color: rgba(63,213,143,0.22); }
+
+.vb-icon, .crb-icon {
+  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+  width: 56px; height: 56px; border-radius: 50%;
+  border: 1px solid; box-shadow: inset 0 1px 0 rgba(255,255,255,0.10);
+}
+.vb-icon .ico, .crb-icon .ico { width: 28px; height: 28px; vertical-align: 0; }
+.banner-phish   .vb-icon  { color: var(--red);     background: rgba(255,92,108,0.14);  border-color: rgba(255,92,108,0.28); }
+.banner-suspect .vb-icon  { color: var(--yellow);  background: rgba(240,192,90,0.14);  border-color: rgba(240,192,90,0.28); }
+.banner-legit   .vb-icon  { color: var(--accent2); background: rgba(63,213,143,0.14);  border-color: rgba(63,213,143,0.28); }
+.crb-safe       .crb-icon { color: var(--accent2); background: rgba(63,213,143,0.14);  border-color: rgba(63,213,143,0.28); }
+.crb-low        .crb-icon { color: var(--info);    background: rgba(111,182,255,0.14); border-color: rgba(111,182,255,0.28); }
+.crb-medium     .crb-icon { color: var(--yellow);  background: rgba(240,192,90,0.14);  border-color: rgba(240,192,90,0.28); }
+.crb-high       .crb-icon { color: var(--orange);  background: rgba(255,138,76,0.14);  border-color: rgba(255,138,76,0.28); }
+.crb-critical   .crb-icon { color: var(--red);     background: rgba(255,92,108,0.14);  border-color: rgba(255,92,108,0.28); }
+
+.vstep-icon {
+  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+  width: 26px; height: 26px; border-radius: 8px; margin-top: 0;
+  background: rgba(255,255,255,0.06); color: var(--text-muted);
+}
+.vstep-icon .ico { width: 16px; height: 16px; vertical-align: 0; }
+.vstep-ok   .vstep-icon { color: var(--accent2); background: rgba(63,213,143,0.14); }
+.vstep-fail .vstep-icon { color: var(--red);     background: rgba(255,92,108,0.14); }
+.vstep-warn .vstep-icon { color: var(--yellow);  background: rgba(240,192,90,0.14); }
+.vstep-info .vstep-icon { color: var(--accent);  background: rgba(90,209,255,0.14); }
+.verify-section-title { display: flex; align-items: center; gap: 7px; }
+.verify-section-title .ico { width: 14px; height: 14px; vertical-align: 0; color: var(--accent); }
+.verify-verdict .ico-lead { flex-shrink: 0; }
+.footer-brand .brand-mark { width: 24px; height: 24px; border-radius: 8px; }
+.footer-brand .brand-mark .ico { width: 14px; height: 14px; vertical-align: 0; }
+
 /* ── Reduced motion ──────────────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }

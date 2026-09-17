@@ -22,6 +22,42 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-17 14:51 PT] — Unified SVG icon system replaces emoji
+
+### Why
+- User asked for more attractive, modern graphics. The page mixed ~40
+  platform-dependent emoji (🛡 ✉ 📄 🔗 🌐 📧 🗑 ⚠️ ✅ ❌ 🔍 ☠️ 🏆 …) that render
+  differently per OS and clash with the fluid glass design.
+
+### Files changed
+- `website/static/app.js` — added `ICON_PATHS` (29 stroke icons on a 24px
+  grid), `icon(name, extraClass)` helper, and `CATEGORY_ICONS` mapping the
+  backend `category_results[].key` (urgency, threats, financial, credential,
+  impersonation, deception, attachments, tech_scam, job_scam,
+  social_engineering) to clock / bell / dollar / key / mask / eye-off /
+  paperclip / monitor / briefcase / brain. Verdict banners, disposable-check
+  card, verification steps and verdicts, content risk banner, category cards,
+  summary pills, and the benchmark "Best" badge now render SVG via
+  `innerHTML`; emoji removed from ML verdict text; unused `LEVEL_ICONS`
+  dropped. Backend `cat.icon` is no longer displayed (API unchanged).
+- `website/static/index.html` — tabs, input adornment, verification section
+  titles/buttons, disposable info card, feature category cards, and footer use
+  inline SVGs; quick-example chips lose their emoji prefixes; assets bumped to
+  `?v=17`.
+- `website/static/style.css` — new icon layer: `.ico` sizing, `.icon-tile`
+  (44px rounded tile) with tinted `tile-high/medium/low/purple` and
+  app-icon-style gradient `tile-grad-cyan/mint/violet` variants; 56px tinted
+  discs for `.vb-icon`/`.crb-icon` keyed to banner class; tinted 26px squares
+  for `.vstep-icon`; `.best-badge`; per-state colours for `.disp-check-icon`.
+
+### Effect
+- Every symbol on the page now shares one stroke weight and palette; category
+  cards show a semantic icon (clock for urgency, key for credential harvesting,
+  etc.) inside a level-tinted tile instead of backend emoji.
+- Verified via headless Chrome on the sender critical-risk result, content
+  critical-risk result, features, demo input, and benchmark views.
+- `node --test website/static/app.test.mjs` 9/9 passing; `node --check` OK.
+
 ## [2026-09-17 13:39 PT] — Integrate fluid frontend with disposable classification
 
 ### Why

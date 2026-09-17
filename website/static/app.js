@@ -11,6 +11,52 @@ function escapeHtml(value) {
   })[char]);
 }
 
+// ── Icon system ──────────────────────────────────────────────────────────────
+// Single stroke-based icon set (24px grid) so every symbol on the page shares
+// the same weight and style, instead of platform-dependent emoji.
+const ICON_PATHS = {
+  shield:    '<path d="M12 2.5 4.5 5.5v6c0 4.6 3.2 8.6 7.5 9.9 4.3-1.3 7.5-5.3 7.5-9.9v-6L12 2.5z"/><path d="m9 12 2 2 4-4.5"/>',
+  mail:      '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="m3.5 7.5 8.5 6 8.5-6"/>',
+  file:      '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/>',
+  check:     '<circle cx="12" cy="12" r="9"/><path d="m8.5 12.2 2.4 2.4 4.6-5"/>',
+  alert:     '<path d="M12 3.8 2.9 19.5h18.2z"/><path d="M12 10v4.2"/><path d="M12 17.3h.01"/>',
+  x:         '<circle cx="12" cy="12" r="9"/><path d="m9.2 9.2 5.6 5.6M14.8 9.2l-5.6 5.6"/>',
+  search:    '<circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/>',
+  info:      '<circle cx="12" cy="12" r="9"/><path d="M12 11v5.2"/><path d="M12 7.8h.01"/>',
+  minus:     '<circle cx="12" cy="12" r="9"/><path d="M8.5 12h7"/>',
+  trash:     '<path d="M4 7h16"/><path d="M9.5 7V4.5h5V7"/><path d="m6 7 1 13h10l1-13"/><path d="M10 11v5M14 11v5"/>',
+  skull:     '<path d="M12 3a8 8 0 0 0-8 8c0 2.6 1.2 4.7 3 6v3.5h10V17c1.8-1.3 3-3.4 3-6a8 8 0 0 0-8-8z"/><circle cx="9.2" cy="11.5" r="1.3"/><circle cx="14.8" cy="11.5" r="1.3"/><path d="M10.5 20.5v-2.5M13.5 20.5v-2.5"/>',
+  clock:     '<circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2"/>',
+  bell:      '<path d="M6.5 9a5.5 5.5 0 0 1 11 0v4.5l1.8 2.7H4.7l1.8-2.7z"/><path d="M10 19.5a2 2 0 0 0 4 0"/>',
+  dollar:    '<circle cx="12" cy="12" r="9"/><path d="M12 6.5v11"/><path d="M14.8 9.4c0-1.3-1.3-2-2.8-2s-2.8.7-2.8 2 1.3 1.7 2.8 2.1 2.8 1 2.8 2.3-1.3 2-2.8 2-2.8-.7-2.8-2"/>',
+  key:       '<circle cx="8" cy="15" r="3.8"/><path d="m10.7 12.3 8.3-8.3"/><path d="m15.5 7.5 2.2 2.2M18 5l2 2"/>',
+  mask:      '<path d="M4 6.5c4-1.6 12-1.6 16 0V12c0 4.2-4 7.3-8 8.5-4-1.2-8-4.3-8-8.5z"/><path d="M7.8 11.3c1-.9 2.2-.9 3.2 0M13 11.3c1-.9 2.2-.9 3.2 0"/>',
+  eyeOff:    '<path d="m3 3 18 18"/><path d="M10.6 10.6a2 2 0 0 0 2.8 2.8"/><path d="M9.9 5.2A10.8 10.8 0 0 1 12 5c5 0 9 4.5 10 7-.4 1-1.3 2.4-2.6 3.7"/><path d="M6.6 6.6C4.3 8 2.7 10.2 2 12c1 2.5 5 7 10 7 1.5 0 2.9-.4 4.2-1"/>',
+  paperclip: '<path d="m21 11.5-8.5 8.5a5 5 0 0 1-7-7l9-9a3.3 3.3 0 0 1 4.7 4.7l-9 9a1.6 1.6 0 0 1-2.3-2.3L16 7.2"/>',
+  monitor:   '<rect x="3" y="4" width="18" height="12" rx="2.5"/><path d="M8 20h8M12 16v4"/>',
+  briefcase: '<rect x="3" y="7" width="18" height="13" rx="2.5"/><path d="M8 7V5.5A2.5 2.5 0 0 1 10.5 3h3A2.5 2.5 0 0 1 16 5.5V7"/><path d="M3 12.5h18"/>',
+  brain:     '<path d="M9 4a3 3 0 0 0-3 3 3 3 0 0 0-2 5 3 3 0 0 0 2 5 3 3 0 0 0 3 3h3V4z"/><path d="M15 4a3 3 0 0 1 3 3 3 3 0 0 1 2 5 3 3 0 0 1-2 5 3 3 0 0 1-3 3h-3V4z"/>',
+  link:      '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1.2 1.2"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1.2-1.2"/>',
+  globe:     '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a13.5 13.5 0 0 1 0 18M12 3a13.5 13.5 0 0 0 0 18"/>',
+  user:      '<circle cx="12" cy="8" r="3.8"/><path d="M4.5 20.5c0-3.9 3.4-6.5 7.5-6.5s7.5 2.6 7.5 6.5"/>',
+  inbox:     '<path d="M3 13.5h5l1.8 2.5h4.4l1.8-2.5h5"/><path d="M5.5 5h13l2.5 8.5V19a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 19v-5.5z"/>',
+  refresh:   '<path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/>',
+  sparkle:   '<path d="M12 3.5 13.8 9l5.7 1.8-5.7 1.8L12 18.2l-1.8-5.6L4.5 10.8 10.2 9z"/>',
+  award:     '<circle cx="12" cy="9" r="5.5"/><path d="m8.8 13.5-1.3 7 4.5-2.5 4.5 2.5-1.3-7"/>',
+  dot:       '<circle cx="12" cy="12" r="4"/>',
+};
+
+function icon(name, extraClass = '') {
+  const paths = ICON_PATHS[name] || ICON_PATHS.info;
+  return `<svg class="ico${extraClass ? ' ' + extraClass : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+}
+
+const CATEGORY_ICONS = {
+  urgency: 'clock', threats: 'bell', financial: 'dollar', credential: 'key',
+  impersonation: 'mask', deception: 'eyeOff', attachments: 'paperclip',
+  tech_scam: 'monitor', job_scam: 'briefcase', social_engineering: 'brain',
+};
+
 // ── Init ─────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
   setupScrollReveal();
@@ -158,11 +204,11 @@ async function runVerification() {
 
 function renderVerifyResult(data) {
   const ICONS = {
-    ok:   { icon: '✅', cls: 'vstep-ok'   },
-    warn: { icon: '⚠️', cls: 'vstep-warn' },
-    fail: { icon: '❌', cls: 'vstep-fail' },
-    skip: { icon: '—',  cls: 'vstep-skip' },
-    info: { icon: 'ℹ️', cls: 'vstep-info' },
+    ok:   { icon: 'check', cls: 'vstep-ok'   },
+    warn: { icon: 'alert', cls: 'vstep-warn' },
+    fail: { icon: 'x',     cls: 'vstep-fail' },
+    skip: { icon: 'minus', cls: 'vstep-skip' },
+    info: { icon: 'info',  cls: 'vstep-info' },
   };
 
   function setStep(id, state, detail) {
@@ -171,7 +217,7 @@ function renderVerifyResult(data) {
     const step     = document.getElementById(`vstep-${id}`);
     if (!iconEl) return;
     const cfg = ICONS[state] || ICONS.skip;
-    iconEl.textContent   = cfg.icon;
+    iconEl.innerHTML     = icon(cfg.icon);
     step.className       = 'verify-step ' + cfg.cls;
     detailEl.textContent = detail;
   }
@@ -269,23 +315,23 @@ function renderVerifyResult(data) {
 
 function showVerifyVerdict(overall) {
   const VERDICTS = {
-    verified:    { cls: 'vv-ok',      icon: '✅',
+    verified:    { cls: 'vv-ok',      icon: 'check',
       text: 'Verified — This mailbox exists and can receive email.' },
-    likely_invalid: { cls: 'vv-fail', icon: '❌',
+    likely_invalid: { cls: 'vv-fail', icon: 'x',
       text: 'Likely Invalid — This address probably does not exist.' },
-    unverifiable: { cls: 'vv-warn',   icon: '⚠️',
+    unverifiable: { cls: 'vv-warn',   icon: 'alert',
       text: 'Unverifiable — Domain and MX records are real, but the mail server blocked the mailbox probe (port 25 filtered or server has probe protection). The address may still be valid.' },
-    suspicious:  { cls: 'vv-suspicious', icon: '🚨',
+    suspicious:  { cls: 'vv-suspicious', icon: 'bell',
       text: 'Suspicious — Domain was registered very recently (< 30 days). Newly registered domains are a hallmark of phishing campaigns.' },
-    invalid_format: { cls: 'vv-fail', icon: '❌',
+    invalid_format: { cls: 'vv-fail', icon: 'x',
       text: 'Invalid Format — This is not a valid email address.' },
-    temporarily_unavailable: { cls: 'vv-warn', icon: '⚠️',
+    temporarily_unavailable: { cls: 'vv-warn', icon: 'alert',
       text: 'Temporarily Unavailable — The server returned a transient error. Try again later.' },
   };
-  const cfg = VERDICTS[overall] || { cls: 'vv-warn', icon: '⋯', text: 'Result inconclusive.' };
+  const cfg = VERDICTS[overall] || { cls: 'vv-warn', icon: 'minus', text: 'Result inconclusive.' };
   const el  = document.getElementById('verify-verdict');
   el.className  = 'verify-verdict ' + cfg.cls;
-  el.innerHTML  = `<span>${cfg.icon}</span> ${cfg.text}`;
+  el.innerHTML  = `${icon(cfg.icon, 'ico-lead')} <span>${cfg.text}</span>`;
 
   document.getElementById('verify-result').classList.remove('hidden');
 }
@@ -393,21 +439,21 @@ function renderResult(data) {
   if (disposableStatus === 'known_disposable_provider') {
     dispRow.className  = 'disp-check-row disp-is-disposable';
     dispCard.className = 'col-card disposable-check-card is-disposable';
-    dispIcon.textContent  = '🗑';
+    dispIcon.innerHTML    = icon('trash');
     dispLabel.textContent = 'Known disposable-email provider';
     dispDet.textContent   = `Provider registry match: ${data.matched_provider_domain || data.disposable_service || domain}. The individual mailbox lifetime is not known.${aliasNote}`;
 
   } else if (disposableStatus === 'privacy_relay') {
     dispRow.className  = 'disp-check-row disp-not-disposable';
     dispCard.className = 'col-card disposable-check-card not-disposable';
-    dispIcon.textContent  = '🛡️';
+    dispIcon.innerHTML    = icon('shield');
     dispLabel.textContent = 'Privacy relay / masked address';
     dispDet.textContent   = `Provider: ${data.matched_provider_domain || domain}. Privacy relays protect a user's primary address and are not phishing evidence by themselves.${aliasNote}`;
 
   } else if (disposableStatus === 'suspicious_mailbox_pattern') {
     dispRow.className  = 'disp-check-row disp-suspected-disposable';
     dispCard.className = 'col-card disposable-check-card suspected-disposable';
-    dispIcon.textContent  = '⚠️';
+    dispIcon.innerHTML    = icon('alert');
     dispLabel.textContent = 'Mailbox pattern is suspicious; lifetime unknown';
     dispDet.textContent = `The username has several automatically generated characteristics. Account age and disposability cannot be confirmed from the address alone.${aliasNote}`;
     const badge = document.createElement('div');
@@ -418,14 +464,14 @@ function renderResult(data) {
   } else if (disposableStatus === 'suspicious_domain_pattern') {
     dispRow.className  = 'disp-check-row disp-suspected-disposable';
     dispCard.className = 'col-card disposable-check-card suspected-disposable';
-    dispIcon.textContent  = '⚠️';
+    dispIcon.innerHTML    = icon('alert');
     dispLabel.textContent = 'Disposable-style domain name; not confirmed';
     dispDet.textContent = `Domain "${domain}" resembles a temporary-email service name but is not in the confirmed provider registry.${aliasNote}`;
 
   } else {
     dispRow.className  = 'disp-check-row disp-not-disposable';
     dispCard.className = 'col-card disposable-check-card not-disposable';
-    dispIcon.textContent  = '✉️';
+    dispIcon.innerHTML    = icon('mail');
     dispLabel.textContent = 'No known disposable-provider match';
     dispDet.textContent   = `Domain "${domain}" did not match the local provider registry. Account age and intent cannot be determined from the address alone.${aliasNote}`;
   }
@@ -434,14 +480,14 @@ function renderResult(data) {
   const banner = document.getElementById('verdict-banner');
   let bannerCls, bannerIcon, probColor;
   if (isHighRisk) {
-    bannerCls = 'banner-phish';   bannerIcon = '⚠️';  probColor = '#ff5c6c';
+    bannerCls = 'banner-phish';   bannerIcon = 'alert';  probColor = '#ff5c6c';
   } else if (isSuspect) {
-    bannerCls = 'banner-suspect'; bannerIcon = '🔍';  probColor = '#f0c05a';
+    bannerCls = 'banner-suspect'; bannerIcon = 'search'; probColor = '#f0c05a';
   } else {
-    bannerCls = 'banner-legit';   bannerIcon = '✅';  probColor = '#3fd58f';
+    bannerCls = 'banner-legit';   bannerIcon = 'check';  probColor = '#3fd58f';
   }
   banner.className = 'verdict-banner ' + bannerCls;
-  document.getElementById('vb-icon').textContent  = bannerIcon;
+  document.getElementById('vb-icon').innerHTML    = icon(bannerIcon);
   document.getElementById('vb-title').textContent = data.label;
   document.getElementById('vb-email').textContent = data.email;
   document.getElementById('vb-prob-label').textContent = 'Sender Risk Score';
@@ -473,14 +519,14 @@ function renderResult(data) {
   const m = data.med_risk_count;
   let dispPill = '';
   if (disposableStatus === 'known_disposable_provider') {
-    dispPill = `<span class="pill pill-disp">🗑 Disposable</span>`;
+    dispPill = `<span class="pill pill-disp">${icon('trash')} Disposable</span>`;
   } else if (disposableStatus === 'suspicious_mailbox_pattern' || disposableStatus === 'suspicious_domain_pattern') {
-    dispPill = `<span class="pill pill-disp-suspect">⚠️ Suspected Disposable</span>`;
+    dispPill = `<span class="pill pill-disp-suspect">${icon('alert')} Suspected Disposable</span>`;
   } else if (disposableStatus === 'privacy_relay') {
-    dispPill = `<span class="pill pill-feat">🛡️ Privacy relay</span>`;
+    dispPill = `<span class="pill pill-feat">${icon('shield')} Privacy relay</span>`;
   }
   const suspectPill = isSuspect || isHighRisk
-    ? `<span class="pill pill-suspect">🔍 Suspected Phishing</span>`
+    ? `<span class="pill pill-suspect">${icon('search')} Suspected Phishing</span>`
     : '';
   riskSummary.innerHTML = `
     <div class="risk-pills">
@@ -559,7 +605,7 @@ function renderMetricsTable(metrics) {
     const isRF = clf === 'Random Forest';
     return `
       <tr class="${isRF ? 'row-best' : ''}">
-        <td class="clf-name">${isRF ? '🏆 ' : ''}${clf}</td>
+        <td class="clf-name">${clf}${isRF ? ` <span class="best-badge">${icon('award')} Best</span>` : ''}</td>
         ${cols.map(col => `<td class="${m[col] === best[col] ? 'cell-best' : ''}">${m[col].toFixed(4)}</td>`).join('')}
       </tr>
     `;
@@ -727,14 +773,12 @@ async function runContentAnalysis() {
 }
 
 const RISK_CONFIG = {
-  safe:     { icon: '✅', color: 'safe',     scoreColor: '#3fd58f' },
-  low:      { icon: '🔵', color: 'low',      scoreColor: '#6fb6ff' },
-  medium:   { icon: '⚠️',  color: 'medium',  scoreColor: '#f0c05a' },
-  high:     { icon: '🔴', color: 'high',     scoreColor: '#ff8a4c' },
-  critical: { icon: '☠️',  color: 'critical', scoreColor: '#ff5c6c' },
+  safe:     { icon: 'check', color: 'safe',     scoreColor: '#3fd58f' },
+  low:      { icon: 'info',  color: 'low',      scoreColor: '#6fb6ff' },
+  medium:   { icon: 'alert', color: 'medium',   scoreColor: '#f0c05a' },
+  high:     { icon: 'bell',  color: 'high',     scoreColor: '#ff8a4c' },
+  critical: { icon: 'skull', color: 'critical', scoreColor: '#ff5c6c' },
 };
-
-const LEVEL_ICONS = { high: '🔴', medium: '🟡', low: '🔵', info: 'ℹ️' };
 
 function renderContentResult(data) {
   const cfg = RISK_CONFIG[data.risk_level] || RISK_CONFIG.medium;
@@ -742,7 +786,7 @@ function renderContentResult(data) {
   // Banner
   const banner = document.getElementById('content-risk-banner');
   banner.className = 'content-risk-banner crb-' + data.risk_level;
-  document.getElementById('crb-icon').textContent  = cfg.icon;
+  document.getElementById('crb-icon').innerHTML    = icon(cfg.icon);
   document.getElementById('crb-title').textContent = data.risk_label;
   // Sub-line: now combines heuristic categories with ML verdict
   const subParts = [];
@@ -776,7 +820,7 @@ function renderContentResult(data) {
     document.getElementById('content-legit-bar').style.width = legitPct + '%';
     document.getElementById('content-legit-pct').textContent = legitPct + '%';
 
-    const verdict = data.ml_prediction === 1 ? '🚨 Likely Phishing' : '✅ Likely Legitimate';
+    const verdict = data.ml_prediction === 1 ? 'Likely phishing' : 'Likely legitimate';
     document.getElementById('content-ml-sub').textContent =
       `${verdict} — model confidence ${Math.max(phishPct, legitPct).toFixed(1)}%`;
 
@@ -816,7 +860,7 @@ function renderContentResult(data) {
     grid.innerHTML = data.category_results.map(cat => `
       <div class="cat-card cat-${cat.level}">
         <div class="cat-header">
-          <span class="cat-icon">${escapeHtml(cat.icon)}</span>
+          <span class="cat-icon icon-tile tile-${escapeHtml(cat.level)}">${icon(CATEGORY_ICONS[cat.key] || 'alert')}</span>
           <div class="cat-title-wrap">
             <div class="cat-title">${escapeHtml(cat.label)}</div>
             <div class="cat-count">${cat.count} signal${cat.count > 1 ? 's' : ''} matched</div>

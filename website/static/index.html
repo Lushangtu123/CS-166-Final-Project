@@ -6,7 +6,7 @@
   <title>PhishGuard – Phishing Email Detector</title>
   <meta name="color-scheme" content="dark" />
   <meta name="theme-color" content="#06080f" />
-  <link rel="stylesheet" href="/static/style.css?v=16" />
+  <link rel="stylesheet" href="/static/style.css?v=17" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -101,10 +101,10 @@
     <!-- Tab Switcher -->
     <div class="demo-tabs">
       <button class="demo-tab active" id="tab-email-address" onclick="switchDemoTab('email-address')">
-        <span>✉</span> Email Address
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m3.5 7.5 8.5 6 8.5-6"/></svg> Email Address
       </button>
       <button class="demo-tab" id="tab-email-content" onclick="switchDemoTab('email-content')">
-        <span>📄</span> Email Content
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/></svg> Email Content
       </button>
     </div>
 
@@ -115,7 +115,7 @@
     <div class="email-input-card">
       <div class="email-input-row">
         <div class="email-input-wrap">
-          <span class="email-icon">✉</span>
+          <span class="email-icon"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m3.5 7.5 8.5 6 8.5-6"/></svg></span>
           <input
             type="text"
             id="email-input"
@@ -140,8 +140,8 @@
         <button class="example-tag phish-tag" onclick="setExample('security-alert@paypa1-verify.xyz')">security-alert@paypa1-verify.xyz</button>
         <button class="example-tag phish-tag" onclick="setExample('support@apple-id-locked.tk')">support@apple-id-locked.tk</button>
         <button class="example-tag phish-tag" onclick="setExample('admin99@192.168.1.1')">admin99@192.168.1.1</button>
-        <button class="example-tag disp-tag" onclick="setExample('user@mailinator.com')" title="Confirmed disposable">🗑 mailinator.com</button>
-        <button class="example-tag susp-tag" onclick="setExample('oncw3kjobqxb@randominbox.net')" title="Suspected disposable (auto-generated username)">⚠️ Suspected disposable</button>
+        <button class="example-tag disp-tag" onclick="setExample('user@mailinator.com')" title="Confirmed disposable">mailinator.com</button>
+        <button class="example-tag susp-tag" onclick="setExample('oncw3kjobqxb@randominbox.net')" title="Suspected disposable (auto-generated username)">Suspected disposable</button>
       </div>
     </div>
 
@@ -209,7 +209,7 @@
             <div id="verify-idle" class="verify-idle">
               <p class="verify-desc">Verify whether this mailbox actually exists by checking DNS records and probing the mail server via SMTP.</p>
               <button class="btn-verify" onclick="runVerification()">
-                <span>🔎</span> Run Verification
+                <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg> Run Verification
               </button>
             </div>
             <div id="verify-loading" class="verify-loading hidden">
@@ -219,7 +219,7 @@
             <div id="verify-result" class="verify-result hidden">
 
               <!-- Section A: Mailbox Existence -->
-              <div class="verify-section-title">📬 Mailbox Existence</div>
+              <div class="verify-section-title"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 13.5h5l1.8 2.5h4.4l1.8-2.5h5"/><path d="M5.5 5h13l2.5 8.5V19a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 19v-5.5z"/></svg> Mailbox Existence</div>
               <div class="verify-steps">
                 <div class="verify-step" id="vstep-format">
                   <span class="vstep-icon" id="vstep-format-icon"></span>
@@ -252,7 +252,7 @@
               </div>
 
               <!-- Section B: Email Security Policy -->
-              <div class="verify-section-title">🛡️ Email Security Policy</div>
+              <div class="verify-section-title"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.5 4.5 5.5v6c0 4.6 3.2 8.6 7.5 9.9 4.3-1.3 7.5-5.3 7.5-9.9v-6L12 2.5z"/><path d="m9 12 2 2 4-4.5"/></svg> Email Security Policy</div>
               <div class="verify-steps">
                 <div class="verify-step" id="vstep-spf">
                   <span class="vstep-icon" id="vstep-spf-icon"></span>
@@ -271,7 +271,7 @@
               </div>
 
               <!-- Section C: Domain Intelligence -->
-              <div class="verify-section-title">🌐 Domain Intelligence</div>
+              <div class="verify-section-title"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a13.5 13.5 0 0 1 0 18M12 3a13.5 13.5 0 0 0 0 18"/></svg> Domain Intelligence</div>
               <div class="verify-steps">
                 <div class="verify-step" id="vstep-age">
                   <span class="vstep-icon" id="vstep-age-icon"></span>
@@ -284,7 +284,7 @@
 
               <!-- Overall verdict -->
               <div class="verify-verdict" id="verify-verdict"></div>
-              <button class="btn-verify btn-verify-sm" onclick="runVerification()">🔄 Re-run</button>
+              <button class="btn-verify btn-verify-sm" onclick="runVerification()"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/></svg> Re-run</button>
             </div>
           </div>
         </div>
@@ -313,7 +313,7 @@
     <!-- Disposable email info card (always visible, anchor target) -->
     <div class="disposable-info-card" id="disposable-info">
       <div class="di-header">
-        <span class="di-icon">🗑</span>
+        <span class="di-icon icon-tile tile-purple"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"/><path d="M9.5 7V4.5h5V7"/><path d="m6 7 1 13h10l1-13"/><path d="M10 11v5M14 11v5"/></svg></span>
         <div>
           <div class="di-title">What Are Disposable Email Addresses?</div>
           <div class="di-sub">And why are they a security concern?</div>
@@ -407,9 +407,9 @@
 
         <div class="quick-examples">
           <span class="examples-label">Quick examples:</span>
-          <button class="example-tag phish-tag" onclick="setContentExample('phishing-account')">⚠️ Account suspension phish</button>
-          <button class="example-tag phish-tag" onclick="setContentExample('phishing-lottery')">💰 Lottery scam</button>
-          <button class="example-tag legit-tag" onclick="setContentExample('legit-newsletter')">✅ Legitimate newsletter</button>
+          <button class="example-tag phish-tag" onclick="setContentExample('phishing-account')">Account suspension phish</button>
+          <button class="example-tag phish-tag" onclick="setContentExample('phishing-lottery')">Lottery scam</button>
+          <button class="example-tag legit-tag" onclick="setContentExample('legit-newsletter')">Legitimate newsletter</button>
         </div>
       </div>
 
@@ -557,7 +557,7 @@
     <div class="feature-cards-grid">
       <div class="feature-category-card">
         <div class="fc-header url-header">
-          <span class="fc-icon">🔗</span>
+          <span class="fc-icon icon-tile tile-grad-cyan"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1.2 1.2"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1.2-1.2"/></svg></span>
           <div>
             <div class="fc-title">URL / Address Structure</div>
             <div class="fc-count">8 features</div>
@@ -577,7 +577,7 @@
 
       <div class="feature-category-card">
         <div class="fc-header domain-header">
-          <span class="fc-icon">🌐</span>
+          <span class="fc-icon icon-tile tile-grad-mint"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a13.5 13.5 0 0 1 0 18M12 3a13.5 13.5 0 0 0 0 18"/></svg></span>
           <div>
             <div class="fc-title">Domain Reputation</div>
             <div class="fc-count">8 features · Highest signal</div>
@@ -597,7 +597,7 @@
 
       <div class="feature-category-card">
         <div class="fc-header html-header">
-          <span class="fc-icon">📧</span>
+          <span class="fc-icon icon-tile tile-grad-violet"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.8"/><path d="M4.5 20.5c0-3.9 3.4-6.5 7.5-6.5s7.5 2.6 7.5 6.5"/></svg></span>
           <div>
             <div class="fc-title">Username Patterns</div>
             <div class="fc-count">14 features</div>
@@ -718,7 +718,7 @@
 <footer class="footer">
   <div class="footer-inner">
     <div class="footer-brand">
-      <span class="shield-icon">🛡</span> PhishGuard
+      <span class="brand-mark" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.5 4.5 5.5v6c0 4.6 3.2 8.6 7.5 9.9 4.3-1.3 7.5-5.3 7.5-9.9v-6L12 2.5z"/><path d="m9 12 2 2 4-4.5"/></svg></span> PhishGuard
     </div>
     <div class="footer-info">
       CS 166 – Information Security · Final Project ·
@@ -727,6 +727,6 @@
   </div>
 </footer>
 
-<script src="/static/app.js?v=16"></script>
+<script src="/static/app.js?v=17"></script>
 </body>
 </html>
