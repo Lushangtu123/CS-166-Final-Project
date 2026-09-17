@@ -13,11 +13,53 @@ function escapeHtml(value) {
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
+  setupScrollReveal();
   await loadPublicConfig();
   await loadMetrics();
   setupSmoothScroll();
   setupInputEvents();
 });
+
+// ── Scroll reveal ────────────────────────────────────────────────────────────
+// Elements fade/slide in the first time they enter the viewport. Without
+// IntersectionObserver (or with reduced-motion) nothing is hidden, so content
+// is always reachable.
+const REVEAL_SELECTORS = [
+  '.section-header', '.demo-tabs', '.email-input-card', '.content-input-card',
+  '.disposable-info-card', '.metrics-table-wrap', '.chart-card',
+  '.feature-category-card', '.top3-section h3', '.top3-card', '.step', '.tech-stack',
+];
+const REVEAL_GROUPS = [
+  '.hero-stats', '.charts-row', '.feature-cards-grid', '.top3-grid', '.pipeline-steps',
+];
+
+function setupScrollReveal() {
+  if (typeof IntersectionObserver === 'undefined') return;
+  if (typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+  const targets = new Set(document.querySelectorAll(REVEAL_SELECTORS.join(',')));
+  REVEAL_GROUPS.forEach(groupSelector => {
+    document.querySelectorAll(groupSelector).forEach(group => {
+      Array.from(group.children).forEach((child, index) => {
+        child.style.transitionDelay = `${Math.min(index, 7) * 70}ms`;
+        targets.add(child);
+      });
+    });
+  });
+
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+      if (!entry.isIntersecting) return;
+      entry.target.classList.add('in-view');
+      observer.unobserve(entry.target);
+    });
+  }, { rootMargin: '0px 0px -8% 0px', threshold: 0.08 });
+
+  targets.forEach(el => {
+    el.classList.add('reveal');
+    observer.observe(el);
+  });
+}
 
 function setupInputEvents() {
   const input = document.getElementById('email-input');
@@ -807,4 +849,4 @@ function setupSmoothScroll() {
 
 window.addEventListener('scroll', () => {
   document.querySelector('.navbar').classList.toggle('scrolled', window.scrollY > 30);
-});
+}, { passive: true });
