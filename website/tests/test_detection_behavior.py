@@ -115,6 +115,88 @@ class ContentRuleRobustnessTests(unittest.TestCase):
         self.assertIn(result["risk_level"], {"high", "critical"})
         self.assertTrue(any("idn" in message or "confusable" in message for message in messages))
 
+    def test_ascii_digit_brand_lookalike_destination_is_high_risk(self):
+        result = app.analyze_email_content(
+            "Document shared",
+            '<a href="https://paypa1.com/view">Review document</a>',
+        )
+
+        messages = [item["msg"].lower() for item in result["extra_indicators"]]
+        self.assertIn(result["risk_level"], {"high", "critical"})
+        self.assertTrue(any("lookalike" in message for message in messages))
+
+    def test_url_userinfo_destination_is_high_risk(self):
+        result = app.analyze_email_content(
+            "Document shared",
+            '<a href="https://paypal.com@evil.example/view">Review document</a>',
+        )
+
+        messages = [item["msg"].lower() for item in result["extra_indicators"]]
+        self.assertIn(result["risk_level"], {"high", "critical"})
+        self.assertTrue(any("userinfo" in message for message in messages))
+
+    def test_empty_url_userinfo_is_not_high_risk(self):
+        result = app.analyze_email_content(
+            "Document shared",
+            '<a href="https://@example.com/view">Review document</a>',
+        )
+
+        messages = [item["msg"].lower() for item in result["extra_indicators"]]
+        self.assertNotIn(result["risk_level"], {"high", "critical"})
+        self.assertFalse(any("userinfo" in message for message in messages))
+
+    def test_brand_in_deceptive_subdomain_is_high_risk(self):
+        result = app.analyze_email_content(
+            "Document shared",
+            '<a href="https://paypal.com.evil.example/view">Review document</a>',
+        )
+
+        messages = [item["msg"].lower() for item in result["extra_indicators"]]
+        self.assertIn(result["risk_level"], {"high", "critical"})
+        self.assertTrue(any("lookalike" in message for message in messages))
+
+    def test_concatenated_brand_lure_destination_is_high_risk(self):
+        for destination in (
+            "https://securepaypal.example/view",
+            "https://paypalverify.example/view",
+            "https://paypalservice.example/view",
+            "https://paypalconfirm.example/view",
+            "https://paypalportal.example/view",
+            "https://pay-pal.example/view",
+            "https://paypa-l.example/view",
+        ):
+            with self.subTest(destination=destination):
+                result = app.analyze_email_content(
+                    "Document shared",
+                    f'<a href="{destination}">Review document</a>',
+                )
+                messages = [
+                    item["msg"].lower() for item in result["extra_indicators"]
+                ]
+                self.assertIn(result["risk_level"], {"high", "critical"})
+                self.assertTrue(any("lookalike" in message for message in messages))
+
+    def test_canonical_brand_destination_is_not_a_lookalike(self):
+        for destination in (
+            "https://paypal.com/view",
+            "https://www.paypal.com/view",
+            "https://pineapple.com/view",
+            "https://googleusercontent.com/view",
+            "https://amazon.co.uk/view",
+            "https://amazon.de/view",
+            "https://google.co.uk/view",
+        ):
+            with self.subTest(destination=destination):
+                result = app.analyze_email_content(
+                    "Document shared",
+                    f'<a href="{destination}">Review document</a>',
+                )
+                messages = [
+                    item["msg"].lower() for item in result["extra_indicators"]
+                ]
+                self.assertFalse(any("lookalike" in message for message in messages))
+                self.assertFalse(any("userinfo" in message for message in messages))
+
     def test_malformed_link_destination_does_not_abort_analysis(self):
         result = app.analyze_email_content(
             "Document shared",
@@ -187,6 +269,77 @@ class ContentRuleRobustnessTests(unittest.TestCase):
 
 
 class RawEmailAnalysisTests(unittest.TestCase):
+    def test_raw_email_fuses_suspicious_sender_analysis(self):
+        raw_email = """From: billing@secure-account.xyz
+To: user@example.com
+Subject: Notice
+
+Please review.
+"""
+
+        response = asyncio.run(
+            app.analyze_content_endpoint(app.ContentRequest(raw_email=raw_email))
+        )
+        result = json.loads(response.body)
+        messages = [item["msg"].lower() for item in result["extra_indicators"]]
+
+        self.assertIn("sender_analysis", result)
+        self.assertEqual(result["sender_analysis"]["risk_score"], 100)
+        self.assertEqual(result["sender_analysis"]["verdict"], "critical")
+        self.assertIn(result["risk_level"], {"high", "critical"})
+        self.assertTrue(any("sender:" in message for message in messages))
+
+    def test_raw_email_fuses_highest_risk_from_multiple_mailboxes(self):
+        raw_email = """From: Alice <alice@gmail.com>, billing@secure-account.xyz
+To: user@example.com
+Subject: Notice
+
+Please review.
+"""
+
+        response = asyncio.run(
+            app.analyze_content_endpoint(app.ContentRequest(raw_email=raw_email))
+        )
+        result = json.loads(response.body)
+
+        self.assertEqual(result["sender_analysis"]["risk_score"], 100)
+        self.assertEqual(result["sender_analysis"]["verdict"], "critical")
+        self.assertIn(result["risk_level"], {"high", "critical"})
+
+    def test_raw_email_ignores_malformed_quoted_from_value(self):
+        raw_email = """From: "quoted@display"
+To: user@example.com
+Subject: Project update
+
+Here is the requested update.
+"""
+
+        response = asyncio.run(
+            app.analyze_content_endpoint(app.ContentRequest(raw_email=raw_email))
+        )
+        result = json.loads(response.body)
+
+        self.assertNotIn("sender_analysis", result)
+        self.assertEqual(result["risk_level"], "safe")
+
+    def test_raw_email_keeps_known_provider_sender_benign(self):
+        raw_email = """From: Alice <alice@gmail.com>
+To: user@example.com
+Subject: Project update
+
+Here is the requested update.
+"""
+
+        response = asyncio.run(
+            app.analyze_content_endpoint(app.ContentRequest(raw_email=raw_email))
+        )
+        result = json.loads(response.body)
+
+        self.assertIn("sender_analysis", result)
+        self.assertLess(result["sender_analysis"]["risk_score"], 20)
+        self.assertEqual(result["total_score"], 0)
+        self.assertEqual(result["risk_level"], "safe")
+
     def test_protected_brand_display_name_requires_a_canonical_domain(self):
         samples = (
             "From: PayPal <billing@gmail.com>\nSubject: Receipt\n\nReview receipt.",
@@ -362,6 +515,131 @@ payload
                 messages = [item["msg"].lower() for item in structure["indicators"]]
                 self.assertGreater(structure["structure_score"], 0)
                 self.assertTrue(any("attachment" in message for message in messages))
+
+    def test_extensionless_executable_mime_attachment_is_high_risk(self):
+        for content_type in ("application/x-msdownload", "application/x-java-archive"):
+            raw_email = f"""From: Service <notice@example.com>
+Subject: Updated files
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary=x
+
+--x
+Content-Type: text/plain
+
+Please review.
+--x
+Content-Type: {content_type}
+Content-Disposition: attachment; filename="invoice"
+
+payload
+--x--
+"""
+            with self.subTest(content_type=content_type):
+                structure = app.analyze_raw_email(raw_email)
+                messages = [item["msg"].lower() for item in structure["indicators"]]
+
+                self.assertEqual(structure["risk_floor"], "high")
+                self.assertTrue(any("attachment" in message for message in messages))
+
+    def test_dangerous_mime_leaf_is_high_risk_without_attachment_metadata(self):
+        for disposition in ("", "Content-Disposition: inline\n"):
+            raw_email = f"""From: Service <notice@example.com>
+Subject: Updated files
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary=x
+
+--x
+Content-Type: text/plain
+
+Please review.
+--x
+Content-Type: application/x-msdownload
+{disposition}
+payload
+--x--
+"""
+
+            with self.subTest(disposition=disposition or "missing"):
+                structure = app.analyze_raw_email(raw_email)
+                messages = [item["msg"].lower() for item in structure["indicators"]]
+                self.assertEqual(structure["risk_floor"], "high")
+                self.assertTrue(any("attachment" in message for message in messages))
+
+    def test_extensionless_macro_office_mime_attachments_are_high_risk(self):
+        content_types = (
+            "application/vnd.ms-word.template.macroEnabled.12",
+            "application/vnd.ms-excel.template.macroEnabled.12",
+            "application/vnd.ms-powerpoint.slideshow.macroEnabled.12",
+        )
+        for content_type in content_types:
+            raw_email = f"""From: Service <notice@example.com>
+Subject: Updated files
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary=x
+
+--x
+Content-Type: text/plain
+
+Please review.
+--x
+Content-Type: {content_type}
+Content-Disposition: attachment; filename="invoice"
+
+payload
+--x--
+"""
+            with self.subTest(content_type=content_type):
+                structure = app.analyze_raw_email(raw_email)
+                self.assertEqual(structure["risk_floor"], "high")
+
+    def test_extensionless_archive_mime_attachment_is_medium_risk(self):
+        for content_type in ("application/zip", "application/x-zip-compressed"):
+            raw_email = f"""From: Service <notice@example.com>
+Subject: Updated files
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary=x
+
+--x
+Content-Type: text/plain
+
+Please review.
+--x
+Content-Type: {content_type}
+Content-Disposition: attachment; filename="invoice"
+
+payload
+--x--
+"""
+            with self.subTest(content_type=content_type):
+                structure = app.analyze_raw_email(raw_email)
+                messages = [item["msg"].lower() for item in structure["indicators"]]
+
+                self.assertEqual(structure["risk_floor"], "medium")
+                self.assertTrue(any("archive attachment" in message for message in messages))
+
+    def test_pdf_mime_attachment_without_dangerous_extension_is_not_flagged(self):
+        raw_email = """From: Service <notice@example.com>
+Subject: Updated files
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary=x
+
+--x
+Content-Type: text/plain
+
+Please review.
+--x
+Content-Type: application/pdf
+Content-Disposition: attachment; filename="invoice.pdf"
+
+payload
+--x--
+"""
+
+        structure = app.analyze_raw_email(raw_email)
+        messages = [item["msg"].lower() for item in structure["indicators"]]
+
+        self.assertEqual(structure["structure_score"], 0)
+        self.assertFalse(any("attachment" in message for message in messages))
 
     def test_decisive_authentication_failure_sets_high_risk_floor(self):
         raw_email = """From: Service <notice@example.com>

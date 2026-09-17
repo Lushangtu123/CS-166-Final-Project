@@ -40,9 +40,12 @@ complete message. Raw input enables additional checks:
 - SPF, DKIM, and DMARC results from explicitly trusted authentication servers;
 - protected-brand display-name and Unicode/IDN domain impersonation;
 - From / Reply-To / Return-Path domain mismatches;
-- executable, macro-enabled, disk-image, and archive attachment extensions;
+- the same sender/domain heuristics used by the sender-only workflow;
+- executable, macro-enabled, disk-image, and archive attachment extensions or
+  MIME types;
 - every HTML, Markdown, and plain-text link destination, including displayed-host
-  mismatch, Unicode/IDN lookalikes, and credential-themed domains;
+  mismatch, Unicode/IDN and ASCII digit-substitution lookalikes, URL userinfo,
+  deceptive brand subdomains, and credential-themed domains;
 - IP-based and shortened URLs, urgency, credential requests, threats, and
   character obfuscation.
 
@@ -241,8 +244,10 @@ git diff --check
 The regression suite covers sender-score semantics, authentication-service
 trust, protected-brand/IDN impersonation, SMTP public-address enforcement,
 bounded rate limiting, verified model artifacts, HTML destination mismatch,
-footer spoofing, regional-language neutrality, conservative evidence fusion,
-group isolation, deployment flags, and frontend payload/rendering behavior.
+ASCII brand lookalikes, URL userinfo, attachment MIME types, raw-message sender
+fusion, footer spoofing, regional-language neutrality, conservative evidence
+fusion, group isolation, deployment flags, and frontend payload/rendering
+behavior.
 
 ## Historical benchmark results
 

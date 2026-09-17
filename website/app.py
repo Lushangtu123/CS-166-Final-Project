@@ -27,6 +27,7 @@ import time
 import unicodedata
 import warnings
 from collections import deque
+from email.utils import getaddresses
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 
@@ -1295,9 +1296,9 @@ class EmailRequest(BaseModel):
     email: str = Field(..., min_length=1, max_length=254)
 
 
-@app.post("/api/analyze-email")
-async def analyze_email(request: EmailRequest):
-    email = request.email.strip()
+def _analyze_sender_address(email: str) -> dict:
+    """Return the shared explainable sender/domain heuristic result."""
+    email = email.strip()
     if not email:
         raise HTTPException(status_code=400, detail="Email address is required")
 
@@ -1348,7 +1349,7 @@ async def analyze_email(request: EmailRequest):
     else:
         verdict, label = "low", "Low Sender Risk"
 
-    return JSONResponse({
+    return {
         "email": email,
         "analysis_method": "sender-domain-heuristics",
         "verdict": verdict,
@@ -1362,7 +1363,49 @@ async def analyze_email(request: EmailRequest):
         "is_disposable": is_disposable,
         "is_suspected_disposable": is_suspected_disposable,
         "disposable_service": disposable_service,
-    })
+    }
+
+
+_RAW_SENDER_LOCAL_RE = re.compile(
+    r"^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+$"
+)
+_RAW_SENDER_DOMAIN_LABEL_RE = re.compile(
+    r"^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$"
+)
+
+
+def _raw_sender_addresses(from_header: str) -> list[str]:
+    """Return unique, plausible public-mailbox addr-specs from a From header."""
+    addresses: list[str] = []
+    seen: set[str] = set()
+    for _display_name, parsed_address in getaddresses([from_header or ""]):
+        address = parsed_address.strip()
+        if address.count("@") != 1 or any(character.isspace() for character in address):
+            continue
+        local, domain = address.rsplit("@", 1)
+        if (
+            not _RAW_SENDER_LOCAL_RE.fullmatch(local)
+            or local.startswith(".")
+            or local.endswith(".")
+            or ".." in local
+        ):
+            continue
+        labels = domain.rstrip(".").split(".")
+        if len(labels) < 2 or any(
+            not _RAW_SENDER_DOMAIN_LABEL_RE.fullmatch(label) for label in labels
+        ):
+            continue
+        normalized = f"{local}@{domain.rstrip('.')}"
+        key = normalized.casefold()
+        if key not in seen:
+            seen.add(key)
+            addresses.append(normalized)
+    return addresses
+
+
+@app.post("/api/analyze-email")
+async def analyze_email(request: EmailRequest):
+    return JSONResponse(_analyze_sender_address(request.email))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1585,6 +1628,13 @@ SHORTENER_DOMAINS = [
     "qr.ae", "su.pr", "lnkd.in", "db.tt", "qr.net",
 ]
 
+_ASCII_BRAND_TRANSLATION = str.maketrans({
+    "0": "o", "1": "l", "3": "e", "4": "a", "5": "s", "7": "t",
+})
+_BENIGN_BRAND_LABELS = {
+    "apple": {"crabapple", "dapple", "grapple", "pineapple", "snapple"},
+}
+
 # Character obfuscation substitution map (leetspeak / homoglyph tricks)
 _OBFUSCATION_PAIRS = [
     (r'p[@4]yp[@4]l', 'PayPal'),
@@ -1759,6 +1809,22 @@ def _known_link_host(host: str) -> bool:
     return any(host == known or host.endswith("." + known) for known in LEGIT_PROVIDERS)
 
 
+def _label_uses_brand_lookalike(label: str, brand: str) -> bool:
+    """Match protected brands after separator and common digit normalization."""
+    skeleton = _confusable_skeleton(label)
+    translated = skeleton.translate(_ASCII_BRAND_TRANSLATION)
+    tokens = [
+        re.sub(r"[^a-z]", "", token)
+        for token in re.findall(r"[a-z0-9]+", translated)
+    ]
+    if brand in tokens:
+        return True
+    compact = re.sub(r"[^a-z]", "", translated)
+    if compact in _BENIGN_BRAND_LABELS.get(brand, set()):
+        return False
+    return brand in compact
+
+
 def _analyze_link_destinations(text: str) -> tuple[int, list[dict], str]:
     """Inspect actual link targets, including links with generic button text."""
     score = 0
@@ -1810,6 +1876,21 @@ def _analyze_link_destinations(text: str) -> tuple[int, list[dict], str]:
                 })
             continue
 
+        if (
+            bool(parsed.username or parsed.password)
+            and "url-userinfo" not in finding_types
+        ):
+            score += 5
+            risk_floor = "high"
+            finding_types.add("url-userinfo")
+            findings.append({
+                "level": "high",
+                "msg": (
+                    "Link destination uses URL userinfo before the real host, "
+                    "a common trusted-domain deception technique."
+                ),
+            })
+
         target_host = (parsed.hostname or "").lower().rstrip(".")
         if not target_host:
             continue
@@ -1837,6 +1918,7 @@ def _analyze_link_destinations(text: str) -> tuple[int, list[dict], str]:
 
         decoded_skeleton = _confusable_skeleton(decoded_host)
         first_label = decoded_skeleton.split(".", 1)[0]
+        decoded_labels = [label for label in decoded_host.split(".") if label]
         for brand, canonical_domains in _PROTECTED_BRAND_DOMAINS.items():
             canonical = any(_domains_align(target_host, domain) for domain in canonical_domains)
             if (
@@ -1855,6 +1937,24 @@ def _analyze_link_destinations(text: str) -> tuple[int, list[dict], str]:
                     "level": "high",
                     "msg": (
                         f"Link destination ({target_host}) is an IDN/confusable "
+                        f"lookalike for {brand}."
+                    ),
+                })
+            elif (
+                not canonical
+                and any(
+                    _label_uses_brand_lookalike(label, brand)
+                    for label in decoded_labels
+                )
+                and "brand-lookalike" not in finding_types
+            ):
+                score += 5
+                risk_floor = "high"
+                finding_types.add("brand-lookalike")
+                findings.append({
+                    "level": "high",
+                    "msg": (
+                        f"Link destination ({target_host}) is a noncanonical "
                         f"lookalike for {brand}."
                     ),
                 })
@@ -2137,6 +2237,37 @@ async def analyze_content_endpoint(request: ContentRequest):
         floor_rank = {"safe": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
         if floor_rank[structure["risk_floor"]] > floor_rank[result["risk_floor"]]:
             result["risk_floor"] = structure["risk_floor"]
+
+        sender_addresses = _raw_sender_addresses(structure["from"])
+        if sender_addresses:
+            sender_analysis = max(
+                (_analyze_sender_address(address) for address in sender_addresses),
+                key=lambda analysis: analysis["risk_score"],
+            )
+            result["sender_analysis"] = sender_analysis
+            sender_verdict = sender_analysis["verdict"]
+            sender_contribution = {
+                "critical": 6,
+                "high": 5,
+                "medium": 3,
+            }.get(sender_verdict, 1 if sender_analysis["risk_score"] else 0)
+            result["total_score"] += sender_contribution
+            result["sender_score"] = sender_contribution
+            result["extra_indicators"].extend(
+                {
+                    "level": indicator["level"],
+                    "msg": f"Sender: {indicator['msg']}",
+                }
+                for indicator in sender_analysis["risk_indicators"]
+            )
+            sender_floor = (
+                "high" if sender_verdict in {"critical", "high"}
+                else "medium" if sender_verdict == "medium"
+                else "safe"
+            )
+            if floor_rank[sender_floor] > floor_rank[result["risk_floor"]]:
+                result["risk_floor"] = sender_floor
+
         if result["total_score"] > 15:
             result["risk_level"], result["risk_label"] = "critical", "Critical Risk — Very Likely Phishing"
         elif result["risk_floor"] == "high":

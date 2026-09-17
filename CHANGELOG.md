@@ -22,6 +22,43 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-15 19:36 PT] — Raw-sender, ASCII-link, and MIME hardening
+
+### Why
+- Complete `.eml` analysis parsed the `From` header but did not reuse the
+  sender/domain detector, allowing a highly suspicious sender to receive a safe
+  full-message verdict when its body was neutral.
+- Destination checks covered IDN lookalikes but missed ASCII digit substitutions,
+  URL userinfo deception, and trusted-brand labels embedded in attacker domains.
+- Attachment scoring relied on filename extensions, so an executable or archive
+  MIME type without a matching suffix was not detected.
+
+### Files changed
+- `website/app.py`: extract shared sender analysis, fuse bounded sender evidence
+  from the highest-risk valid mailbox into raw-message verdicts, and detect
+  nonempty URL userinfo plus noncanonical brand labels normalized for common
+  digit substitutions and separators.
+- `website/email_structure.py`: classify dangerous and archive attachment MIME
+  types in addition to filename extensions, including risky leaf parts without
+  attacker-controlled attachment metadata.
+- `website/tests/test_detection_behavior.py`: add positive attack controls and
+  canonical-domain, Gmail-sender, and PDF negative controls.
+- `README.md`: document the expanded full-message signals and regression scope.
+
+### Effect
+- `billing@secure-account.xyz` in a raw message now contributes its existing
+  critical sender score and receives a high-or-critical full-message verdict;
+  multi-mailbox `From` headers cannot hide it behind a benign first address.
+- `paypa1.com`, `paypal.com@evil.example`, and
+  `paypal.com.evil.example` destinations now set a high-risk floor while
+  canonical PayPal destinations remain clean.
+- Extensionless executable MIME payloads are high risk, archive MIME payloads
+  are medium risk, and ordinary PDF attachments remain unscored.
+- Common official regional domains remain clean, malformed sender fields and
+  empty URL userinfo are ignored, and MIME aliases are covered.
+- The backend regression suite now passes 72 tests; the frontend suite remains
+  6/6 passing.
+
 ## [2026-09-15 14:14 PT] — Destination-aware rules and global corpus deduplication
 
 ### Why

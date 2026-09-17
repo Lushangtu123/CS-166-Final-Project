@@ -18,10 +18,45 @@ _DANGEROUS_EXTENSIONS = {
     ".xlsm", ".xll",
 }
 _ARCHIVE_EXTENSIONS = {".7z", ".gz", ".rar", ".tar", ".tgz", ".zip"}
+_DANGEROUS_MIME_TYPES = {
+    "application/java-archive",
+    "application/javascript",
+    "application/vnd.microsoft.portable-executable",
+    "application/vnd.ms-excel.addin.macroenabled.12",
+    "application/vnd.ms-excel.sheet.binary.macroenabled.12",
+    "application/vnd.ms-excel.sheet.macroenabled.12",
+    "application/vnd.ms-excel.template.macroenabled.12",
+    "application/vnd.ms-powerpoint.addin.macroenabled.12",
+    "application/vnd.ms-powerpoint.presentation.macroenabled.12",
+    "application/vnd.ms-powerpoint.slideshow.macroenabled.12",
+    "application/vnd.ms-powerpoint.template.macroenabled.12",
+    "application/vnd.ms-word.document.macroenabled.12",
+    "application/vnd.ms-word.template.macroenabled.12",
+    "application/x-apple-diskimage",
+    "application/x-bat",
+    "application/x-dosexec",
+    "application/x-executable",
+    "application/x-iso9660-image",
+    "application/x-java-archive",
+    "application/x-msdos-program",
+    "application/x-msdownload",
+    "application/x-sh",
+    "text/javascript",
+}
+_ARCHIVE_MIME_TYPES = {
+    "application/gzip",
+    "application/vnd.rar",
+    "application/x-7z-compressed",
+    "application/x-gzip",
+    "application/x-rar-compressed",
+    "application/x-tar",
+    "application/x-zip-compressed",
+    "application/zip",
+}
 _PROTECTED_BRAND_DOMAINS = {
     "apple": {"apple.com", "icloud.com"},
-    "amazon": {"amazon.com"},
-    "google": {"google.com"},
+    "amazon": {"amazon.com", "amazon.co.uk", "amazon.de"},
+    "google": {"google.com", "google.co.uk", "googleusercontent.com"},
     "microsoft": {"microsoft.com"},
     "paypal": {"paypal.com"},
 }
@@ -112,7 +147,12 @@ def _message_text(message) -> tuple[str, str, list[dict]]:
         content_type = part.get_content_type()
         filename = part.get_filename()
         disposition = part.get_content_disposition()
-        if filename or disposition == "attachment":
+        if (
+            filename
+            or disposition == "attachment"
+            or content_type in _DANGEROUS_MIME_TYPES
+            or content_type in _ARCHIVE_MIME_TYPES
+        ):
             attachments.append({
                 "filename": filename or "unnamed",
                 "content_type": content_type,
@@ -222,14 +262,15 @@ def analyze_raw_email(
 
     for attachment in attachments:
         suffix = PurePath(attachment["filename"]).suffix.lower()
-        if suffix in _DANGEROUS_EXTENSIONS:
+        content_type = attachment["content_type"].lower().split(";", 1)[0].strip()
+        if suffix in _DANGEROUS_EXTENSIONS or content_type in _DANGEROUS_MIME_TYPES:
             score += 4
             risk_floor = "high"
             indicators.append({
                 "level": "high",
                 "msg": f"Potentially dangerous attachment: {attachment['filename']}.",
             })
-        elif suffix in _ARCHIVE_EXTENSIONS:
+        elif suffix in _ARCHIVE_EXTENSIONS or content_type in _ARCHIVE_MIME_TYPES:
             score += 2
             if risk_floor == "safe":
                 risk_floor = "medium"
