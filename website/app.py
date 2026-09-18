@@ -18,6 +18,7 @@ Routes:
 from __future__ import annotations
 
 import os
+import json
 import ipaddress
 import re
 import math
@@ -40,6 +41,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
 from config import load_settings
+from request_limits import RequestBodyLimitMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 BASE_DIR = Path(__file__).parent
@@ -55,6 +57,7 @@ from email_structure import (
     _decode_idna_domain,
     _domains_align,
     analyze_raw_email,
+    normalize_domain,
 )
 
 RATE_LIMIT_PER_MINUTE = max(1, int(os.getenv("RATE_LIMIT_PER_MINUTE", "20")))
@@ -1249,6 +1252,7 @@ allowed_hosts = [
     if host.strip()
 ]
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
+app.add_middleware(RequestBodyLimitMiddleware, max_bytes=MAX_REQUEST_BYTES)
 
 _rate_limit_lock = threading.Lock()
 _rate_limit_buckets: dict[str, deque[float]] = {}
@@ -1429,7 +1433,7 @@ def _analyze_sender_address(email: str) -> dict:
         is_suspected_disposable,
         disposable_service,
         disposable_classification,
-    ) = extract_email_features(email)
+    ) = extract_email_features(_normalize_sender_address(email))
 
     # The UCI model is a phishing-*website* benchmark. Its URL/HTML feature
     # weights are not valid probabilities for sender addresses, so this API
@@ -1500,28 +1504,29 @@ _RAW_SENDER_DOMAIN_LABEL_RE = re.compile(
 )
 
 
+def _normalize_sender_address(address: str) -> str:
+    address = address.strip()
+    if address.count('@') != 1 or any(c.isspace() for c in address):
+        return ''
+    local, domain = address.rsplit('@', 1)
+    domain = normalize_domain(domain)
+    labels = domain.split('.')
+    if (not 0 < len(local) <= 64 or not _RAW_SENDER_LOCAL_RE.fullmatch(local)
+            or local.startswith('.') or local.endswith('.') or '..' in local
+            or len(domain) > 253 or len(labels) < 2
+            or any(not _RAW_SENDER_DOMAIN_LABEL_RE.fullmatch(label) for label in labels)):
+        return ''
+    return f'{local}@{domain}'
+
+
 def _raw_sender_addresses(from_header: str) -> list[str]:
     """Return unique, plausible public-mailbox addr-specs from a From header."""
     addresses: list[str] = []
     seen: set[str] = set()
     for _display_name, parsed_address in getaddresses([from_header or ""]):
-        address = parsed_address.strip()
-        if address.count("@") != 1 or any(character.isspace() for character in address):
+        normalized = _normalize_sender_address(parsed_address)
+        if not normalized:
             continue
-        local, domain = address.rsplit("@", 1)
-        if (
-            not _RAW_SENDER_LOCAL_RE.fullmatch(local)
-            or local.startswith(".")
-            or local.endswith(".")
-            or ".." in local
-        ):
-            continue
-        labels = domain.rstrip(".").split(".")
-        if len(labels) < 2 or any(
-            not _RAW_SENDER_DOMAIN_LABEL_RE.fullmatch(label) for label in labels
-        ):
-            continue
-        normalized = f"{local}@{domain.rstrip('.')}"
         key = normalized.casefold()
         if key not in seen:
             seen.add(key)
@@ -1532,21 +1537,7 @@ def _raw_sender_addresses(from_header: str) -> list[str]:
 @app.post("/api/analyze-email")
 async def analyze_email(request: EmailRequest):
     address = request.email.strip()
-    valid = address.count("@") == 1 and not any(c.isspace() for c in address)
-    if valid:
-        local, domain = address.rsplit("@", 1)
-        try:
-            domain = domain.rstrip(".").encode("idna").decode("ascii")
-        except UnicodeError:
-            domain = ""
-        labels = domain.split(".")
-        valid = bool(
-            0 < len(local) <= 64 and _RAW_SENDER_LOCAL_RE.fullmatch(local)
-            and not local.startswith(".") and not local.endswith(".")
-            and ".." not in local and len(labels) >= 2
-            and all(_RAW_SENDER_DOMAIN_LABEL_RE.fullmatch(label) for label in labels)
-        )
-    if not valid:
+    if not _normalize_sender_address(address):
         raise HTTPException(
             status_code=400,
             detail="Enter a single email address, such as user@example.com. Use Email Content to analyze a message.",
@@ -2648,6 +2639,30 @@ async def _analyze_content(request: ContentRequest, structure: dict | None = Non
         elif result["total_score"] > 3:
             result["risk_level"], result["risk_label"] = "medium", "Medium Risk — Suspicious Content"
 
+    if structure:
+        nested_summaries = []
+        floor_rank = {'safe': 0, 'unknown': 0, 'low': 1, 'medium': 2, 'high': 3, 'critical': 4}
+        for nested in structure['nested_messages']:
+            nested_result = json.loads((await _analyze_content(ContentRequest(), nested)).body)
+            result['total_score'] = max(result['total_score'], nested_result['total_score'])
+            nested_floor = 'safe' if nested_result['risk_level'] == 'unknown' else nested_result['risk_level']
+            result['risk_floor'] = max((result['risk_floor'], nested_floor), key=floor_rank.get)
+            result['extra_indicators'].extend(
+                {'level': item['level'], 'msg': 'Attached message: ' + item['msg']}
+                for item in nested_result['extra_indicators'])
+            # Categories are not parent-body matches; expose their provenance.
+            result['extra_indicators'].extend(
+                {'level': cat['level'], 'msg': 'Attached message: ' + cat['label'] + ' — ' + ', '.join(cat['matched'])}
+                for cat in nested_result['category_results'])
+            nested_summaries.append({
+                'from': nested['from'], 'subject': nested['subject'],
+                'risk_level': nested_result['risk_level'],
+                'analysis_complete': nested_result['analysis_complete'],
+                'authentication_results_trusted': nested['authentication_results_trusted'],
+                'nested_messages': nested_result['message_structure']['nested_messages'],
+            })
+        result['message_structure']['nested_messages'] = nested_summaries
+
     # 2. Optional ML text classifier (TF-IDF + selected linear model)
     if _content_pipeline is not None:
         ml = predict_content(_content_pipeline, subject, body)
@@ -2678,7 +2693,11 @@ async def _analyze_content(request: ContentRequest, structure: dict | None = Non
 
 # ── Email Authenticity Verification ──────────────────────────────────────────
 
-from concurrent.futures import ThreadPoolExecutor, wait as futures_wait
+from concurrent.futures import TimeoutError as FutureTimeout, wait as futures_wait
+from verification_runtime import BoundedExecutor
+
+VERIFICATION_TIMEOUT = 12.0
+_verification_pool = BoundedExecutor(workers=10)
 
 
 class VerifyRequest(BaseModel):
@@ -2689,14 +2708,30 @@ class VerifyRequest(BaseModel):
 def _resolve_public_smtp_addresses(
     mx_host: str,
     *,
-    resolver=socket.getaddrinfo,
+    resolver=None,
+    timeout: float = 5,
 ) -> list[str]:
     """Resolve a mail host once and retain only globally routable targets."""
     addresses: list[str] = []
-    try:
-        answers = resolver(mx_host, 25, type=socket.SOCK_STREAM)
-    except (OSError, socket.gaierror):
-        return addresses
+    if resolver is None:
+        import dns.resolver
+        import dns.exception
+        answers = []
+        deadline = time.monotonic() + timeout
+        for kind in ('A', 'AAAA'):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                records = dns.resolver.resolve(mx_host, kind, lifetime=remaining)
+                answers.extend((None, None, None, None, (str(r), 25)) for r in records)
+            except dns.exception.DNSException:
+                continue
+    else:
+        try:
+            answers = resolver(mx_host, 25, type=socket.SOCK_STREAM)
+        except (OSError, socket.gaierror):
+            return addresses
 
     for _family, _socktype, _proto, _canonname, sockaddr in answers:
         address = str(sockaddr[0]).split("%", 1)[0]
@@ -2716,8 +2751,9 @@ def _smtp_probe(
     timeout: int = 8,
 ) -> dict:
     result = {"connectable": False, "result": "unverifiable", "message": ""}
+    deadline = time.monotonic() + timeout
     if smtp_address is None:
-        public_addresses = _resolve_public_smtp_addresses(mx_host)
+        public_addresses = _resolve_public_smtp_addresses(mx_host, timeout=min(5, timeout))
         smtp_address = public_addresses[0] if public_addresses else None
     try:
         is_public_target = bool(
@@ -2729,15 +2765,25 @@ def _smtp_probe(
         result["message"] = f"SMTP target for {mx_host} is non-public or could not be validated."
         return result
 
+    smtp = None
+    def remaining():
+        seconds = deadline - time.monotonic()
+        if seconds <= 0:
+            raise socket.timeout()
+        return seconds
     try:
-        smtp = smtplib.SMTP(timeout=timeout)
+        smtp = smtplib.SMTP(timeout=remaining())
         smtp.connect(smtp_address, 25)
         result["connectable"] = True
+        smtp.sock.settimeout(remaining())
         smtp.helo("verify.phishguard.local")
+        smtp.sock.settimeout(remaining())
         smtp.mail("")
+        smtp.sock.settimeout(remaining())
         code, msg_bytes = smtp.rcpt(email)
         msg_str = msg_bytes.decode(errors="replace") if isinstance(msg_bytes, bytes) else str(msg_bytes)
         try:
+            smtp.sock.settimeout(remaining())
             smtp.quit()
         except Exception:
             pass
@@ -2763,6 +2809,12 @@ def _smtp_probe(
         result["message"] = f"Network error: {e}"
     except Exception as e:
         result["message"] = str(e)[:150]
+    finally:
+        if smtp is not None:
+            try:
+                smtp.close()
+            except Exception:
+                pass
     return result
 
 
@@ -2854,7 +2906,7 @@ def _check_domain_age(domain: str) -> dict:
     try:
         import whois
         from datetime import datetime, timezone
-        w = whois.whois(domain)
+        w = whois.whois(domain, timeout=5)
         creation = w.creation_date
         if isinstance(creation, list):
             creation = creation[0]
@@ -2919,6 +2971,39 @@ def _check_mx_ptr(mx_host: str) -> dict:
     return result
 
 
+def _lookup_mail_domain(domain: str, deadline: float) -> dict:
+    """Perform bounded DNS discovery; a timeout is not a nonexistent mailbox."""
+    import dns.resolver
+    import dns.exception
+    result = {'mx_found': False, 'mx_records': [], 'overall': 'unverifiable',
+              'smtp_message': 'DNS lookup timed out or was unavailable.'}
+    try:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return result
+        answers = dns.resolver.resolve(domain, 'MX', lifetime=min(6, remaining))
+        records = sorted((r.preference, str(r.exchange).rstrip('.')) for r in answers)
+        if records:
+            return {'mx_found': True, 'mx_records': records}
+    except dns.resolver.NXDOMAIN:
+        return {**result, 'overall': 'likely_invalid', 'smtp_message': 'Domain does not exist in DNS.'}
+    except dns.resolver.NoAnswer:
+        pass
+    except dns.exception.DNSException:
+        return result
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return result
+    try:
+        dns.resolver.resolve(domain, 'A', lifetime=min(4, remaining))
+        return {'mx_found': True, 'mx_records': [[0, domain]],
+                'note': 'No MX record found; domain has an A record — using domain directly.'}
+    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+        return {**result, 'overall': 'likely_invalid', 'smtp_message': 'Domain has no MX or A records.'}
+    except dns.exception.DNSException:
+        return result
+
+
 @app.post("/api/verify-email")
 def verify_email_endpoint(req: VerifyRequest):
     """
@@ -2955,6 +3040,7 @@ def verify_email_endpoint(req: VerifyRequest):
         "mx_ptr": None,
         "note": None,
         "overall": None,
+        "verification_complete": False,
     }
 
     # ── Stage 1: Format ───────────────────────────────────────────────────────
@@ -2971,45 +3057,51 @@ def verify_email_endpoint(req: VerifyRequest):
     out["format_valid"] = True
     domain = email.split("@")[1].lower()
 
-    # ── Stage 2: DNS MX / A lookup ────────────────────────────────────────────
-    mx_host = None
+    # One deadline covers DNS discovery and every subsequent check.
+    deadline = time.monotonic() + VERIFICATION_TIMEOUT
+    discovery = _verification_pool.submit(_lookup_mail_domain, domain, deadline)
+    if discovery is None:
+        raise HTTPException(status_code=503, detail='Verification capacity is busy; retry later.', headers={'Retry-After': '12'})
     try:
-        mx_answers = dns.resolver.resolve(domain, "MX", lifetime=6)
-        records = sorted(
-            [(r.preference, str(r.exchange).rstrip(".")) for r in mx_answers]
-        )
-        out["mx_found"]   = True
-        out["mx_records"] = records
-        mx_host = records[0][1]
-    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.exception.DNSException):
-        try:
-            dns.resolver.resolve(domain, "A", lifetime=4)
-            out["mx_found"]   = True
-            out["mx_records"] = [[0, domain]]
-            mx_host = domain
-            out["note"] = "No MX record found; domain has an A record — using domain directly."
-        except Exception:
-            out["overall"]      = "likely_invalid"
-            out["smtp_message"] = (
-                f"Domain '{domain}' has no MX or A records in DNS — "
-                f"this address cannot receive email."
-            )
-            return JSONResponse(out)
+        out.update(discovery.result(timeout=max(0, deadline - time.monotonic())))
+    except FutureTimeout:
+        discovery.cancel()
+        out['overall'] = 'unverifiable'
+        out['smtp_message'] = 'DNS lookup timed out or was unavailable.'
+        return JSONResponse(out)
+    except Exception:
+        out['overall'] = 'unverifiable'
+        out['smtp_message'] = 'DNS lookup was unavailable.'
+        return JSONResponse(out)
+    if not out['mx_found']:
+        return JSONResponse(out)
+    mx_host = out['mx_records'][0][1]
+    if time.monotonic() >= deadline:
+        out['overall'] = 'unverifiable'
+        out['smtp_message'] = 'Verification deadline reached after DNS lookup.'
+        return JSONResponse(out)
 
-    # ── Stages 3-7: run in parallel ───────────────────────────────────────────
-    _TIMEOUT = 12  # seconds to wait for all parallel tasks
-    with ThreadPoolExecutor(max_workers=5) as pool:
-        f_smtp  = pool.submit(_smtp_probe,      email,  mx_host)
-        f_spf   = pool.submit(_check_spf,       domain)
-        f_dmarc = pool.submit(_check_dmarc,     domain)
-        f_age   = pool.submit(_check_domain_age, domain)
-        f_ptr   = pool.submit(_check_mx_ptr,    mx_host)
-        futures_wait([f_smtp, f_spf, f_dmarc, f_age, f_ptr], timeout=_TIMEOUT)
+    # No per-request context manager: its shutdown would wait past the deadline.
+    f_smtp = _verification_pool.submit(_smtp_probe, email, mx_host)
+    f_spf = _verification_pool.submit(_check_spf, domain)
+    f_dmarc = _verification_pool.submit(_check_dmarc, domain)
+    f_age = _verification_pool.submit(_check_domain_age, domain)
+    f_ptr = _verification_pool.submit(_check_mx_ptr, mx_host)
+    futures = [f for f in (f_smtp, f_spf, f_dmarc, f_age, f_ptr) if f is not None]
+    done, pending = futures_wait(futures, timeout=max(0, deadline - time.monotonic()))
+    out['verification_complete'] = len(done) == 5
+    for future in pending:
+        future.cancel()
 
     def safe_result(future, fallback):
+        if future is None:
+            return {**fallback, 'message': 'Verification capacity is busy; this check was not run.'}
+        if future not in done:
+            return fallback
         try:
             return future.result(timeout=0)
         except Exception:
+            out['verification_complete'] = False
             return fallback
 
     probe        = safe_result(f_smtp,  {"connectable": False, "result": "unverifiable",

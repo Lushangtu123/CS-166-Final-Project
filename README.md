@@ -26,6 +26,10 @@ multiple addresses and unsupported syntax return HTTP 400 without a risk verdict
 use full-message input for message text or display-name headers. Plus-addresses
 and the IP-domain detection examples remain supported.
 
+Sender-only and full-message checks use the same IDNA domain normalization.
+Unicode/Punycode spellings and a trailing root dot share the same scoring rules;
+the submitted address is retained in sender-only responses for display.
+
 `POST /api/analyze-email` returns an explainable `risk_score`, not a trained
 probability. Signals include:
 
@@ -96,6 +100,19 @@ no detected risk and parsing is incomplete, `risk_level` is `unknown` and
 `combined_phishing_score` is `null`. The UI shows “Analysis Incomplete” and a dash
 instead of a green zero. Detected risks remain visible alongside the warning.
 API consumers must accept this additional risk level and nullable score.
+
+Encapsulated `message/rfc822` attachments (and parseable `message/global` parts)
+are analyzed as independent messages, including their subject, sender identity,
+body, and attachments. Nested analysis is limited to **3 levels and 20 messages
+per upload**; exceeding either limit produces an incomplete-analysis warning.
+Their authentication headers are never trusted using the outer message's
+`TRUSTED_AUTHSERV_IDS`. Results include `message_structure.nested_messages`, and
+indicators carry an “Attached message” prefix. The highest nested score/risk is
+preserved rather than adding the same content repeatedly. Opaque `.eml` files
+declared as generic binary attachments are reported as uninspected, not silently
+treated as fully checked. Encapsulated messages using base64, quoted-printable,
+or other unsupported transfer encodings also produce an incomplete-analysis
+warning rather than a complete verdict. This does not unpack archives or execute attachments.
 
 Raw input enables these checks:
 
@@ -229,6 +246,7 @@ cannot increase or suppress risk.
 | `CONTENT_MODEL_ARTIFACT_SHA256` | empty | Required SHA-256 digest for the configured artifact |
 | `TRUSTED_AUTHSERV_IDS` | empty | Comma-separated authentication service IDs allowed to affect raw-message risk |
 | `RATE_LIMIT_BUCKET_CAPACITY` | `4096` | Hard bound for in-process rate-limit keys |
+| `MAX_REQUEST_BYTES` | `65536` | Actual HTTP request-body byte limit before decoding; applies without Content-Length |
 | `CONTENT_MODEL_USE_REAL` | profile-dependent | Offline training: load local public corpora |
 | `CONTENT_MODEL_AUTO_DOWNLOAD` | profile-dependent | Offline training: download configured public corpora when missing |
 | `CONTENT_MODEL_USE_CACHE` | `false` | Offline training: explicitly trust/load the local pickle cache |
@@ -275,6 +293,21 @@ Restart after changing environment variables, then reload the browser.
 the UI distinguishes local-disabled, public-disabled, and unavailable configuration.
 DNS/WHOIS records and SMTP probes do not authenticate a particular email, and an
 SMTP timeout does not prove whether a mailbox exists.
+
+Local verification has a **12-second response deadline**, including initial DNS
+discovery. Queries use a shared pool with at most **10 outstanding jobs per
+process** and no unbounded waiting queue. At capacity, discovery returns HTTP 503
+with `Retry-After`; individual unavailable checks are reported explicitly.
+`verification_complete=false` identifies unfinished/unavailable work. DNS timeouts
+remain “Unverifiable” in the UI rather than becoming an invalid-mailbox verdict.
+DNS lookups use explicit lifetimes, WHOIS uses a 5-second socket timeout, and SMTP
+uses a per-probe deadline with socket cleanup. Running threads cannot be forcibly
+cancelled; they retain their capacity slot until they actually exit. The response
+deadline is not a guarantee that every underlying network operation has stopped.
+
+All HTTP request bodies are bounded by received bytes, including chunked JSON
+requests and requests whose length header understates the body. The `.eml`
+endpoint additionally retains its stricter 60,000-byte file limit.
 
 ## Data and evaluation scope
 

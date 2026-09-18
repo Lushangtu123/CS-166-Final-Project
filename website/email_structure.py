@@ -71,9 +71,16 @@ _CONFUSABLE_TRANSLATION = str.maketrans({
 })
 
 
+def normalize_domain(domain: str) -> str:
+    try:
+        return domain.encode('idna').decode('ascii').lower().rstrip('.')
+    except UnicodeError:
+        return ''
+
+
 def _domain(address: str) -> str:
     parsed = parseaddr(address or "")[1].lower()
-    return parsed.rsplit("@", 1)[-1] if "@" in parsed else ""
+    return normalize_domain(parsed.rsplit("@", 1)[-1]) if "@" in parsed else ""
 
 
 def _domains_align(left: str, right: str) -> bool:
@@ -137,6 +144,16 @@ def _brand_identity_signals(from_header: str, from_domain: str) -> tuple[int, li
     return score, indicators
 
 
+def _walk_message_parts(message):
+    """Walk one message, leaving encapsulated messages to bounded analysis."""
+    pending = [message]
+    while pending:
+        part = pending.pop()
+        yield part
+        if part.is_multipart() and part.get_content_type() not in {'message/rfc822', 'message/global'}:
+            pending.extend(reversed(part.get_payload()))
+
+
 def _message_text(message, *, unicode_source: bool = False) -> tuple[str, str, list[dict], list[str], list[dict]]:
     plain_parts: list[str] = []
     html_parts: list[str] = []
@@ -144,10 +161,13 @@ def _message_text(message, *, unicode_source: bool = False) -> tuple[str, str, l
     parse_warnings: list[str] = []
     content_parts: list[dict] = []
 
-    for part in message.walk():
+    for part in _walk_message_parts(message):
+        content_type = part.get_content_type()
+        if content_type in {'message/rfc822', 'message/global'}:
+            attachments.append({'filename': part.get_filename() or 'attached.eml', 'content_type': content_type})
+            continue
         if part.is_multipart():
             continue
-        content_type = part.get_content_type()
         filename = part.get_filename()
         disposition = part.get_content_disposition()
         if (
@@ -160,6 +180,10 @@ def _message_text(message, *, unicode_source: bool = False) -> tuple[str, str, l
                 "filename": filename or "unnamed",
                 "content_type": content_type,
             })
+            if PurePath(filename or '').suffix.lower() == '.eml':
+                warning = 'Opaque .eml attachment was not parsed as an encapsulated message; analysis is incomplete.'
+                if warning not in parse_warnings:
+                    parse_warnings.append(warning)
             continue
         if content_type not in {"text/plain", "text/html"}:
             continue
@@ -199,13 +223,49 @@ def analyze_raw_email(
         message = BytesParser(policy=policy.default).parsebytes(raw_email)
     else:
         message = Parser(policy=policy.default).parsestr(raw_email)
-    plain, html, attachments, parse_warnings, content_parts = _message_text(message, unicode_source=isinstance(raw_email, str))
+    return _analyze_message(message, unicode_source=isinstance(raw_email, str),
+                            trusted_authserv_ids=trusted_authserv_ids, depth=0, budget=[20])
+
+
+def _analyze_message(message, *, unicode_source, trusted_authserv_ids, depth, budget):
+    plain, html, attachments, parse_warnings, content_parts = _message_text(message, unicode_source=unicode_source)
+    if depth and not (plain.strip() or html.strip() or attachments or any(
+            message.get(name) for name in ('Subject', 'From', 'Reply-To', 'Return-Path', 'Authentication-Results'))):
+        parse_warnings.append('Attached message has no analyzable content; analysis is incomplete.')
     # The parser recovers without raising; decoding may append more defects.
-    defect_names = sorted({type(defect).__name__ for part in message.walk()
+    defect_names = sorted({type(defect).__name__ for part in _walk_message_parts(message)
                            for defect in part.defects})
     if defect_names:
         parse_warnings.append('MIME structure is incomplete or malformed ('
                               + ', '.join(defect_names) + '); analysis may be incomplete.')
+    nested_messages = []
+    for part in _walk_message_parts(message):
+        if part.get_content_type() not in {'message/rfc822', 'message/global'}:
+            continue
+        encoding = str(part.get('Content-Transfer-Encoding', '')).strip().lower()
+        if encoding not in {'', '7bit', '8bit', 'binary'}:
+            warning = 'Transfer-encoded attached message was not inspected; analysis is incomplete.'
+            if warning not in parse_warnings:
+                parse_warnings.append(warning)
+            continue
+        children = part.get_payload()
+        if not isinstance(children, list) or not children:
+            parse_warnings.append('Attached message could not be parsed; analysis is incomplete.')
+            continue
+        for child in children:
+            if depth >= 3 or budget[0] <= 0:
+                warning = 'Attached-message depth/count limit reached; analysis is incomplete.'
+                if warning not in parse_warnings:
+                    parse_warnings.append(warning)
+                break
+            budget[0] -= 1
+            nested = _analyze_message(child, unicode_source=unicode_source,
+                                      trusted_authserv_ids=set(), depth=depth + 1, budget=budget)
+            nested_messages.append(nested)
+            for warning in nested['parse_warnings']:
+                prefixed = 'Attached message: ' + warning
+                if prefixed not in parse_warnings:
+                    parse_warnings.append(prefixed)
     # Analyze both alternatives. Phishers commonly put harmless text in the
     # plain part and the credential link only in the HTML part.
     body = "\n".join(part for part in (plain, html) if part)
@@ -315,6 +375,7 @@ def analyze_raw_email(
         "body": body,
         "html_body": html,
         "content_parts": content_parts,
+        "nested_messages": nested_messages,
         "from": str(message.get("From", "") or ""),
         "reply_to": str(message.get("Reply-To", "") or ""),
         "return_path": str(message.get("Return-Path", "") or ""),

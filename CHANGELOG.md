@@ -22,6 +22,33 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-17 21:36 PT] — Unify sender checks and bound nested analysis and verification
+
+### Why
+- Unicode domains bypassed raw-message sender checks. Attached messages lost
+  identity/attachment evidence. JSON requests without Content-Length bypassed the
+  body-size guard, and thread-pool shutdown defeated verification timeouts.
+
+### Files changed
+- `website/app.py`, `email_structure.py` — shared domain normalization, bounded
+  nested-message inspection with untrusted inner authentication, one verification
+  deadline covering DNS discovery and follow-up checks, socket cleanup/timeouts.
+- `website/request_limits.py` — pre-decoding actual-byte ASGI request-body cap.
+- `website/verification_runtime.py` — shared non-queueing bounded verification pool.
+- `website/static/app.js`, `index.html` — preserve inconclusive DNS results in
+  the UI, clarify the unverifiable verdict, and load v24 JavaScript.
+- `website/tests/test_app_security.py`, `test_detection_behavior.py`,
+  `static/app.test.mjs` — IDN equivalence, attached-email risk/trust/limits,
+  streamed request limits, timeouts, saturation/recovery, and UI regressions.
+- `README.md` — input normalization, inspection bounds and operational contracts.
+
+### Effect
+- Supported raw-message senders and attached-message risks retain their evidence.
+  Uninspected opaque or transfer-encoded attached content is explicitly marked incomplete.
+- Oversize streamed JSON is rejected before parsing. Slow verification no longer
+  blocks the response beyond its deadline; still-running work retains bounded
+  capacity. No real mailbox probing or detection-accuracy claim is implied.
+
 ## [2026-09-17 21:18 PT] — Isolate MIME evidence and expose incomplete analysis
 
 ### Why

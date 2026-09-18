@@ -16,6 +16,13 @@ from config import Settings
 
 
 class SenderRiskAnalysisTests(unittest.TestCase):
+    def test_equivalent_idn_and_trailing_dot_use_identical_sender_rules(self):
+        for domain in ('secure-例子.xyz', 'gmail.com'):
+            encoded = domain.encode('idna').decode()
+            scores = [self.analyze('billing@' + variant)['risk_score']
+                      for variant in (domain, encoded, encoded + '.')]
+            self.assertEqual(len(set(scores)), 1)
+
     def test_sender_endpoint_rejects_non_address_input(self):
         for value in ("hello", "Full email authenticity verification is disabled.",
                       "a@@example.com", "a b@example.com", "a..b@example.com", "a@example"):
@@ -597,6 +604,89 @@ class ContentRuleRobustnessTests(unittest.TestCase):
 
 
 class RawEmailAnalysisTests(unittest.TestCase):
+    def test_transfer_encoded_attached_email_is_not_silently_marked_complete(self):
+        import base64
+        import quopri
+        inner = b'From: Apple <service@unrelated.example>\n\nHello'
+        for kind in ('message/rfc822', 'message/global'):
+            for encoding, payload in (('base64', base64.b64encode(inner)),
+                                      ('quoted-printable', quopri.encodestring(inner))):
+                with self.subTest(kind=kind, encoding=encoding):
+                    raw = (f'Content-Type: {kind}\nContent-Disposition: attachment; filename=forwarded.eml\n'
+                           f'Content-Transfer-Encoding: {encoding}\n\n\n').encode() + payload
+                    result = self.upload([raw])
+                    self.assertFalse(result['analysis_complete'])
+                    self.assertTrue(result['message_structure']['parse_warnings'])
+
+    def test_opaque_eml_attachment_reports_uninspected_content(self):
+        from email.message import EmailMessage
+        message = EmailMessage()
+        message.set_content('Hello')
+        message.add_attachment(b'From: alice@gmail.com\n\nHello', maintype='application',
+                               subtype='octet-stream', filename='forwarded.eml')
+        result = self.upload([message.as_bytes()])
+        self.assertFalse(result['analysis_complete'])
+        self.assertEqual(result['risk_level'], 'unknown')
+
+    def test_attached_messages_are_bounded_and_benign_or_empty_content_is_honest(self):
+        from email.message import EmailMessage
+        def wrap(inner):
+            outer = EmailMessage()
+            outer.set_content('Hello')
+            outer.add_attachment(inner, filename='forwarded.eml')
+            return outer
+        clean = EmailMessage()
+        clean['From'] = 'alice@gmail.com'
+        clean.set_content('Hello')
+        self.assertEqual(self.upload([wrap(clean).as_bytes()])['risk_level'], 'safe')
+        empty = self.upload([wrap(EmailMessage()).as_bytes()])
+        self.assertFalse(empty['analysis_complete'])
+        deep = clean
+        for _ in range(5):
+            deep = wrap(deep)
+        result = self.upload([deep.as_bytes()])
+        self.assertFalse(result['analysis_complete'])
+        self.assertTrue(any('limit' in s for s in result['message_structure']['parse_warnings']))
+        many = EmailMessage()
+        many.set_content('Hello')
+        for _ in range(22):
+            many.add_attachment(clean, filename='forwarded.eml')
+        result = self.upload([many.as_bytes()])
+        self.assertFalse(result['analysis_complete'])
+        self.assertEqual(len(result['message_structure']['nested_messages']), 20)
+
+    def test_attached_email_retains_identity_evidence_without_trusting_inner_auth(self):
+        from email.message import EmailMessage
+        inner = EmailMessage()
+        inner['From'] = 'Apple <service@unrelated.example>'
+        inner['Authentication-Results'] = 'trusted.example; dmarc=pass'
+        inner.set_content('Hello')
+        outer = EmailMessage()
+        outer['From'] = 'alice@gmail.com'
+        outer.set_content('Hello')
+        outer.add_attachment(inner, filename='forwarded.eml')
+        with patch.object(app, 'SETTINGS', Settings(app_env='test', enable_email_verification=False,
+                                                  trusted_authserv_ids=frozenset({'trusted.example'}))):
+            result = self.upload([outer.as_bytes()])
+        self.assertIn(result['risk_level'], {'high', 'critical'})
+        self.assertEqual(result['message_structure']['attachments'][0]['filename'], 'forwarded.eml')
+        nested = result['message_structure']['nested_messages'][0]
+        self.assertFalse(nested['authentication_results_trusted'])
+        self.assertTrue(any('Attached message' in i['msg'] and 'apple' in i['msg'].lower()
+                            for i in result['extra_indicators']))
+
+    def test_idn_sender_is_checked_in_both_raw_input_modes(self):
+        from email.message import EmailMessage
+        from email import policy
+        for domain in ('secure-例子.xyz', 'secure-例子.xyz'.encode('idna').decode()):
+            message = EmailMessage(policy=policy.SMTPUTF8)
+            message['From'] = 'billing@' + domain
+            message.set_content('Hello')
+            for result in (self.upload([message.as_bytes()]), json.loads(asyncio.run(
+                    app.analyze_content_endpoint(app.ContentRequest(raw_email=message.as_string()))).body)):
+                self.assertIn('sender_analysis', result)
+                self.assertEqual(result['risk_level'], 'high')
+
     def test_plain_mime_preserves_urls_and_whitespace_without_interpreting_markup(self):
         raw = b'Content-Type: text/plain\n\nSee <https://bit.ly>'
         self.assertTrue(self.upload([raw])['has_shortener'])

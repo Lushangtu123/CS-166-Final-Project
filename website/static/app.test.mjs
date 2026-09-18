@@ -93,6 +93,15 @@ test('content summary handles zero, singular, and plural categories', () => {
   assert.equal(elements.get('crb-sub').textContent, '2 suspicious categories detected.');
 });
 
+test('DNS timeout remains unverifiable rather than an invalid mailbox', () => {
+  const { context, elements } = loadFrontend();
+  context.renderVerifyResult({email: 'user@example.com', format_valid: true, mx_found: false,
+    overall: 'unverifiable', verification_complete: false, smtp_message: 'DNS lookup timed out.'});
+  assert.match(elements.get('vstep-mx').className, /vstep-warn/);
+  assert.match(elements.get('verify-verdict').innerHTML, /Unverifiable/);
+  assert.doesNotMatch(elements.get('verify-verdict').innerHTML, /Likely Invalid|records are real/i);
+});
+
 test('incomplete analysis is not displayed as zero risk and cancels old animation', () => {
   const frames = [];
   const { context, elements } = loadFrontend({

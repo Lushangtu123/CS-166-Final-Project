@@ -2,6 +2,9 @@ import asyncio
 from collections import deque
 import json
 import tempfile
+import threading
+import time
+from types import SimpleNamespace
 import sys
 from pathlib import Path
 import unittest
@@ -19,6 +22,90 @@ from config import Settings
 
 
 class VerificationFeatureGateTests(unittest.TestCase):
+    def test_busy_verification_returns_retryable_error_without_starting_dns(self):
+        from verification_runtime import BoundedExecutor
+        pool = BoundedExecutor(workers=1)
+        gate = threading.Event()
+        started = threading.Event()
+        def occupied():
+            started.set()
+            gate.wait(2)
+        held = pool.submit(occupied)
+        self.assertTrue(started.wait(1))
+        try:
+            with patch.object(app, '_verification_pool', pool), \
+                 patch.object(app, 'SETTINGS', Settings(app_env='development', enable_email_verification=True)), \
+                 patch('dns.resolver.resolve', side_effect=AssertionError('Busy request must not query DNS')):
+                with self.assertRaises(HTTPException) as error:
+                    app.verify_email_endpoint(app.VerifyRequest(email='user@example.com'))
+                self.assertEqual(error.exception.status_code, 503)
+                self.assertIn('Retry-After', error.exception.headers)
+        finally:
+            gate.set()
+            held.result(timeout=2)
+            pool.shutdown()
+
+    def test_verification_deadline_also_covers_initial_dns(self):
+        import dns.exception
+        gate = threading.Event()
+        def slow_dns(*args, **kwargs):
+            gate.wait(1)
+            raise dns.exception.Timeout
+        try:
+            with patch.object(app, 'SETTINGS', Settings(app_env='development', enable_email_verification=True)), \
+                 patch.object(app, 'VERIFICATION_TIMEOUT', 0.05), \
+                 patch('dns.resolver.resolve', side_effect=slow_dns):
+                start = time.monotonic()
+                result = json.loads(app.verify_email_endpoint(app.VerifyRequest(email='user@example.com')).body)
+                self.assertLess(time.monotonic() - start, 0.5)
+                self.assertEqual(result['overall'], 'unverifiable')
+                self.assertFalse(result['verification_complete'])
+        finally:
+            gate.set()
+
+    def test_verification_pool_has_no_unbounded_pending_queue(self):
+        from verification_runtime import BoundedExecutor
+        pool = BoundedExecutor(workers=2)
+        gate = threading.Event()
+        try:
+            first = pool.submit(gate.wait, 1)
+            second = pool.submit(gate.wait, 1)
+            self.assertIsNone(pool.submit(lambda: 'must not queue'))
+            self.assertFalse(first.cancel())
+            self.assertIsNone(pool.submit(lambda: 'timeout does not free a running slot'))
+            gate.set()
+            first.result(timeout=2)
+            second.result(timeout=2)
+            self.assertEqual(pool.submit(lambda: 'recovered').result(timeout=2), 'recovered')
+        finally:
+            gate.set()
+            pool.shutdown()
+
+    def test_verification_deadline_does_not_wait_for_slow_whois(self):
+        import dns.resolver
+        gate = threading.Event()
+        def resolve(_domain, kind, **kwargs):
+            if kind == 'MX':
+                return [SimpleNamespace(preference=0, exchange='127.0.0.1.')]
+            raise dns.resolver.NoAnswer
+        def slow_whois(*args, **kwargs):
+            gate.wait(1)
+            return SimpleNamespace(creation_date=None)
+        try:
+            with patch.object(app, 'SETTINGS', Settings(app_env='development', enable_email_verification=True)), \
+                 patch.object(app, 'VERIFICATION_TIMEOUT', 0.05, create=True), \
+                 patch('dns.resolver.resolve', side_effect=resolve), \
+                 patch('whois.whois', side_effect=slow_whois), \
+                 patch('smtplib.SMTP', side_effect=AssertionError('No real SMTP')):
+                start = time.monotonic()
+                result = json.loads(app.verify_email_endpoint(app.VerifyRequest(email='user@example.com')).body)
+                elapsed = time.monotonic() - start
+                self.assertLess(elapsed, 0.5)
+                self.assertIn('timed out', result['domain_age']['message'].lower())
+                self.assertFalse(result['verification_complete'])
+        finally:
+            gate.set()
+
     def test_smtp_probe_rejects_private_target_before_opening_a_socket(self):
         with patch.object(
             app.smtplib,
@@ -84,6 +171,37 @@ class VerificationFeatureGateTests(unittest.TestCase):
 
 
 class RateLimitBoundaryTests(unittest.TestCase):
+    def test_actual_request_bytes_are_bounded_with_or_without_length_header(self):
+        async def request(size, declared_length=None):
+            payload = json.dumps({'body': 'Hello', 'padding': 'x' * size}).encode()
+            remaining = [payload[:30000], payload[30000:]]
+            done = asyncio.Event()
+            output = []
+            headers = [(b'host', b'localhost'), (b'content-type', b'application/json')]
+            if declared_length is not None:
+                headers.append((b'content-length', str(declared_length).encode()))
+            scope = {'type': 'http', 'asgi': {'version': '3.0'}, 'http_version': '1.1',
+                     'method': 'POST', 'scheme': 'http', 'path': '/api/analyze-content',
+                     'raw_path': b'/api/analyze-content', 'root_path': '', 'query_string': b'',
+                     'headers': headers, 'client': ('127.0.0.1', 12345), 'server': ('localhost', 8000)}
+            async def receive():
+                if remaining:
+                    part = remaining.pop(0)
+                    return {'type': 'http.request', 'body': part, 'more_body': bool(remaining)}
+                await done.wait()
+                return {'type': 'http.disconnect'}
+            async def send(message):
+                output.append(message)
+                if message['type'] == 'http.response.body' and not message.get('more_body'):
+                    done.set()
+            await asyncio.wait_for(app.app(scope, receive, send), 2)
+            return next(m for m in output if m['type'] == 'http.response.start')
+        for declared in (None, 1):
+            response = asyncio.run(request(app.MAX_REQUEST_BYTES + 100, declared))
+            self.assertEqual(response['status'], 413)
+            self.assertIn(b'x-content-type-options', dict(response['headers']))
+        self.assertEqual(asyncio.run(request(100))['status'], 200)
+
     def test_forwarded_header_does_not_override_framework_client_address(self):
         request = app.Request({
             "type": "http",

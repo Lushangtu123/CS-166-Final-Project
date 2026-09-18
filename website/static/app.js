@@ -466,9 +466,10 @@ function renderVerifyResult(data) {
       .map(r => `${r[1]} (pref ${r[0]})`).join(' · ');
     setStep('mx', 'ok', `MX records: ${recs || data.email.split('@')[1]}`);
   } else {
-    setStep('mx',   'fail', data.smtp_message || 'No MX or A records found.');
+    const inconclusive = data.overall === 'unverifiable';
+    setStep('mx', inconclusive ? 'warn' : 'fail', data.smtp_message || 'No MX or A records found.');
     ['smtp', 'ptr', 'spf', 'dmarc', 'age'].forEach(s => setStep(s, 'skip', 'Skipped.'));
-    showVerifyVerdict('likely_invalid');
+    showVerifyVerdict(inconclusive ? 'unverifiable' : 'likely_invalid');
     return;
   }
 
@@ -546,7 +547,7 @@ function showVerifyVerdict(overall) {
     likely_invalid: { cls: 'vv-fail', icon: 'x',
       text: 'Likely Invalid — This address probably does not exist.' },
     unverifiable: { cls: 'vv-warn',   icon: 'alert',
-      text: 'Unverifiable — Domain and MX records are real, but the mail server blocked the mailbox probe (port 25 filtered or server has probe protection). The address may still be valid.' },
+      text: 'Unverifiable — Available checks could not confirm mailbox existence. Review the DNS and SMTP details above; an unavailable or timed-out check does not prove the address is invalid.' },
     suspicious:  { cls: 'vv-suspicious', icon: 'bell',
       text: 'Suspicious — Domain was registered very recently (< 30 days). Newly registered domains are a hallmark of phishing campaigns.' },
     invalid_format: { cls: 'vv-fail', icon: 'x',
