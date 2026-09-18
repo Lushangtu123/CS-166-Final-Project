@@ -22,6 +22,87 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-17 15:00 PT] — Scan illustration, score rings, count-ups, light/dark theme
+
+### Why
+- Follow-up to the icon pass: the user asked to implement the remaining
+  visual suggestions (narrative hero graphic, ring-style scores, animated
+  numbers, and automatic light/dark switching).
+
+### Files changed
+- `website/static/index.html` — hero visual replaced by `.scan-card` (a
+  glass message card with avatar, skeleton lines, one flagged link line, a
+  green header check, a red alert badge, and a sweeping `.scan-beam`) while
+  keeping the orb glow, rings, and floating chips; sender and content banners
+  now wrap the score in a `.score-ring` SVG (`#vb-ring`, `#crb-ring`); hero
+  stat values carry `data-count/data-decimals/data-suffix`; nav gains a
+  `#theme-toggle` (sun / moon / "A" auto badge); `<head>` bootstrap script
+  resolves `data-theme` from `localStorage['phishguard-theme']` or
+  `prefers-color-scheme` before first paint; `color-scheme` is `light dark`
+  with two `theme-color` metas; assets bumped to `?v=18`.
+- `website/static/app.js` — `setupTheme/applyTheme/cycleTheme` (auto → light
+  → dark, persisted, follows system changes in auto); `animateNumber()`
+  (cubic ease-out, always ends on the exact formatted value; immediate when
+  `requestAnimationFrame` is missing or reduced motion is set) used for hero
+  stats via `setupCountUps()` and for `vb-prob` / `crb-score`; `setRing()`
+  drives `stroke-dashoffset` on the ring (heuristic-only content totals are
+  scaled against a ceiling of 30).
+- `website/static/style.css` — theme tokens added (`--glass-bg`,
+  `--field-bg`, `--fill`, `--line`, `--track`, `--on-accent`, …) and all
+  hard-coded dark rgba surfaces converted to them; `:root[data-theme="light"]`
+  palette (`#f4f6fb` base, `#0f172a` text, accent `#0a7fd6`, multiply-blend
+  colour fields) plus a handful of light-specific overrides; `.scan-*`
+  illustration styles (6.5 s beam sweep, 11 s card float, 3.2 s flag pulse);
+  `.score-ring` (104 px, 6.5 px stroke, 1.1 s eased fill); `.theme-toggle`
+  with cross-fading sun/moon; reduced-motion block covers the new animations.
+
+### Effect
+- Verified in headless Chrome for both themes: hero illustration and chips
+  render, hero stats count up to `97.47% / 0.9977 / 11,055 / 30`, the sender
+  ring fills to 100/100 (`stroke-dashoffset` 0) with `100/100` centred, the
+  legitimate-newsletter content result shows a green `0%` ring, and the
+  toggle reflects the active mode.
+- Theme resolves before first paint (no flash), follows the OS in auto mode,
+  and persists a manual choice.
+- `node --test website/static/app.test.mjs` 9/9 passing (count-ups set final
+  values synchronously in the vm harness); `node --check` OK.
+
+## [2026-09-17 14:51 PT] — Unified SVG icon system replaces emoji
+
+### Why
+- User asked for more attractive, modern graphics. The page mixed ~40
+  platform-dependent emoji (🛡 ✉ 📄 🔗 🌐 📧 🗑 ⚠️ ✅ ❌ 🔍 ☠️ 🏆 …) that render
+  differently per OS and clash with the fluid glass design.
+
+### Files changed
+- `website/static/app.js` — added `ICON_PATHS` (29 stroke icons on a 24px
+  grid), `icon(name, extraClass)` helper, and `CATEGORY_ICONS` mapping the
+  backend `category_results[].key` (urgency, threats, financial, credential,
+  impersonation, deception, attachments, tech_scam, job_scam,
+  social_engineering) to clock / bell / dollar / key / mask / eye-off /
+  paperclip / monitor / briefcase / brain. Verdict banners, disposable-check
+  card, verification steps and verdicts, content risk banner, category cards,
+  summary pills, and the benchmark "Best" badge now render SVG via
+  `innerHTML`; emoji removed from ML verdict text; unused `LEVEL_ICONS`
+  dropped. Backend `cat.icon` is no longer displayed (API unchanged).
+- `website/static/index.html` — tabs, input adornment, verification section
+  titles/buttons, disposable info card, feature category cards, and footer use
+  inline SVGs; quick-example chips lose their emoji prefixes; assets bumped to
+  `?v=17`.
+- `website/static/style.css` — new icon layer: `.ico` sizing, `.icon-tile`
+  (44px rounded tile) with tinted `tile-high/medium/low/purple` and
+  app-icon-style gradient `tile-grad-cyan/mint/violet` variants; 56px tinted
+  discs for `.vb-icon`/`.crb-icon` keyed to banner class; tinted 26px squares
+  for `.vstep-icon`; `.best-badge`; per-state colours for `.disp-check-icon`.
+
+### Effect
+- Every symbol on the page now shares one stroke weight and palette; category
+  cards show a semantic icon (clock for urgency, key for credential harvesting,
+  etc.) inside a level-tinted tile instead of backend emoji.
+- Verified via headless Chrome on the sender critical-risk result, content
+  critical-risk result, features, demo input, and benchmark views.
+- `node --test website/static/app.test.mjs` 9/9 passing; `node --check` OK.
+
 ## [2026-09-17 13:39 PT] — Integrate fluid frontend with disposable classification
 
 ### Why
