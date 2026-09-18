@@ -1961,6 +1961,22 @@ def _detect_non_native_phrases(text: str) -> list[str]:
     return [m for m in markers if m in lower]
 
 
+class _AnalysisHTMLParser(HTMLParser):
+    _marked_declaration = re.compile(r'<!\[([a-zA-Z][-_.a-zA-Z0-9]*)')
+
+    def parse_html_declaration(self, index):
+        # Recent CPython versions silently consume unknown marked declarations
+        # as bogus comments. Detect them at the parser boundary, not by scanning
+        # raw HTML (which would also match comments, attributes and scripts).
+        if self.rawdata.startswith('<![', index):
+            match = self._marked_declaration.match(self.rawdata, index)
+            if not match or match.group(1).lower() not in {
+                'temp', 'cdata', 'ignore', 'include', 'rcdata', 'if', 'else', 'endif',
+            }:
+                raise ValueError('Unrecognized HTML marked declaration')
+        return super().parse_html_declaration(index)
+
+
 def _collect_html(factory, text: str, parse_warnings=None):
     collector = factory()
     try:
@@ -1988,7 +2004,7 @@ def _extract_links(text: str, *, parse_html: bool = True, parse_warnings=None) -
     """Extract visible text and destination from Markdown and HTML links."""
     links = list(re.findall(r'\[([^\]]+)\]\(((?:https?|hxxps?)://[^)]+)\)', text, re.IGNORECASE))
 
-    class LinkCollector(HTMLParser):
+    class LinkCollector(_AnalysisHTMLParser):
         def __init__(self):
             super().__init__()
             self.href = None
@@ -2264,7 +2280,7 @@ def _has_mismatched_link_text(text: str) -> bool:
 
 def _visible_content_text(text: str, parse_warnings=None) -> str:
     """Decode HTML text separately from destinations, preserving inline words."""
-    class TextCollector(HTMLParser):
+    class TextCollector(_AnalysisHTMLParser):
         def __init__(self):
             super().__init__(convert_charrefs=True)
             self.parts = []
@@ -2291,7 +2307,7 @@ def _visible_content_text(text: str, parse_warnings=None) -> str:
 
 
 def _has_password_form(text: str, parse_warnings=None) -> bool:
-    class FormCollector(HTMLParser):
+    class FormCollector(_AnalysisHTMLParser):
         def __init__(self):
             super().__init__()
             self.depth = 0

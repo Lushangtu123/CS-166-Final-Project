@@ -181,6 +181,38 @@ class ParserResourceTests(unittest.TestCase):
 
 
 class HtmlRecoveryTests(unittest.TestCase):
+    def test_recovery_does_not_depend_on_stdlib_raising(self):
+        original = app.HTMLParser.parse_html_declaration
+
+        def tolerant_declaration(parser, index):
+            # New CPython releases consume unknown declarations as bogus
+            # comments rather than raising. Keep all other parser work real.
+            if parser.rawdata.startswith(('<![foo]', '<![if_foo]'), index):
+                return parser.parse_bogus_comment(index)
+            return original(parser, index)
+
+        with patch.object(app.HTMLParser, 'parse_html_declaration', tolerant_declaration):
+            self.test_malformed_html_preserves_evidence_and_marks_incomplete()
+            self.test_nested_html_recovery_propagates_and_valid_plain_text_is_unchanged()
+
+    def test_literal_markers_and_supported_declarations_do_not_trigger_recovery(self):
+        for body in (
+            '<!-- <![foo]> --><p>Hello</p>',
+            '<div title="<![foo]>">Hello</div>',
+            '<script>const marker = "<![foo]>";</script><p>Hello</p>',
+            '<style>/* <![foo]> */</style><p>Hello</p>',
+            '<!DOCTYPE html><p>Hello</p>',
+            '<![CDATA[ordinary text]]><p>Hello</p>',
+            '<!--[if mso]>Hello<![endif]--><p>Hello</p>',
+            '<![if !mso]><p>Hello</p><![endif]>',
+        ):
+            with self.subTest(body=body):
+                result = json.loads(asyncio.run(app.analyze_content_endpoint(
+                    app.ContentRequest(raw_email='Content-Type: text/html\n\n' + body))).body)
+                self.assertTrue(result['analysis_complete'])
+                self.assertEqual(result['risk_level'], 'safe')
+                self.assertEqual(result['analysis_warnings'], [])
+
     def test_nested_html_recovery_propagates_and_valid_plain_text_is_unchanged(self):
         raw = 'Content-Type: message/rfc822\n\nContent-Type: text/html\n\n<![foo]>Hello'
         result = json.loads(asyncio.run(app.analyze_content_endpoint(app.ContentRequest(raw_email=raw))).body)
@@ -195,6 +227,7 @@ class HtmlRecoveryTests(unittest.TestCase):
     def test_malformed_html_preserves_evidence_and_marks_incomplete(self):
         for body, expected in (
             ('<![foo]>Hello', 'unknown'),
+            ('<![if_foo]>Hello', 'unknown'),
             ('<![foo]>Your account has been suspended. Act now and enter your password.', 'high'),
             ('<![foo]><form><input type="password"></form>', 'medium'),
             ('<![foo]><a href="https://paypa1.example/">Continue</a>', 'high'),

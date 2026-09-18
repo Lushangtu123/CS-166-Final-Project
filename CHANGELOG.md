@@ -22,6 +22,27 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-18 09:58 PT] — Make HTML recovery independent of Python parser tolerance
+
+### Why
+- CI on Python 3.13.15 silently consumed unknown HTML marked declarations,
+  bypassing exception-based recovery and causing nine regression assertions
+  to fail despite the local Python 3.12.9 suite passing.
+
+### Files changed
+- `website/app.py`: shared declaration-aware HTML parser for text, links,
+  and forms, with explicit recovery for unknown marked declarations.
+- `website/tests/test_review_regressions.py`: tolerant-parser regression and
+  normal comment, attribute, script/style, CDATA, and conditional controls.
+- `.github/workflows/ci.yml`: Python 3.12/3.13 test matrix with fail-fast disabled.
+- `README.md`: documented version-independent recovery and CI coverage.
+
+### Effect
+- Unknown marked declarations retain risk evidence and incomplete-analysis
+  warnings without depending on the standard library raising an exception.
+- Literal markers outside declaration context do not trigger the new check.
+- Both supported Python minor versions will be tested on subsequent CI runs.
+
 ## [2026-09-17 22:24 PT] — Recover ambiguous MIME and HTML without losing risk evidence
 
 ### Why

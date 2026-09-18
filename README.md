@@ -135,6 +135,10 @@ and `analysis_complete=false`, including manual subject/body input and nested
 messages. Recovery attempts to retain text, links, and forms; if necessary it
 falls back to literal text. A parsing failure is neither a server-error verdict
 nor proof that the content is safe. Literal MIME `text/plain` is not parsed as HTML.
+Unknown marked declarations such as `<![foo]>` explicitly trigger recovery,
+even on Python versions that would silently consume them as comments. Literal
+markers inside comments, quoted attributes, scripts, and styles do not trigger
+this check; supported CDATA and conditional declarations remain accepted.
 
 Encapsulated `message/rfc822` attachments (and parseable `message/global` parts)
 are analyzed as independent messages, including their subject, sender identity,
@@ -437,6 +441,9 @@ until a representative, versioned artifact is supplied through a trusted build
 process. Rules and message-structure analysis remain available without it.
 
 ## Testing
+
+GitHub Actions runs the suite on both Python 3.12 and 3.13, including HTML
+recovery regressions that must not depend on standard-library exceptions.
 
 ```bash
 # From repository root, after installing website dependencies
