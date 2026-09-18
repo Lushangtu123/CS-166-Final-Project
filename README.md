@@ -99,6 +99,9 @@ defects also mark analysis incomplete. All duplicate candidates remain available
 in `message_structure.header_candidates`; sender and identity checks retain the
 highest-risk candidate, subjects are scanned together, and mismatching reply or
 return domains remain visible. Duplicates do not add a phishing score by themselves.
+Within a single address-list field, each mailbox/display-name pair is checked
+independently; adding another sender cannot hide a detected brand impersonation.
+Quoted commas in display names remain part of that name, not an address separator.
 Legitimately repeatable `Received` and `Authentication-Results` fields are not
 flagged just because they repeat.
 The content response includes `analysis_complete`; `false` means some content
@@ -107,6 +110,15 @@ no detected risk and parsing is incomplete, `risk_level` is `unknown` and
 `combined_phishing_score` is `null`. The UI shows “Analysis Incomplete” and a dash
 instead of a green zero. Detected risks remain visible alongside the warning.
 API consumers must accept this additional risk level and nullable score.
+
+MIME tree construction is limited to **200 message/part nodes per upload**,
+including the root. This bounds deeply nested and very wide messages before
+content analysis. On reaching the limit (or a parser recursion failure), the
+detector falls back to outer headers only and explicitly marks the body and
+attachments uninspected. Outer-header risk is retained; an otherwise risk-free
+fallback is `unknown`, never a complete safe verdict. This is separate from the
+attached-message analysis depth/count limits below. Long monetary digit strings
+are compared without integer conversion, and monetary evidence excerpts are bounded.
 
 Encapsulated `message/rfc822` attachments (and parseable `message/global` parts)
 are analyzed as independent messages, including their subject, sender identity,
@@ -312,6 +324,11 @@ A sole Null MX (`0 .`) returns `null_mx=true`, `mx_found=false`, and
 `overall=no_mail_service`, without A-record fallback or further probing. Mixed
 or nonzero-preference Null MX configurations are inconclusive. Declaring no mail
 service is not phishing evidence; see [RFC 7505](https://www.rfc-editor.org/rfc/rfc7505.html#section-3).
+When no MX record exists, discovery tries A and AAAA records within the shared
+deadline. An IPv6-only address record can establish an implicit mail host; it
+does not establish mailbox existence. Only definitive absence of both address
+types yields the no-records verdict. If neither succeeds and either lookup fails
+or times out, the result stays `unverifiable`. Null MX never uses this fallback.
 
 Local verification has a **12-second response deadline**, including initial DNS
 discovery. Queries use a shared pool with at most **10 outstanding jobs per

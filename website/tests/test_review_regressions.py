@@ -16,6 +16,30 @@ class HeaderAmbiguityTests(unittest.TestCase):
         return json.loads(asyncio.run(app.analyze_content_endpoint(
             app.ContentRequest(raw_email=raw))).body)
 
+    def test_multiple_from_mailboxes_preserve_each_display_identity(self):
+        bad = 'Apple <alice@unrelated.net>'
+        good = 'Alice <alice@gmail.com>'
+        for value in (bad, f'{good}, {bad}', f'{bad}, {good}'):
+            with self.subTest(value=value):
+                result = self.analyze(f'From: {value}\nSender: alice@gmail.com\n\nHello')
+                self.assertIn(result['risk_level'], ('high', 'critical'))
+                self.assertTrue(any('Protected brand identity' in item['msg']
+                                    for item in result['extra_indicators']))
+        ordinary = self.analyze('From: "Doe, Alice" <alice@gmail.com>, Bob <bob@outlook.com>\n'
+                                'Sender: alice@gmail.com\n\nHello')
+        self.assertEqual(ordinary['risk_level'], 'safe')
+        self.assertTrue(ordinary['analysis_complete'])
+
+    def test_multi_author_reply_can_align_with_either_author(self):
+        headers = ('From: Alice <alice@gmail.com>, Bob <bob@outlook.com>\n'
+                   'Sender: alice@gmail.com\n')
+        for domain in ('gmail.com', 'outlook.com'):
+            result = self.analyze(headers + f'Reply-To: reply@{domain}\nReturn-Path: bounce@{domain}\n\nHello')
+            self.assertEqual(result['risk_level'], 'safe')
+            self.assertFalse(any('differs from From domain' in item['msg'] for item in result['extra_indicators']))
+        result = self.analyze(headers + 'Reply-To: collector@unrelated.net\n\nHello')
+        self.assertTrue(any('Reply-To domain' in item['msg'] for item in result['extra_indicators']))
+
     def test_duplicate_headers_preserve_risk_in_either_order(self):
         pairs = [
             ('From', 'alice@gmail.com', 'Apple <service@unrelated.example>'),
@@ -59,8 +83,52 @@ class HeaderAmbiguityTests(unittest.TestCase):
                     self.assertFalse(result['analysis_complete'])
 
 
+class ParserResourceTests(unittest.TestCase):
+    def test_mime_part_budget_includes_flat_multipart_and_preserves_normal_mail(self):
+        for parts, complete in ((199, True), (200, False)):
+            raw = ('Content-Type: multipart/mixed; boundary=b\n\n' +
+                   '--b\nContent-Type: text/plain\n\nHello\n' * parts + '--b--\n')
+            result = json.loads(asyncio.run(app.analyze_content_endpoint(app.ContentRequest(raw_email=raw))).body)
+            self.assertEqual(result['analysis_complete'], complete)
+            self.assertEqual(result['risk_level'], 'safe' if complete else 'unknown')
+
+    def test_deep_email_is_incomplete_and_keeps_outer_identity(self):
+        for outer, expected in (('', 'unknown'), ('From: Apple <alice@unrelated.net>\n', 'high')):
+            raw = outer + 'Content-Type: message/rfc822\n\n' * 1100 + 'Hello'
+            for source in (raw, raw.encode()):
+                with self.subTest(outer=outer, binary=isinstance(source, bytes)):
+                    if isinstance(source, bytes):
+                        async def receive():
+                            return {'type': 'http.request', 'body': source, 'more_body': False}
+                        request = app.Request({'type': 'http', 'headers': [(b'content-type', b'message/rfc822')]}, receive)
+                        response = asyncio.run(app.analyze_eml_endpoint(request))
+                    else:
+                        response = asyncio.run(app.analyze_content_endpoint(app.ContentRequest(raw_email=source)))
+                    result = json.loads(response.body)
+                    self.assertEqual(result['risk_level'], expected)
+                    self.assertFalse(result['analysis_complete'])
+                    self.assertTrue(any('resource limit' in warning.lower()
+                                        for warning in result['message_structure']['parse_warnings']))
+
+
+class AmountResourceTests(unittest.TestCase):
+    def test_long_amounts_cannot_abort_analysis_or_expand_evidence(self):
+        for digits, large in (('9' * 4400, True), ('0' * 4400, False),
+                              ('0' * 4400 + '10000', True), ('٠' * 4400, False),
+                              ('9999', False), ('10000', True)):
+            with self.subTest(length=len(digits), large=large):
+                result = json.loads(asyncio.run(app.analyze_content_endpoint(
+                    app.ContentRequest(body='$' + digits))).body)
+                findings = [item['msg'] for item in result['extra_indicators']
+                            if 'monetary amounts' in item['msg']]
+                self.assertEqual(bool(findings), large)
+                self.assertTrue(all(len(item) < 300 for item in findings))
+                self.assertTrue(result['analysis_complete'])
+
+
 class VerificationSemanticsTests(unittest.TestCase):
-    def verify(self, reply=(250, b'2.1.5 Accepted'), *, mx=None, whois_error=None, dns_error_kind=None):
+    def verify(self, reply=(250, b'2.1.5 Accepted'), *, mx=None, whois_error=None, dns_error_kind=None,
+               address_answers=None):
         import dns.resolver
         import dns.exception
         def resolve(_name, kind, **_kwargs):
@@ -68,6 +136,10 @@ class VerificationSemanticsTests(unittest.TestCase):
                 raise dns.exception.Timeout
             if kind == 'MX':
                 return mx if mx is not None else [SimpleNamespace(preference=0, exchange='mx.example.com.')]
+            if address_answers is not None and kind in {'A', 'AAAA'}:
+                if address_answers.get(kind):
+                    return address_answers[kind]
+                raise dns.resolver.NoAnswer
             if kind == 'A':
                 return ['8.8.8.8']
             raise dns.resolver.NoAnswer
@@ -78,6 +150,27 @@ class VerificationSemanticsTests(unittest.TestCase):
             smtp.return_value.rcpt.return_value = reply
             result = json.loads(app.verify_email_endpoint(app.VerifyRequest(email='user@example.com')).body)
             return result, smtp.called
+
+    def test_ipv6_implicit_mx_and_uncertain_address_lookups(self):
+        result, contacted = self.verify(mx=[], address_answers={'AAAA': ['2606:4700:4700::1111']})
+        self.assertTrue(result['mx_found'])
+        self.assertEqual(result['overall'], 'verified')
+        self.assertTrue(contacted)
+        self.assertIn('AAAA', result['note'])
+        for failed_kind in ('A', 'AAAA'):
+            with self.subTest(failed_kind=failed_kind):
+                result, contacted = self.verify(mx=[], address_answers={}, dns_error_kind=failed_kind)
+                self.assertEqual(result['overall'], 'unverifiable')
+                self.assertFalse(contacted)
+        result, contacted = self.verify(mx=[], address_answers={})
+        self.assertEqual(result['overall'], 'likely_invalid')
+        self.assertFalse(contacted)
+
+    def test_null_mx_never_falls_back_to_ipv6(self):
+        result, contacted = self.verify(mx=[SimpleNamespace(preference=0, exchange='.')],
+                                        address_answers={'AAAA': ['2606:4700:4700::1111']})
+        self.assertEqual(result['overall'], 'no_mail_service')
+        self.assertFalse(contacted)
 
     def test_smtp_rejections_do_not_all_mean_missing_mailbox(self):
         for reply, expected, overall in (

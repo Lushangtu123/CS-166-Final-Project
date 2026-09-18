@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from email import policy
 from email.parser import BytesParser, Parser
-from email.utils import parseaddr
+from email.message import EmailMessage
+from email.utils import parseaddr, getaddresses
 from pathlib import PurePath
 import re
 import unicodedata
@@ -12,6 +13,13 @@ import codecs
 
 
 _AUTH_FAILURES = {"fail", "softfail", "permerror", "temperror"}
+MAX_MIME_PARTS = 200
+
+
+class _MimeResourceLimit(Exception):
+    """Abort tree construction before excessive parts or nesting consume resources."""
+
+
 _DANGEROUS_EXTENSIONS = {
     ".bat", ".chm", ".cmd", ".com", ".dll", ".docm", ".exe", ".hta",
     ".html", ".htm", ".img", ".iso", ".jar", ".js", ".lnk", ".msi",
@@ -110,8 +118,7 @@ def _canonical_brand_domain(domain: str, canonical_domains: set[str]) -> bool:
     return any(_domains_align(domain, canonical) for canonical in canonical_domains)
 
 
-def _brand_identity_signals(from_header: str, from_domain: str) -> tuple[int, list[dict]]:
-    display_name = parseaddr(from_header or "")[0]
+def _brand_identity_signals(display_name: str, from_domain: str) -> tuple[int, list[dict]]:
     decoded_domain = _decode_idna_domain(from_domain)
     display_skeleton = re.sub(r"[^a-z0-9]", "", _confusable_skeleton(display_name))
     domain_skeleton = _confusable_skeleton(decoded_domain)
@@ -219,12 +226,36 @@ def analyze_raw_email(
     trusted_authserv_ids: set[str] | frozenset[str] | None = None,
 ) -> dict:
     """Return normalized content plus authentication, identity, and attachment signals."""
-    if isinstance(raw_email, bytes):
-        message = BytesParser(policy=policy.default).parsebytes(raw_email)
-    else:
-        message = Parser(policy=policy.default).parsestr(raw_email)
-    return _analyze_message(message, unicode_source=isinstance(raw_email, str),
-                            trusted_authserv_ids=trusted_authserv_ids, depth=0, budget=[20])
+    count = 0
+    def bounded_factory(*, policy):
+        nonlocal count
+        count += 1
+        if count > MAX_MIME_PARTS:
+            raise _MimeResourceLimit()
+        return EmailMessage(policy=policy)
+
+    def parse(parser_policy, *, headersonly=False):
+        if isinstance(raw_email, bytes):
+            return BytesParser(policy=parser_policy).parsebytes(raw_email, headersonly=headersonly)
+        return Parser(policy=parser_policy).parsestr(raw_email, headersonly=headersonly)
+
+    limited = False
+    try:
+        message = parse(policy.default.clone(message_factory=bounded_factory))
+    except (_MimeResourceLimit, RecursionError):
+        # Headers-only mode never descends into the body. Do not reinterpret
+        # unparsed MIME payload as ordinary text or claim it was inspected.
+        message = parse(policy.default, headersonly=True)
+        message.set_payload('')
+        limited = True
+    result = _analyze_message(message, unicode_source=isinstance(raw_email, str),
+                              trusted_authserv_ids=trusted_authserv_ids, depth=0, budget=[20])
+    if limited:
+        warning = ('MIME parser resource limit reached; only outer headers were inspected, '
+                   'body and attachments were not analyzed. Analysis is incomplete.')
+        result['parse_warnings'].append(warning)
+        result['indicators'].append({'level': 'info', 'msg': warning})
+    return result
 
 
 def _analyze_message(message, *, unicode_source, trusted_authserv_ids, depth, budget):
@@ -295,9 +326,11 @@ def _analyze_message(message, *, unicode_source, trusted_authserv_ids, depth, bu
     score = 0
     risk_floor = "safe"
 
-    from_domains = {_domain(value) for value in header_candidates['From']} - {''}
+    from_mailboxes = [mailbox for value in header_candidates['From']
+                      for mailbox in getaddresses([value])]
+    from_domains = {_domain(address) for _, address in from_mailboxes} - {''}
     brand_score, brand_indicators = max(
-        (_brand_identity_signals(value, _domain(value)) for value in header_candidates['From']),
+        (_brand_identity_signals(name, _domain(address)) for name, address in from_mailboxes),
         key=lambda pair: pair[0], default=(0, []),
     )
     score += brand_score
@@ -306,13 +339,14 @@ def _analyze_message(message, *, unicode_source, trusted_authserv_ids, depth, bu
         risk_floor = "high"
 
     for name, points, level in (('Reply-To', 4, 'high'), ('Return-Path', 2, 'medium')):
-        domains = {_domain(value) for value in header_candidates[name]} - {''}
-        mismatch = next(((other, sender) for other in sorted(domains)
-                         for sender in sorted(from_domains) if not _domains_align(other, sender)), None)
+        domains = {_domain(address) for value in header_candidates[name]
+                   for _, address in getaddresses([value])} - {''}
+        mismatch = next((other for other in sorted(domains) if from_domains
+                         and not any(_domains_align(other, sender) for sender in from_domains)), None)
         if mismatch:
             score += points
             indicators.append({'level': level, 'msg':
-                f'{name} domain ({mismatch[0]}) differs from From domain ({mismatch[1]}).'})
+                f'{name} domain ({mismatch}) differs from From domain candidates ({", ".join(sorted(from_domains))}).'})
 
     trusted_ids = {
         value.strip().lower()

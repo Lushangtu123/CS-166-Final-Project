@@ -1896,10 +1896,15 @@ def _large_currency_amounts(text: str) -> list[str]:
     raw = re.findall(r'(?:\$|usd|gbp|eur|€|£)\s*[\d,\.]+', text, re.IGNORECASE)
     results = []
     for m in raw:
-        digits = re.sub(r'[^\d]', '', m)
-        if digits and int(digits) >= 10_000:
-            results.append(m.strip())
-    return results[:4]
+        # Compare significant digit count instead of converting attacker-controlled
+        # arbitrarily long numbers to int. Normalize Unicode decimal zero too.
+        digits = ''.join(str(unicodedata.decimal(ch)) for ch in m if ch.isdecimal()).lstrip('0')
+        if len(digits) >= 5:
+            amount = m.strip()
+            results.append(amount[:80] + ('…' if len(amount) > 80 else ''))
+            if len(results) == 4:
+                break
+    return results
 
 
 def _count_generic_cta(text: str) -> int:
@@ -3020,17 +3025,23 @@ def _lookup_mail_domain(domain: str, deadline: float) -> dict:
         pass
     except dns.exception.DNSException:
         return result
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
+    address_lookup_failed = False
+    for kind in ('A', 'AAAA'):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return result
+        try:
+            addresses = dns.resolver.resolve(domain, kind, lifetime=min(4, remaining))
+            if addresses:
+                return {'mx_found': True, 'mx_records': [[0, domain]],
+                        'note': f'No MX record found; domain has an {kind} record — using domain directly.'}
+        except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+            continue
+        except dns.exception.DNSException:
+            address_lookup_failed = True
+    if address_lookup_failed:
         return result
-    try:
-        dns.resolver.resolve(domain, 'A', lifetime=min(4, remaining))
-        return {'mx_found': True, 'mx_records': [[0, domain]],
-                'note': 'No MX record found; domain has an A record — using domain directly.'}
-    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
-        return {**result, 'overall': 'likely_invalid', 'smtp_message': 'Domain has no MX or A records.'}
-    except dns.exception.DNSException:
-        return result
+    return {**result, 'overall': 'likely_invalid', 'smtp_message': 'Domain has no MX, A, or AAAA records.'}
 
 
 @app.post("/api/verify-email")
@@ -3038,7 +3049,7 @@ def verify_email_endpoint(req: VerifyRequest):
     """
     Six-stage email authenticity check (stages 3-6 run in parallel):
       1. RFC 5321 format validation
-      2. DNS MX (+ A fallback) record lookup
+      2. DNS MX (+ A/AAAA fallback) record lookup
       3. SMTP RCPT TO mailbox probe   ┐
       4. SPF record & policy          ├─ parallel
       5. DMARC record & policy        │

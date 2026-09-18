@@ -22,6 +22,26 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-17 22:10 PT] — Bound MIME parsing and preserve multi-mailbox identity signals
+
+### Why
+- Multiple mailboxes in one From field hid display-name impersonation.
+- Deep MIME nesting and long monetary digit strings could abort analysis.
+- No-MX domains with only IPv6 addresses were incorrectly classified as invalid.
+
+### Files changed
+- `website/email_structure.py`: per-mailbox identity checks and a 200-node
+  parsing budget with explicit incomplete, outer-headers-only fallback.
+- `website/app.py`: bounded monetary evidence and A/AAAA discovery fallback.
+- `website/tests/test_review_regressions.py`: adversarial and normal controls.
+- `README.md`: limits, fallback behavior, and IPv6 discovery semantics.
+
+### Effect
+- Multiple From addresses retain the strongest brand-identity signal.
+- Over-budget MIME and large numbers no longer trigger the reproduced exceptions.
+- IPv6-only implicit mail hosts remain eligible for verification, while DNS
+  errors stay inconclusive and Null MX still stops further checks.
+
 ## [2026-09-17 21:55 PT] — Preserve ambiguous-header evidence and clarify verification results
 
 ### Why
