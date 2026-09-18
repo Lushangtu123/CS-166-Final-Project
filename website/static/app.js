@@ -4,6 +4,77 @@
 
 let metricsChart = null;
 let _rawEmailSource = '';
+let _rawReadId = 0;
+let _rawReadPending = false;
+let _senderRequestId = 0;
+let _contentRequestId = 0;
+let _verificationRequestId = 0;
+
+function setError(id, message = '') {
+  const el = document.getElementById(id);
+  el.textContent = message;
+  el.classList.toggle('hidden', !message);
+}
+
+async function postJSON(url, payload) {
+  let res;
+  try {
+    res = await fetch(url, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch (_error) {
+    throw new Error('Cannot reach the service. Check your connection and try again.');
+  }
+  if (res.status === 429) {
+    const retry = res.headers?.get('Retry-After');
+    const seconds = /^\d+$/.test(retry || '') ? Number(retry)
+      : Math.ceil((Date.parse(retry) - Date.now()) / 1000);
+    throw new Error(Number.isFinite(seconds) && seconds > 0
+      ? `Too many requests. Try again in ${seconds} seconds.`
+      : 'Too many requests. Please wait before trying again.');
+  }
+  if (res.status === 404 || res.status >= 500) {
+    throw new Error('This service is currently unavailable. Reload the page or try again later.');
+  }
+  let data;
+  try { data = await res.json(); } catch (_error) {
+    throw new Error('The service returned an unreadable response. Please try again.');
+  }
+  if (!res.ok) {
+    throw new Error(typeof data.detail === 'string' ? data.detail : 'The submitted input is invalid. Please check it and try again.');
+  }
+  return data;
+}
+
+function invalidateSender() {
+  _senderRequestId++;
+  _verificationRequestId++;
+  _verifyEmail = null;
+  document.getElementById('result-area').classList.add('hidden');
+  document.getElementById('loading-area').classList.add('hidden');
+  document.getElementById('analyze-btn').disabled = false;
+  document.getElementById('analyze-btn-text').textContent = 'Analyze';
+  setError('email-error');
+  setError('verify-error');
+}
+
+function invalidateContent() {
+  _contentRequestId++;
+  document.getElementById('content-result-area').classList.add('hidden');
+  document.getElementById('content-loading-area').classList.add('hidden');
+  document.getElementById('content-analyze-btn').disabled = false;
+  document.getElementById('content-btn-text').textContent = 'Analyze Content';
+  setError('content-error');
+}
+
+function clearRawEmail() {
+  _rawReadId++;
+  _rawReadPending = false;
+  _rawEmailSource = '';
+  document.getElementById('raw-email-file').value = '';
+  document.getElementById('raw-email-status').textContent = '';
+}
 
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, char => ({
@@ -109,8 +180,12 @@ function prefersReducedMotion() {
 // Counts el from 0 to target over `duration` ms and always finishes on the
 // exact formatted value. Falls back to setting the value immediately when
 // requestAnimationFrame is unavailable or reduced motion is requested.
+const numberAnimations = new WeakMap();
+
 function animateNumber(el, target, format, duration = 1100) {
   if (!el) return;
+  const token = {};
+  numberAnimations.set(el, token);
   const finish = () => { el.textContent = format(target); };
   if (typeof requestAnimationFrame !== 'function' || prefersReducedMotion() || !(target > 0)) {
     finish();
@@ -118,6 +193,7 @@ function animateNumber(el, target, format, duration = 1100) {
   }
   const start = performance.now();
   const step = now => {
+    if (numberAnimations.get(el) !== token) return;
     const t = Math.min(1, (now - start) / duration);
     const eased = 1 - Math.pow(1 - t, 3);
     el.textContent = format(target * eased);
@@ -159,10 +235,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupTheme();
   setupScrollReveal();
   setupCountUps();
+  setupInputEvents();
   await loadPublicConfig();
   await loadMetrics();
   setupSmoothScroll();
-  setupInputEvents();
 });
 
 // ── Scroll reveal ────────────────────────────────────────────────────────────
@@ -222,16 +298,34 @@ function setupInputEvents() {
   const input = document.getElementById('email-input');
   const clearBtn = document.getElementById('btn-clear');
   input.addEventListener('input', () => {
+    invalidateSender();
     clearBtn.classList.toggle('visible', input.value.length > 0);
+  });
+  ['content-subject', 'content-body'].forEach(id => {
+    document.getElementById(id).addEventListener('input', invalidateContent);
   });
   const rawInput = document.getElementById('raw-email-file');
   if (rawInput) {
     rawInput.addEventListener('change', async event => {
+      invalidateContent();
+      const readId = ++_rawReadId;
       const file = event.target.files?.[0];
-      _rawEmailSource = file ? await file.text() : '';
-      document.getElementById('raw-email-status').textContent = file
-        ? `${file.name} loaded — headers, HTML links, and attachments will be analyzed.`
-        : '';
+      _rawEmailSource = '';
+      _rawReadPending = !!file;
+      document.getElementById('raw-email-status').textContent = file ? `Reading ${file.name}…` : '';
+      try {
+        const source = file ? await file.text() : '';
+        if (readId !== _rawReadId) return;
+        _rawEmailSource = source;
+        document.getElementById('raw-email-status').textContent = file
+          ? `${file.name} loaded — headers, HTML links, and attachments will be analyzed.` : '';
+      } catch (_error) {
+        if (readId !== _rawReadId) return;
+        clearRawEmail();
+        setError('content-error', 'The email file could not be read. Please select it again.');
+      } finally {
+        if (readId === _rawReadId) _rawReadPending = false;
+      }
     });
   }
 }
@@ -239,24 +333,33 @@ function setupInputEvents() {
 // ── Email Authenticity Verification ──────────────────────────────────────────
 let _verifyEmail = null;   // remember which email was last analyzed
 let _emailVerificationEnabled = false;
+let _publicConfig = {};
 
 function applyPublicConfig(config) {
+  _publicConfig = config;
   const enabled = config.email_verification_enabled === true;
   _emailVerificationEnabled = enabled;
   const notice = document.getElementById('verification-local-notice');
-  ['verify-idle', 'verify-loading', 'verify-result'].forEach(id => {
-    document.getElementById(id).classList.toggle('hidden', !enabled);
+  document.getElementById('verify-idle').classList.toggle('hidden', !enabled);
+  ['verify-loading', 'verify-result'].forEach(id => {
+    document.getElementById(id).classList.add('hidden');
   });
   notice.classList.toggle('hidden', enabled);
-  notice.textContent = enabled
-    ? ''
-    : 'Full email authenticity verification is disabled on this public service. Deploy the full version on your own computer to enable SMTP, DNS, and WHOIS checks.';
+  if (enabled) {
+    notice.textContent = '';
+  } else if (config.deployment_profile === 'development' || config.deployment_profile === 'test') {
+    notice.textContent = 'Network-based mailbox verification is disabled in this local configuration. Enable it in the local server settings and restart the service, then reload this page.';
+  } else if (config.deployment_profile === 'demo' || config.deployment_profile === 'production') {
+    notice.textContent = 'Network-based mailbox verification is disabled on this public service. Deploy on your own computer to enable SMTP, DNS, and WHOIS checks.';
+  } else {
+    notice.textContent = 'Mailbox verification availability could not be confirmed. Reload this page to retry. Sender and message analysis remain available.';
+  }
 }
 
 async function loadPublicConfig() {
   let config = { email_verification_enabled: false };
   try {
-    const response = await fetch('/api/config');
+    const response = await fetch('/api/config', { cache: 'no-store' });
     if (response.ok) config = await response.json();
   } catch (error) {
     console.warn('Public configuration unavailable; using safe defaults.', error);
@@ -265,8 +368,10 @@ async function loadPublicConfig() {
 }
 
 function resetVerifyCard() {
+  _verificationRequestId++;
+  setError('verify-error');
   if (!_emailVerificationEnabled) {
-    applyPublicConfig({ email_verification_enabled: false });
+    applyPublicConfig(_publicConfig);
     return;
   }
   document.getElementById('verify-idle').classList.remove('hidden');
@@ -275,30 +380,28 @@ function resetVerifyCard() {
 }
 
 async function runVerification() {
-  const email = _verifyEmail || document.getElementById('email-input').value.trim();
-  if (!email) return;
+  const email = _verifyEmail;
+  if (!email || !_emailVerificationEnabled) return;
+  const requestId = ++_verificationRequestId;
+  setError('verify-error');
 
   document.getElementById('verify-idle').classList.add('hidden');
   document.getElementById('verify-loading').classList.remove('hidden');
   document.getElementById('verify-result').classList.add('hidden');
 
-  let data;
   try {
-    const res = await fetch('/api/verify-email', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email }),
-    });
-    data = await res.json();
+    const data = await postJSON('/api/verify-email', { email });
+    if (requestId !== _verificationRequestId || email !== _verifyEmail) return;
+    renderVerifyResult(data);
   } catch (err) {
-    document.getElementById('verify-loading').classList.add('hidden');
+    if (requestId !== _verificationRequestId) return;
     document.getElementById('verify-idle').classList.remove('hidden');
-    alert('Verification request failed: ' + err.message);
-    return;
+    setError('verify-error', err.message);
+  } finally {
+    if (requestId === _verificationRequestId) {
+      document.getElementById('verify-loading').classList.add('hidden');
+    }
   }
-
-  document.getElementById('verify-loading').classList.add('hidden');
-  renderVerifyResult(data);
 }
 
 function renderVerifyResult(data) {
@@ -453,6 +556,7 @@ function setExample(email) {
 }
 
 function clearEmail() {
+  invalidateSender();
   const input = document.getElementById('email-input');
   input.value = '';
   document.getElementById('btn-clear').classList.remove('visible');
@@ -464,7 +568,10 @@ function clearEmail() {
 // ── Email Analysis ────────────────────────────────────────────────────────────
 async function runEmailAnalysis() {
   const email = document.getElementById('email-input').value.trim();
-  if (!email) {
+  invalidateSender();
+  const requestId = _senderRequestId;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    setError('email-error', 'Enter a single email address, such as user@example.com. Use Email Content to analyze a message.');
     shakeInput();
     return;
   }
@@ -478,23 +585,17 @@ async function runEmailAnalysis() {
   document.getElementById('loading-area').classList.remove('hidden');
 
   try {
-    const res = await fetch('/api/analyze-email', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email }),
-    });
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.detail || '请求失败');
-    }
-    const data = await res.json();
+    const data = await postJSON('/api/analyze-email', { email });
+    if (requestId !== _senderRequestId) return;
     renderResult(data);
   } catch (e) {
-    alert('Analysis failed: ' + e.message);
+    if (requestId === _senderRequestId) setError('email-error', e.message);
   } finally {
-    btn.disabled = false;
-    btnText.textContent = 'Analyze';
-    document.getElementById('loading-area').classList.add('hidden');
+    if (requestId === _senderRequestId) {
+      btn.disabled = false;
+      btnText.textContent = 'Analyze';
+      document.getElementById('loading-area').classList.add('hidden');
+    }
   }
 }
 
@@ -583,12 +684,14 @@ function renderResult(data) {
   } else if (isSuspect) {
     bannerCls = 'banner-suspect'; bannerIcon = 'search'; probColor = '#f0c05a';
   } else {
-    bannerCls = 'banner-legit';   bannerIcon = 'check';  probColor = '#3fd58f';
+    bannerCls = 'banner-neutral'; bannerIcon = 'info'; probColor = 'var(--info)';
   }
   banner.className = 'verdict-banner ' + bannerCls;
   document.getElementById('vb-icon').innerHTML    = icon(bannerIcon);
   document.getElementById('vb-title').textContent = data.label;
   document.getElementById('vb-email').textContent = data.email;
+  document.getElementById('vb-scope').textContent =
+    'This address-only score does not establish that a message is safe. Check the full email, links, and authentication headers. Mailbox service type is reported separately below.';
   document.getElementById('vb-prob-label').textContent = 'Sender Risk Score';
   animateNumber(document.getElementById('vb-prob'), data.risk_score, v => `${Math.round(v)}/100`);
   document.getElementById('vb-prob').style.color  = probColor;
@@ -606,44 +709,33 @@ function renderResult(data) {
     banner.querySelector('.vb-left').appendChild(note);
   }
 
-  // Probability bars
+  // Heuristic scale, not a probability or a complementary safety score.
   const riskScore = data.risk_score;
   animateBar('phish-bar', riskScore);
-  animateBar('legit-bar', 100 - riskScore);
   document.getElementById('phish-pct').textContent = riskScore + '/100';
-  document.getElementById('legit-pct').textContent = (100 - riskScore) + '/100';
 
   // Risk summary pills
   const riskSummary = document.getElementById('risk-summary');
   const h = data.high_risk_count;
   const m = data.med_risk_count;
-  let dispPill = '';
-  if (disposableStatus === 'known_disposable_provider') {
-    dispPill = `<span class="pill pill-disp">${icon('trash')} Disposable</span>`;
-  } else if (disposableStatus === 'suspicious_mailbox_pattern' || disposableStatus === 'suspicious_domain_pattern') {
-    dispPill = `<span class="pill pill-disp-suspect">${icon('alert')} Suspected Disposable</span>`;
-  } else if (disposableStatus === 'privacy_relay') {
-    dispPill = `<span class="pill pill-feat">${icon('shield')} Privacy relay</span>`;
-  }
   const suspectPill = isSuspect || isHighRisk
     ? `<span class="pill pill-suspect">${icon('search')} Suspected Phishing</span>`
     : '';
   riskSummary.innerHTML = `
     <div class="risk-pills">
       ${suspectPill}
-      ${dispPill}
       <span class="pill pill-high">${h} high-risk</span>
       <span class="pill pill-med">${m} medium-risk</span>
-      <span class="pill pill-feat">${data.phish_feature_count} risk-coded signals</span>
     </div>
   `;
 
   // Risk indicators
   const riskList = document.getElementById('risk-indicators-list');
   const countEl = document.getElementById('risk-count');
-  if (data.risk_indicators && data.risk_indicators.length > 0) {
-    countEl.textContent = `(${data.risk_indicators.length})`;
-    riskList.innerHTML = data.risk_indicators.map(r => `
+  const riskIndicators = (data.risk_indicators || []).filter(r => r.level !== 'info');
+  if (riskIndicators.length > 0) {
+    countEl.textContent = `(${riskIndicators.length})`;
+    riskList.innerHTML = riskIndicators.map(r => `
       <div class="risk-item risk-${r.level}">
         <span class="risk-dot"></span>
         <span class="risk-msg">${escapeHtml(r.msg)}</span>
@@ -651,7 +743,7 @@ function renderResult(data) {
     `).join('');
   } else {
     countEl.textContent = '';
-    riskList.innerHTML = '<div class="no-risk">No risk indicators found ✓</div>';
+    riskList.innerHTML = '<div class="sender-no-risk">No sender risk indicators detected. Message safety is not established.</div>';
   }
 
   // Feature breakdown
@@ -659,7 +751,7 @@ function renderResult(data) {
   fbList.innerHTML = data.feature_breakdown.map(f => {
     const valClass = f.value === -1 ? 'fv-phish' : f.value === 1 ? 'fv-legit' : 'fv-sus';
     const valLabel = f.value === -1 ? '−1' : f.value === 1 ? '+1' : '0';
-    const valTitle = f.value === -1 ? 'Phishing' : f.value === 1 ? 'Legit' : 'Suspicious';
+    const valTitle = f.value === -1 ? 'Flagged feature; not a verdict' : f.value === 1 ? 'No flag for this feature' : 'Intermediate feature value';
     return `
       <div class="fb-row">
         <div class="fb-top">
@@ -815,17 +907,15 @@ function setContentExample(key) {
   if (!ex) return;
   document.getElementById('content-subject').value = ex.subject;
   document.getElementById('content-body').value = ex.body;
-  _rawEmailSource = '';
+  clearRawEmail();
   runContentAnalysis();
 }
 
 function clearContent() {
+  invalidateContent();
   document.getElementById('content-subject').value = '';
   document.getElementById('content-body').value = '';
-  const rawInput = document.getElementById('raw-email-file');
-  if (rawInput) rawInput.value = '';
-  document.getElementById('raw-email-status').textContent = '';
-  _rawEmailSource = '';
+  clearRawEmail();
   document.getElementById('content-result-area').classList.add('hidden');
   document.getElementById('content-loading-area').classList.add('hidden');
 }
@@ -835,6 +925,12 @@ function buildContentPayload(subject, body, rawEmail) {
 }
 
 async function runContentAnalysis() {
+  invalidateContent();
+  const requestId = _contentRequestId;
+  if (_rawReadPending) {
+    setError('content-error', 'Please wait for the email file to finish loading.');
+    return;
+  }
   const subject = document.getElementById('content-subject').value.trim();
   const body    = document.getElementById('content-body').value.trim();
   if (!subject && !body && !_rawEmailSource) {
@@ -852,23 +948,17 @@ async function runContentAnalysis() {
   document.getElementById('content-loading-area').classList.remove('hidden');
 
   try {
-    const res = await fetch('/api/analyze-content', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(buildContentPayload(subject, body, _rawEmailSource)),
-    });
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.detail || 'Request failed');
-    }
-    const data = await res.json();
+    const data = await postJSON('/api/analyze-content', buildContentPayload(subject, body, _rawEmailSource));
+    if (requestId !== _contentRequestId) return;
     renderContentResult(data);
   } catch (e) {
-    alert('Analysis failed: ' + e.message);
+    if (requestId === _contentRequestId) setError('content-error', e.message);
   } finally {
-    btn.disabled = false;
-    btnText.textContent = 'Analyze Content';
-    document.getElementById('content-loading-area').classList.add('hidden');
+    if (requestId === _contentRequestId) {
+      btn.disabled = false;
+      btnText.textContent = 'Analyze Content';
+      document.getElementById('content-loading-area').classList.add('hidden');
+    }
   }
 }
 
@@ -894,11 +984,15 @@ function renderContentResult(data) {
     subParts.push(`ML: ${data.ml_label} (${data.ml_phishing_probability}% phishing)`);
   }
   const categoryCount = data.category_results.length;
-  subParts.push(
-    categoryCount === 0
-      ? 'No suspicious patterns detected in this email.'
-      : `${categoryCount} suspicious ${categoryCount === 1 ? 'category' : 'categories'} detected.`
-  );
+  const technicalCount = (data.extra_indicators || []).filter(ind =>
+    ['low', 'medium', 'high', 'critical'].includes(ind.level)).length;
+  if (categoryCount) subParts.push(`${categoryCount} suspicious ${categoryCount === 1 ? 'category' : 'categories'} detected.`);
+  if (technicalCount) subParts.push(`${technicalCount} technical risk ${technicalCount === 1 ? 'indicator' : 'indicators'} detected.`);
+  if (!categoryCount && !technicalCount) {
+    subParts.push(data.risk_level === 'safe'
+      ? 'No indicators detected by the available checks. This does not prove the message is safe.'
+      : 'Risk detected by the combined analysis. Review the evidence below.');
+  }
   document.getElementById('crb-sub').textContent = subParts.join(' • ');
   const scoreEl = document.getElementById('crb-score');
   // Prefer the blended ML+heuristic score when available; fall back to raw heuristic total.

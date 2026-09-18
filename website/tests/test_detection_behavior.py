@@ -16,6 +16,20 @@ from config import Settings
 
 
 class SenderRiskAnalysisTests(unittest.TestCase):
+    def test_sender_endpoint_rejects_non_address_input(self):
+        for value in ("hello", "Full email authenticity verification is disabled.",
+                      "a@@example.com", "a b@example.com", "a..b@example.com", "a@example"):
+            with self.subTest(value=value):
+                with self.assertRaises(app.HTTPException) as error:
+                    self.analyze(value)
+                self.assertEqual(error.exception.status_code, 400)
+                self.assertIn("email address", error.exception.detail.lower())
+
+    def test_sender_endpoint_accepts_supported_address_patterns(self):
+        for value in ("alice+shopping@gmail.com", "admin99@192.168.1.1", "user@例子.com"):
+            with self.subTest(value=value):
+                self.assertIn("risk_score", self.analyze(value))
+
     def analyze(self, address: str) -> dict:
         response = asyncio.run(app.analyze_email(app.EmailRequest(email=address)))
         return json.loads(response.body)
@@ -72,14 +86,32 @@ class DisposableEmailClassificationTests(unittest.TestCase):
                 self.assertEqual(result["med_risk_count"], 1)
                 self.assertEqual(result["risk_score"], 10)
 
-    def test_confirmed_provider_contributes_one_disposable_indicator(self):
+    def test_confirmed_provider_is_context_not_phishing_evidence(self):
         for address in ("user@mailinator.com", "xq7m9v2k4p8z@mailinator.com"):
             with self.subTest(address=address):
                 result = self.analyze(address)
                 self.assert_status(result, "known_disposable_provider")
-                self.assertEqual(result["high_risk_count"], 1)
+                self.assertEqual(result["high_risk_count"], 0)
                 self.assertEqual(result["med_risk_count"], 0)
-                self.assertEqual(result["risk_score"], 28)
+                self.assertEqual(result["risk_score"], 0)
+                provider_indicators = [r for r in result["risk_indicators"]
+                                       if "disposable-email provider" in r["msg"]]
+                self.assertEqual(len(provider_indicators), 1)
+                self.assertEqual(provider_indicators[0]["level"], "info")
+
+    def test_apple_private_relay_domains_are_recognized_without_guessing_icloud(self):
+        for domain in ("privaterelay.appleid.com", "private.icloud.com"):
+            result = self.analyze(f"user@{domain}")
+            self.assert_status(result, "privacy_relay")
+            self.assertEqual(result["risk_score"], 0)
+            self.assert_status(self.analyze(f"user@{domain}.evil.example"), "no_known_match")
+        self.assert_status(self.analyze("user@icloud.com"), "no_known_match")
+
+    def test_disposable_provider_does_not_suppress_other_sender_risks(self):
+        result = self.analyze("user@one.two.three.mailinator.com")
+        self.assert_status(result, "known_disposable_provider")
+        self.assertGreater(result["risk_score"], 0)
+        self.assertTrue(any("subdomain levels" in r["msg"] for r in result["risk_indicators"]))
 
     def test_ordinary_major_provider_mailboxes_remain_unconfirmed(self):
         for address in ("alice.smith@gmail.com", "alice.smith@outlook.com"):
@@ -429,6 +461,20 @@ class ContentRuleRobustnessTests(unittest.TestCase):
 
 
 class RawEmailAnalysisTests(unittest.TestCase):
+    def test_disposable_context_does_not_score_but_dangerous_links_still_do(self):
+        for body, dangerous in (("Lunch is at noon.", False),
+                                ("Visit http://192.0.2.10/login", True)):
+            raw = f"From: user@mailinator.com\nSubject: Note\n\n{body}"
+            result = json.loads(asyncio.run(app.analyze_content_endpoint(
+                app.ContentRequest(raw_email=raw)
+            )).body)
+            self.assertEqual(result["sender_score"], 0)
+            self.assertEqual(result["sender_analysis"]["disposable_status"], "known_disposable_provider")
+            if dangerous:
+                self.assertIn(result["risk_level"], {"high", "critical"})
+            else:
+                self.assertEqual(result["total_score"], 0)
+
     def test_raw_email_fuses_suspicious_sender_analysis(self):
         raw_email = """From: billing@secure-account.xyz
 To: user@example.com

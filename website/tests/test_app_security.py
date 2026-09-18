@@ -67,10 +67,20 @@ class VerificationFeatureGateTests(unittest.TestCase):
         payload = json.loads(response.body)
 
         self.assertEqual(payload, {
+            "deployment_profile": app.SETTINGS.app_env,
             "email_verification_enabled": False,
             "content_model_enabled": False,
             "full_version_local_only": True,
         })
+
+    def test_public_config_distinguishes_local_disabled_and_enabled(self):
+        for enabled in (False, True):
+            with patch.object(app, "SETTINGS", Settings(
+                app_env="development", enable_email_verification=enabled,
+            )):
+                payload = json.loads(asyncio.run(app.get_public_config()).body)
+                self.assertEqual(payload["deployment_profile"], "development")
+                self.assertEqual(payload["email_verification_enabled"], enabled)
 
 
 class RateLimitBoundaryTests(unittest.TestCase):

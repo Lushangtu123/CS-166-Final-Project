@@ -22,6 +22,55 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-17 19:34 PT] — Keep analysis results aligned with current input
+
+### Why
+- Late responses could overwrite a newer sender or content result, and mailbox
+  verification errors were rendered as invalid addresses. Structural-only risk
+  could appear beside a no-patterns summary. Example selection left stale upload UI.
+
+### Files changed
+- `website/static/app.js` — request generations, shared HTTP error handling,
+  input invalidation, file-read state, and summaries including technical evidence.
+- `website/app.py` — reject non-address input at the sender API boundary.
+- `website/static/index.html`, `style.css` — accessible inline error messages;
+  static assets bumped to v20.
+- Frontend and detection tests — out-of-order responses, input changes, HTTP
+  errors, invalid addresses, and pending upload regressions.
+- `README.md` — accepted sender syntax and request/upload behavior.
+
+### Effect
+- Switching or clearing input prevents obsolete results from reappearing.
+- Rate limits and service failures no longer become mailbox verdicts.
+- Non-address text receives input guidance, and summaries include structural risk.
+- Upload state stays consistent when examples replace files or reads finish late.
+
+## [2026-09-17 18:31 PT] — Separate mailbox service type from sender risk
+
+### Why
+- Disposable-provider matches were scored as high-risk evidence while the overall
+  low verdict displayed a green check. Disabled local verification also displayed
+  public-service wording, including after a result reset.
+
+### Files changed
+- `website/app.py` — informational disposable-provider evidence, Apple private
+  relay domains, accurate provider descriptions, and public deployment profile.
+- `website/static/app.js`, `index.html`, `style.css` — neutral low-score display,
+  separate service classification, no complementary safety score, and distinct
+  local/public/unknown verification messages. Assets bumped to v19.
+- `website/static/app.test.mjs`, `website/tests/test_app_security.py`,
+  `website/tests/test_detection_behavior.py` — configuration, classification,
+  presentation, and full-message regression coverage.
+- `README.md` — scoring semantics and explicit local verification startup.
+
+### Effect
+- A provider-category match alone adds no phishing points; independent risks still
+  score normally. No new empirical detection-accuracy claim is made.
+- Low scores no longer imply a verified or safe message. Deployment safety gates
+  and rate limits remain enabled.
+- Superseded score animations cannot overwrite a newer result when examples are
+  analyzed in quick succession; a regression test covers high-to-zero transitions.
+
 ## [2026-09-17 15:00 PT] — Scan illustration, score rings, count-ups, light/dark theme
 
 ### Why

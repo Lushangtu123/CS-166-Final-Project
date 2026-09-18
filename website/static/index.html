@@ -17,7 +17,7 @@
       document.documentElement.dataset.themeMode = stored || 'auto';
     })();
   </script>
-  <link rel="stylesheet" href="/static/style.css?v=18" />
+  <link rel="stylesheet" href="/static/style.css?v=20" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -154,6 +154,7 @@
           <input
             type="text"
             id="email-input"
+            aria-describedby="email-error"
             class="email-input"
             placeholder="Enter an email address, e.g. support@paypa1-verify.xyz"
             autocomplete="off"
@@ -168,6 +169,7 @@
         </button>
       </div>
 
+      <p id="email-error" class="request-error hidden" role="alert"></p>
       <div class="quick-examples">
         <span class="examples-label">Quick examples:</span>
         <button class="example-tag legit-tag" onclick="setExample('user@gmail.com')">user@gmail.com</button>
@@ -189,6 +191,7 @@
           <div>
             <div class="vb-title" id="vb-title"></div>
             <div class="vb-email" id="vb-email"></div>
+            <p class="vb-scope" id="vb-scope"></p>
           </div>
         </div>
         <div class="vb-right">
@@ -217,20 +220,13 @@
                 </div>
                 <span class="prob-pct" id="phish-pct"></span>
               </div>
-              <div class="prob-row">
-                <span class="prob-label legit-label">No detected risk</span>
-                <div class="prob-bar-track">
-                  <div class="prob-bar legit-bar" id="legit-bar"></div>
-                </div>
-                <span class="prob-pct" id="legit-pct"></span>
-              </div>
             </div>
             <div class="risk-summary" id="risk-summary"></div>
           </div>
 
           <!-- Disposable Check Card — always visible -->
           <div class="col-card disposable-check-card" id="disposable-check-card">
-            <h4 class="col-title">Disposable Email Check</h4>
+            <h4 class="col-title">Mailbox Service Type</h4>
             <div class="disp-check-row" id="disp-check-row">
               <div class="disp-check-icon" id="disp-check-icon"></div>
               <div class="disp-check-body">
@@ -244,11 +240,12 @@
           <!-- Email Authenticity Verification Card -->
           <div class="col-card" id="verify-card">
             <h4 class="col-title">Email Authenticity Verification</h4>
+            <p id="verify-error" class="request-error hidden" role="alert"></p>
             <div id="verification-local-notice" class="verify-idle hidden">
-              <p class="verify-desc">Full email authenticity verification is disabled on this public service. Deploy the full version on your own computer to enable SMTP, DNS, and WHOIS checks.</p>
+              <p class="verify-desc">Checking mailbox verification availability…</p>
             </div>
             <div id="verify-idle" class="verify-idle">
-              <p class="verify-desc">Verify whether this mailbox actually exists by checking DNS records and probing the mail server via SMTP.</p>
+              <p class="verify-desc">Check domain records and attempt an SMTP mailbox probe. Results may be inconclusive and do not authenticate a specific message.</p>
               <button class="btn-verify" onclick="runVerification()">
                 <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg> Run Verification
               </button>
@@ -392,11 +389,11 @@
       </div>
       <div class="di-quick-test">
         <span class="di-test-label">Test a disposable address:</span>
-        <button class="example-tag phish-tag" onclick="setExample('user@mailinator.com')">user@mailinator.com</button>
-        <button class="example-tag phish-tag" onclick="setExample('hello@guerrillamail.com')">hello@guerrillamail.com</button>
-        <button class="example-tag phish-tag" onclick="setExample('test@10minutemail.com')">test@10minutemail.com</button>
-        <button class="example-tag phish-tag" onclick="setExample('anon@yopmail.com')">anon@yopmail.com</button>
-        <button class="example-tag phish-tag" onclick="setExample('burner@maildrop.cc')">burner@maildrop.cc</button>
+        <button class="example-tag disp-tag" onclick="setExample('user@mailinator.com')">user@mailinator.com</button>
+        <button class="example-tag disp-tag" onclick="setExample('hello@guerrillamail.com')">hello@guerrillamail.com</button>
+        <button class="example-tag disp-tag" onclick="setExample('test@10minutemail.com')">test@10minutemail.com</button>
+        <button class="example-tag disp-tag" onclick="setExample('anon@yopmail.com')">anon@yopmail.com</button>
+        <button class="example-tag disp-tag" onclick="setExample('burner@maildrop.cc')">burner@maildrop.cc</button>
       </div>
     </div>
 
@@ -445,6 +442,7 @@
           </button>
           <button class="btn-ghost" onclick="clearContent()">Clear</button>
         </div>
+        <p id="content-error" class="request-error hidden" role="alert"></p>
 
         <div class="quick-examples">
           <span class="examples-label">Quick examples:</span>
@@ -774,6 +772,6 @@
   </div>
 </footer>
 
-<script src="/static/app.js?v=18"></script>
+<script src="/static/app.js?v=20"></script>
 </body>
 </html>

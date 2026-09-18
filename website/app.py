@@ -95,9 +95,9 @@ FEATURE_INFO = [
      "email_desc":     "The string 'http' appears inside the email address — a visual confusion trick",
      "email_desc_pos": "No misleading 'http' token found in the address"},
     {"name": "sslfinal_state",
-     "label": "Known Legit Provider",     "group": "Domain-based",
-     "email_desc":     "Domain is not recognized as a well-known legitimate mail service",
-     "email_desc_pos": "Domain is a recognized, well-known legitimate mail provider"},
+     "label": "Recognized Provider / Domain", "group": "Domain-based",
+     "email_desc":     "Domain does not match the local provider or institutional-domain rules",
+     "email_desc_pos": "Domain matches a provider registry or institutional-domain rule; this does not authenticate the sender"},
     {"name": "domain_registration_length",
      "label": "Common TLD",               "group": "Domain-based",
      "email_desc":     "TLD is uncommon — phishing emails often use obscure or cheap domain extensions",
@@ -112,8 +112,8 @@ FEATURE_INFO = [
      "email_desc_pos": "Domain name contains no suspicious digit patterns"},
     {"name": "web_traffic",
      "label": "High-Traffic Mail Platform","group": "Domain-based",
-     "email_desc":     "Domain is not a major mail platform — smaller domains are less accountable for abuse",
-     "email_desc_pos": "Domain is a high-traffic, widely-used and trusted mail platform"},
+     "email_desc":     "Domain is not in the high-traffic provider registry; this alone does not establish malicious intent",
+     "email_desc_pos": "Domain matches a high-traffic provider or privacy relay; this does not authenticate the sender"},
     {"name": "page_rank",
      "label": "Phishing Keywords in Domain","group": "Domain-based",
      "email_desc":     "Domain part contains known phishing-related keywords",
@@ -538,7 +538,7 @@ _DISPOSABLE_DOMAIN_SOURCE = {
 PRIVACY_RELAY_DOMAINS = frozenset({
     "anonaddy.com", "anonaddy.me", "duck.com", "duckmail.sytes.net",
     "mozmail.com", "relay.firefox.com", "simplelogin.co", "simplelogin.fr",
-    "simplelogin.io",
+    "simplelogin.io", "privaterelay.appleid.com", "private.icloud.com",
 })
 _REGISTRY_DOMAIN_RE = re.compile(
     r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
@@ -1165,10 +1165,12 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
 
     disposable_service = matched_disposable_domain if is_disposable else None
     if disposable_status == "known_disposable_provider":
-        features['statistical_report'] = -1
         risk_indicators.insert(0, {
-            "level": "high",
-            "msg": f"Known disposable-email provider detected ({matched_disposable_domain}).",
+            "level": "info",
+            "msg": (
+                f"Known disposable-email provider detected ({matched_disposable_domain}). "
+                "Provider category alone is not phishing evidence; mailbox lifetime is unknown."
+            ),
         })
     elif disposable_status == "privacy_relay":
         risk_indicators.insert(0, {
@@ -1402,6 +1404,7 @@ async def get_features():
 @app.get("/api/config")
 async def get_public_config():
     return JSONResponse({
+        "deployment_profile": SETTINGS.app_env,
         "email_verification_enabled": SETTINGS.enable_email_verification,
         "content_model_enabled": SETTINGS.content_model_enabled,
         "full_version_local_only": True,
@@ -1527,7 +1530,27 @@ def _raw_sender_addresses(from_header: str) -> list[str]:
 
 @app.post("/api/analyze-email")
 async def analyze_email(request: EmailRequest):
-    return JSONResponse(_analyze_sender_address(request.email))
+    address = request.email.strip()
+    valid = address.count("@") == 1 and not any(c.isspace() for c in address)
+    if valid:
+        local, domain = address.rsplit("@", 1)
+        try:
+            domain = domain.rstrip(".").encode("idna").decode("ascii")
+        except UnicodeError:
+            domain = ""
+        labels = domain.split(".")
+        valid = bool(
+            0 < len(local) <= 64 and _RAW_SENDER_LOCAL_RE.fullmatch(local)
+            and not local.startswith(".") and not local.endswith(".")
+            and ".." not in local and len(labels) >= 2
+            and all(_RAW_SENDER_DOMAIN_LABEL_RE.fullmatch(label) for label in labels)
+        )
+    if not valid:
+        raise HTTPException(
+            status_code=400,
+            detail="Enter a single email address, such as user@example.com. Use Email Content to analyze a message.",
+        )
+    return JSONResponse(_analyze_sender_address(address))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

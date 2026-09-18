@@ -462,6 +462,12 @@ code {
 }
 .banner-phish   { background: rgba(255,92,108,0.08);  border-color: rgba(255,92,108,0.26);  color: var(--red); }
 .banner-legit   { background: rgba(63,213,143,0.08);  border-color: rgba(63,213,143,0.26);  color: var(--accent2); }
+.banner-neutral { background: var(--fill-soft); border-color: var(--border-hi); color: var(--info); }
+.banner-neutral .vb-title { color: var(--info); }
+.banner-neutral .vb-icon { color: var(--info); background: var(--fill); border-color: var(--border-hi); }
+.vb-scope { max-width: 560px; margin: 8px 0 0; font-size: 12px; line-height: 1.6; color: var(--text-muted); }
+.sender-no-risk { font-size: 13px; line-height: 1.6; color: var(--text-muted); }
+.request-error { margin: 12px 0; font-size: 13px; line-height: 1.6; color: var(--red); }
 .banner-suspect { background: rgba(240,192,90,0.08);  border-color: rgba(240,192,90,0.30);  color: var(--yellow); }
 .vb-left { display: flex; align-items: center; gap: 18px; color: var(--text); position: relative; z-index: 1; }
 .vb-icon { font-size: 36px; line-height: 1; }

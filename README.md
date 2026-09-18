@@ -20,6 +20,12 @@ See [`CHANGELOG.md`](./CHANGELOG.md) for the dated change history.
 
 ### Sender/domain mode
 
+The address endpoint accepts a single address with an unquoted ASCII local part
+and a dotted hostname (including internationalized domain names). Plain text,
+multiple addresses and unsupported syntax return HTTP 400 without a risk verdict;
+use full-message input for message text or display-name headers. Plus-addresses
+and the IP-domain detection examples remain supported.
+
 `POST /api/analyze-email` returns an explainable `risk_score`, not a trained
 probability. Signals include:
 
@@ -36,9 +42,28 @@ Disposable-email results include `disposable_status`,
 it does not establish how long an individual mailbox exists or that its sender
 is malicious.
 
+Confirmed disposable-provider and privacy-relay matches are informational and
+do not add phishing-risk points on their own. Independent address, domain,
+link, and message risks still contribute normally. The UI separates mailbox
+service type from sender risk, uses a neutral low-score banner, and does not
+present `100 - risk_score` as a safety score. Scores remain heuristic and have
+not been calibrated as phishing probabilities.
+
+Apple's dedicated relay domains `privaterelay.appleid.com` and
+`private.icloud.com` are recognized as privacy relays, following
+[Apple's domain update](https://developer.apple.com/news/?id=1ptvdtcm).
+Ordinary `icloud.com` accounts cannot be classified as relay addresses from
+the domain alone.
+
 The response declares `analysis_method: sender-domain-heuristics` so callers do
 not confuse the score with model confidence. A low sender score does not prove a
 message is safe; compromised legitimate accounts require full-message analysis.
+
+The browser only displays responses for the current input. Editing, clearing,
+or starting another analysis invalidates older responses, including mailbox
+verification. HTTP failures appear separately from detector verdicts; rate-limit
+errors use `Retry-After` when supplied. Selecting a content example clears any
+uploaded email, and analysis waits while a selected file is still being read.
 
 ### Full-message mode
 
@@ -175,6 +200,20 @@ is validated afterward.
 
 To opt into network-based mailbox verification locally, additionally set
 `ENABLE_EMAIL_VERIFICATION=true`. Do not expose that endpoint anonymously.
+
+`APP_ENV=development` allows this opt-in but does not enable it by itself.
+For local mailbox checks without the optional text model, run from the repository root:
+
+```bash
+APP_ENV=development ENABLE_EMAIL_VERIFICATION=true CONTENT_MODEL_ENABLED=false \
+  .venv/bin/uvicorn app:app --app-dir website --host 127.0.0.1 --port 8000
+```
+
+Restart after changing environment variables, then reload the browser.
+`GET /api/config` exposes `deployment_profile` and the independent feature flags;
+the UI distinguishes local-disabled, public-disabled, and unavailable configuration.
+DNS/WHOIS records and SMTP probes do not authenticate a particular email, and an
+SMTP timeout does not prove whether a mailbox exists.
 
 ## Data and evaluation scope
 
