@@ -22,6 +22,28 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-17 22:24 PT] — Recover ambiguous MIME and HTML without losing risk evidence
+
+### Why
+- Authentication comments/reason strings could override actual DMARC results.
+- Duplicate MIME headers hid encoded content, malformed HTML aborted analysis,
+  and decimal amounts were incorrectly inflated by removing punctuation.
+
+### Files changed
+- `website/email_structure.py`: clause-aware authentication parsing and bounded
+  alternate MIME leaf interpretations with explicit warnings.
+- `website/app.py`: shared HTML recovery, nested completeness propagation,
+  `analysis_warnings`, and decimal/grouped amount handling.
+- `website/tests/test_review_regressions.py`, `README.md`: regression controls
+  and documented recovery limits.
+
+### Effect
+- Comments and quoted explanations no longer replace real authentication results.
+- Ambiguous MIME and recovered HTML retain available evidence and report incomplete
+  analysis instead of silently reporting a complete verdict or throwing the reproduced error.
+- Ordinary decimal invoice amounts do not trigger the large-amount signal merely
+  because they include cents; long-digit and output-length protections remain.
+
 ## [2026-09-17 22:10 PT] — Bound MIME parsing and preserve multi-mailbox identity signals
 
 ### Why

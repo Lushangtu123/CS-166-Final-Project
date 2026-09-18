@@ -10,6 +10,7 @@ from pathlib import PurePath
 import re
 import unicodedata
 import codecs
+from itertools import product
 
 
 _AUTH_FAILURES = {"fail", "softfail", "permerror", "temperror"}
@@ -161,6 +162,40 @@ def _walk_message_parts(message):
             pending.extend(reversed(part.get_payload()))
 
 
+def _mime_candidates(message, warnings):
+    """Recover bounded alternate leaf interpretations; never reparse MIME trees."""
+    remaining = 32
+    names = ('Content-Type', 'Content-Transfer-Encoding', 'Content-Disposition')
+    for part in _walk_message_parts(message):
+        choices = [[value for key, value in part.raw_items() if key.lower() == name.lower()]
+                   for name in names]
+        duplicate_names = [name for name, values in zip(names, choices) if len(values) > 1]
+        if duplicate_names:
+            warnings.append('Duplicate MIME headers (' + ', '.join(duplicate_names)
+                            + ') are ambiguous; bounded alternate inspection, analysis is incomplete.')
+        yield part
+        if not duplicate_names:
+            continue
+        choices = [list(dict.fromkeys(values)) or [None] for values in choices]
+        for index, candidate in enumerate(product(*choices)):
+            if index == 0:
+                continue  # Original interpretation was already inspected.
+            if index > 8 or remaining <= 0:
+                warnings.append('MIME candidate limit reached; additional interpretations were not inspected.')
+                break
+            remaining -= 1
+            alternate = EmailMessage(policy=part.policy)
+            alternate.set_default_type(part.get_default_type())
+            for key, value in part.raw_items():
+                if key.lower() not in {name.lower() for name in names}:
+                    alternate.set_raw(key, value)
+            for name, value in zip(names, candidate):
+                if value is not None:
+                    alternate.set_raw(name, value)
+            alternate.set_payload(part.get_payload())
+            yield alternate
+
+
 def _message_text(message, *, unicode_source: bool = False) -> tuple[str, str, list[dict], list[str], list[dict]]:
     plain_parts: list[str] = []
     html_parts: list[str] = []
@@ -168,12 +203,10 @@ def _message_text(message, *, unicode_source: bool = False) -> tuple[str, str, l
     parse_warnings: list[str] = []
     content_parts: list[dict] = []
 
-    for part in _walk_message_parts(message):
+    for part in _mime_candidates(message, parse_warnings):
         content_type = part.get_content_type()
         if content_type in {'message/rfc822', 'message/global'}:
             attachments.append({'filename': part.get_filename() or 'attached.eml', 'content_type': content_type})
-            continue
-        if part.is_multipart():
             continue
         filename = part.get_filename()
         disposition = part.get_content_disposition()
@@ -191,6 +224,8 @@ def _message_text(message, *, unicode_source: bool = False) -> tuple[str, str, l
                 warning = 'Opaque .eml attachment was not parsed as an encapsulated message; analysis is incomplete.'
                 if warning not in parse_warnings:
                     parse_warnings.append(warning)
+            continue
+        if part.is_multipart():
             continue
         if content_type not in {"text/plain", "text/html"}:
             continue
@@ -211,12 +246,17 @@ def _message_text(message, *, unicode_source: bool = False) -> tuple[str, str, l
             warning = "MIME text decoding required a fallback or replacement; analysis may be incomplete."
             if warning not in parse_warnings:
                 parse_warnings.append(warning)
-        content_parts.append({'content_type': content_type, 'content': str(content)})
+        record = {'content_type': content_type, 'content': str(content)}
+        if record in content_parts:
+            continue
+        content_parts.append(record)
         if content_type == "text/html":
             html_parts.append(str(content))
         else:
             plain_parts.append(str(content))
 
+    attachments = [dict(filename=name, content_type=kind) for name, kind in dict.fromkeys(
+        (item['filename'], item['content_type']) for item in attachments)]
     return "\n".join(plain_parts), "\n".join(html_parts), attachments, parse_warnings, content_parts
 
 
@@ -256,6 +296,50 @@ def analyze_raw_email(
         result['parse_warnings'].append(warning)
         result['indicators'].append({'level': 'info', 'msg': warning})
     return result
+
+
+def _authentication_results(value: str) -> tuple[str, dict[str, str], bool]:
+    """Read result clauses, never method-like text inside comments or strings."""
+    segments, current = [], []
+    comment_depth = 0
+    quoted = escaped = False
+    for char in value:
+        if escaped:
+            if not comment_depth:
+                current.append(char)
+            escaped = False
+        elif char == '\\' and (comment_depth or quoted):
+            escaped = True
+            if quoted:
+                current.append(char)
+        elif comment_depth:
+            if char == '(':
+                comment_depth += 1
+            elif char == ')':
+                comment_depth -= 1
+        elif char == '"':
+            quoted = not quoted
+            current.append(char)
+        elif not quoted and char == '(':
+            comment_depth = 1
+            current.append(' ')
+        elif not quoted and char == ';':
+            segments.append(''.join(current).strip())
+            current = []
+        else:
+            current.append(char)
+    segments.append(''.join(current).strip())
+    complete = not (comment_depth or quoted or escaped)
+    identity = re.fullmatch(r'(?:"([^"\\]+)"|([^\s";]+))(?:\s+\d+)?', segments[0])
+    authserv_id = (identity.group(1) or identity.group(2)).lower() if identity else ''
+    results = {}
+    for segment in segments[1:]:
+        match = re.match(r'^(spf|dkim|dmarc)(?:\s*/\s*\d+)?\s*=\s*([a-z]+)(?=\s|$)',
+                         segment, re.IGNORECASE)
+        if match:
+            mechanism, result = (part.lower() for part in match.groups())
+            results[mechanism] = result
+    return authserv_id, results, bool(identity) and complete
 
 
 def _analyze_message(message, *, unicode_source, trusted_authserv_ids, depth, budget):
@@ -356,13 +440,14 @@ def _analyze_message(message, *, unicode_source, trusted_authserv_ids, depth, bu
     auth_results: dict[str, str] = {}
     untrusted_authentication_claims = []
     for auth_header in message.get_all("Authentication-Results", []):
-        authserv_id = auth_header.partition(";")[0].strip().lower()
-        claimed_results = {
-            mechanism: result
-            for mechanism, result in re.findall(
-                r"\b(spf|dkim|dmarc)=([a-z]+)", auth_header.lower()
-            )
-        }
+        authserv_id, claimed_results, auth_complete = _authentication_results(str(auth_header))
+        if not auth_complete:
+            warning = 'Authentication-Results syntax is incomplete; authentication claims require review.'
+            if warning not in parse_warnings:
+                parse_warnings.append(warning)
+                indicators.append({'level': 'info', 'msg': warning})
+            # Incomplete claims cannot confer a trusted pass.
+            claimed_results = {key: value for key, value in claimed_results.items() if value != 'pass'}
         if claimed_results and authserv_id in trusted_ids and not auth_results:
             auth_results = claimed_results
         elif claimed_results:

@@ -12,6 +12,33 @@ from config import Settings
 
 
 class HeaderAmbiguityTests(unittest.TestCase):
+    def test_authentication_comments_and_reason_cannot_replace_results(self):
+        tails = ('dmarc=fail', 'dmarc=fail (previous dmarc=pass)',
+                 'dmarc=fail reason="previous; dmarc=pass"',
+                 'dmarc (nested (dmarc=pass)) = fail', 'dmarc/1 = fail')
+        with patch.object(app, 'SETTINGS', Settings(app_env='development', enable_email_verification=False,
+                                                  trusted_authserv_ids=frozenset({'mx.example.com'}))):
+            for tail in tails:
+                with self.subTest(tail=tail):
+                    result = self.analyze('From: alice@gmail.com\nAuthentication-Results: mx.example.com; '
+                                          + tail + '\n\nHello')
+                    self.assertEqual(result['message_structure']['auth_results']['dmarc'], 'fail')
+                    self.assertIn(result['risk_level'], ('high', 'critical'))
+            result = self.analyze('From: alice@gmail.com\nAuthentication-Results: mx.example.com; '
+                                  'dmarc=pass reason="old dmarc=fail"\n\nHello')
+            self.assertEqual(result['risk_level'], 'safe')
+
+    def test_unclosed_authentication_explanation_cannot_confer_trusted_pass(self):
+        with patch.object(app, 'SETTINGS', Settings(app_env='development', enable_email_verification=False,
+                                                  trusted_authserv_ids=frozenset({'mx.example.com'}))):
+            for tail in ('dmarc=pass (unfinished', 'dmarc=pass reason="unfinished'):
+                result = self.analyze('From: alice@gmail.com\nAuthentication-Results: mx.example.com; '
+                                      + tail + '\n\nHello')
+                self.assertFalse(result['analysis_complete'])
+                self.assertFalse(result['message_structure']['authentication_trusted'])
+                self.assertEqual(result['risk_level'], 'unknown')
+
+
     def analyze(self, raw):
         return json.loads(asyncio.run(app.analyze_content_endpoint(
             app.ContentRequest(raw_email=raw))).body)
@@ -84,6 +111,48 @@ class HeaderAmbiguityTests(unittest.TestCase):
 
 
 class ParserResourceTests(unittest.TestCase):
+    def test_multipart_alternative_retains_explicit_dangerous_metadata(self):
+        for first, second in (('multipart/mixed; boundary=b', 'application/x-msdownload'),
+                              ('application/x-msdownload', 'multipart/mixed; boundary=b')):
+            raw = f'Content-Type: {first}\nContent-Type: {second}\n\n--b\nContent-Type: text/plain\n\nHello\n--b--\n'
+            result = json.loads(asyncio.run(app.analyze_content_endpoint(app.ContentRequest(raw_email=raw))).body)
+            self.assertEqual(result['risk_level'], 'high')
+            self.assertFalse(result['analysis_complete'])
+
+    def test_mime_candidates_are_bounded_and_binary_decoding_is_preserved(self):
+        raw = (''.join(f'Content-Type: text/plain; charset=x-unknown-{i}\n' for i in range(12))
+               + 'Content-Type: text/html\n\nHello')
+        structure = app.analyze_raw_email(raw)
+        self.assertTrue(any('candidate limit' in warning.lower() for warning in structure['parse_warnings']))
+        raw = (b'Content-Type: text/plain\nContent-Type: text/html\n'
+               b'Content-Transfer-Encoding: 7bit\nContent-Transfer-Encoding: base64\n\n'
+               b'PGZvcm0+PGlucHV0IHR5cGU9InBhc3N3b3JkIj48L2Zvcm0+')
+        async def receive():
+            return {'type': 'http.request', 'body': raw, 'more_body': False}
+        request = app.Request({'type': 'http', 'headers': [(b'content-type', b'message/rfc822')]}, receive)
+        result = json.loads(asyncio.run(app.analyze_eml_endpoint(request)).body)
+        self.assertEqual(result['risk_level'], 'medium')
+        self.assertFalse(result['analysis_complete'])
+
+    def test_duplicate_mime_headers_preserve_recoverable_risk(self):
+        import base64
+        text = 'Your account has been suspended. Act now and enter your password.'
+        encoded = base64.b64encode(text.encode()).decode()
+        samples = [
+            ('Content-Type: text/plain\nContent-Transfer-Encoding: 7bit\n'
+             'Content-Transfer-Encoding: base64\n\n' + encoded, 'high'),
+            ('Content-Type: text/plain\nContent-Type: text/html\n\n'
+             '<form><input type="password"></form>', 'medium'),
+            ('Content-Type: text/plain\nContent-Type: application/x-msdownload\n\nHello', 'high'),
+        ]
+        for raw, expected in samples:
+            for envelope in ('{}', 'Content-Type: multipart/mixed; boundary=b\n\n--b\n{}\n--b--\n'):
+                with self.subTest(raw=raw[:80], nested=envelope != '{}'):
+                    result = json.loads(asyncio.run(app.analyze_content_endpoint(
+                        app.ContentRequest(raw_email=envelope.format(raw)))).body)
+                    self.assertEqual(result['risk_level'], expected)
+                    self.assertFalse(result['analysis_complete'])
+
     def test_mime_part_budget_includes_flat_multipart_and_preserves_normal_mail(self):
         for parts, complete in ((199, True), (200, False)):
             raw = ('Content-Type: multipart/mixed; boundary=b\n\n' +
@@ -111,7 +180,44 @@ class ParserResourceTests(unittest.TestCase):
                                         for warning in result['message_structure']['parse_warnings']))
 
 
+class HtmlRecoveryTests(unittest.TestCase):
+    def test_nested_html_recovery_propagates_and_valid_plain_text_is_unchanged(self):
+        raw = 'Content-Type: message/rfc822\n\nContent-Type: text/html\n\n<![foo]>Hello'
+        result = json.loads(asyncio.run(app.analyze_content_endpoint(app.ContentRequest(raw_email=raw))).body)
+        self.assertFalse(result['analysis_complete'])
+        self.assertEqual(result['risk_level'], 'unknown')
+        self.assertTrue(any('Attached message' in warning for warning in result['analysis_warnings']))
+        raw = 'Content-Type: text/plain\n\n<![foo]>Hello'
+        result = json.loads(asyncio.run(app.analyze_content_endpoint(app.ContentRequest(raw_email=raw))).body)
+        self.assertTrue(result['analysis_complete'])
+        self.assertEqual(result['risk_level'], 'safe')
+
+    def test_malformed_html_preserves_evidence_and_marks_incomplete(self):
+        for body, expected in (
+            ('<![foo]>Hello', 'unknown'),
+            ('<![foo]>Your account has been suspended. Act now and enter your password.', 'high'),
+            ('<![foo]><form><input type="password"></form>', 'medium'),
+            ('<![foo]><a href="https://paypa1.example/">Continue</a>', 'high'),
+        ):
+            for request in (app.ContentRequest(body=body),
+                            app.ContentRequest(raw_email='Content-Type: text/html\n\n' + body)):
+                with self.subTest(body=body, raw=bool(request.raw_email)):
+                    result = json.loads(asyncio.run(app.analyze_content_endpoint(request)).body)
+                    self.assertEqual(result['risk_level'], expected)
+                    self.assertFalse(result['analysis_complete'])
+                    self.assertTrue(result['analysis_warnings'])
+
+
 class AmountResourceTests(unittest.TestCase):
+    def test_decimal_amounts_do_not_become_large_by_removing_the_decimal_point(self):
+        for amount, large in (('$100', False), ('$100.00', False), ('$9,999.99', False),
+                              ('$10,000.00', True), ('EUR 100,00', False),
+                              ('EUR 10.000,00', True), ('$1,234,567.89', True),
+                              ('$10,00,00', False)):
+            with self.subTest(amount=amount):
+                result = json.loads(asyncio.run(app.analyze_content_endpoint(app.ContentRequest(body=amount))).body)
+                self.assertEqual(any('monetary amounts' in item['msg'] for item in result['extra_indicators']), large)
+
     def test_long_amounts_cannot_abort_analysis_or_expand_evidence(self):
         for digits, large in (('9' * 4400, True), ('0' * 4400, False),
                               ('0' * 4400 + '10000', True), ('٠' * 4400, False),

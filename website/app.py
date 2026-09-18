@@ -31,6 +31,7 @@ import warnings
 from collections import deque
 from email.utils import getaddresses
 from html.parser import HTMLParser
+from html import escape as escape_html
 from urllib.parse import unquote, urlparse, urljoin
 
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
@@ -1893,14 +1894,30 @@ def _strip_invisible_format_controls(text: str) -> str:
 
 def _large_currency_amounts(text: str) -> list[str]:
     """Find patterns like $5,000,000 or USD 2000000 suggesting implausible winnings."""
-    raw = re.findall(r'(?:\$|usd|gbp|eur|€|£)\s*[\d,\.]+', text, re.IGNORECASE)
+    raw = re.finditer(r'(?:\$|usd|gbp|eur|€|£)\s*(\d[\d,.]*)', text, re.IGNORECASE)
     results = []
-    for m in raw:
-        # Compare significant digit count instead of converting attacker-controlled
-        # arbitrarily long numbers to int. Normalize Unicode decimal zero too.
-        digits = ''.join(str(unicodedata.decimal(ch)) for ch in m if ch.isdecimal()).lstrip('0')
+    for match in raw:
+        number = ''.join(str(unicodedata.decimal(ch)) if ch.isdecimal() else ch
+                         for ch in match.group(1)).rstrip('.,')
+        # Common decimal styles have one/two fractional digits; grouping must
+        # consist of three-digit groups. Reject malformed mixed grouping rather
+        # than converting punctuation into a much larger integer.
+        last_separator = max(number.rfind('.'), number.rfind(','))
+        if last_separator >= 0 and len(number) - last_separator - 1 in {1, 2}:
+            separator = number[last_separator]
+            integer = number[:last_separator]
+            if separator in integer:
+                continue
+        else:
+            integer = number
+        if '.' in integer or ',' in integer:
+            if not (re.fullmatch(r'\d{1,3}(?:,\d{3})+', integer)
+                    or re.fullmatch(r'\d{1,3}(?:\.\d{3})+', integer)):
+                continue
+        # No int/float conversion, including for arbitrarily long digit runs.
+        digits = integer.replace(',', '').replace('.', '').lstrip('0')
         if len(digits) >= 5:
-            amount = m.strip()
+            amount = match.group(0).strip()
             results.append(amount[:80] + ('…' if len(amount) > 80 else ''))
             if len(results) == 4:
                 break
@@ -1944,7 +1961,30 @@ def _detect_non_native_phrases(text: str) -> list[str]:
     return [m for m in markers if m in lower]
 
 
-def _extract_links(text: str, *, parse_html: bool = True) -> list[tuple[str, str]]:
+def _collect_html(factory, text: str, parse_warnings=None):
+    collector = factory()
+    try:
+        collector.feed(text)
+        collector.close()
+    except (AssertionError, ValueError):
+        warning = 'Malformed HTML required recovery; analysis is incomplete.'
+        if parse_warnings is not None and warning not in parse_warnings:
+            parse_warnings.append(warning)
+        # Neutralize broken marked declarations, then start fresh so partially
+        # collected text/forms/links are neither duplicated nor allowed to hide
+        # the rest of the document. Final fallback is literal text, not success.
+        collector = factory()
+        try:
+            collector.feed(text.replace('<![', '&lt;!['))
+            collector.close()
+        except (AssertionError, ValueError):
+            collector = factory()
+            collector.feed(escape_html(text))
+            collector.close()
+    return collector
+
+
+def _extract_links(text: str, *, parse_html: bool = True, parse_warnings=None) -> list[tuple[str, str]]:
     """Extract visible text and destination from Markdown and HTML links."""
     links = list(re.findall(r'\[([^\]]+)\]\(((?:https?|hxxps?)://[^)]+)\)', text, re.IGNORECASE))
 
@@ -1980,11 +2020,8 @@ def _extract_links(text: str, *, parse_html: bool = True) -> list[tuple[str, str
                 self.href = None
                 self.visible = []
 
-    collector = LinkCollector()
+    collector = _collect_html(LinkCollector, text, parse_warnings) if parse_html else LinkCollector()
     try:
-        if parse_html:
-            collector.feed(text)
-        collector.close()
         if collector.href is not None:
             collector.links.append(("".join(collector.visible).strip(), collector.href))
         base = None
@@ -2225,7 +2262,7 @@ def _has_mismatched_link_text(text: str) -> bool:
     return any("does not match" in finding["msg"] for finding in findings)
 
 
-def _visible_content_text(text: str) -> str:
+def _visible_content_text(text: str, parse_warnings=None) -> str:
     """Decode HTML text separately from destinations, preserving inline words."""
     class TextCollector(HTMLParser):
         def __init__(self):
@@ -2249,13 +2286,11 @@ def _visible_content_text(text: str) -> str:
             if not self.hidden:
                 self.parts.append(data)
 
-    collector = TextCollector()
-    collector.feed(text)
-    collector.close()
+    collector = _collect_html(TextCollector, text, parse_warnings)
     return re.sub(r'\s+', ' ', ''.join(collector.parts)).strip()
 
 
-def _has_password_form(text: str) -> bool:
+def _has_password_form(text: str, parse_warnings=None) -> bool:
     class FormCollector(HTMLParser):
         def __init__(self):
             super().__init__()
@@ -2276,9 +2311,7 @@ def _has_password_form(text: str) -> bool:
             if tag == 'form':
                 self.depth = max(0, self.depth - 1)
 
-    collector = FormCollector()
-    collector.feed(text)
-    collector.close()
+    collector = _collect_html(FormCollector, text, parse_warnings)
     return any(in_form if form_id is None else form_id in collector.form_ids
                for in_form, form_id in collector.password_forms)
 
@@ -2299,23 +2332,24 @@ def _has_pressured_credential_request(text: str) -> bool:
 
 def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] | None = None) -> dict:
     """Rule-based heuristic phishing analysis of email subject + body text."""
+    analysis_warnings = []
     if content_parts is None:
         raw_parts = [subject, body]
         html_parts = [True, True]
-        visible_parts = [_visible_content_text(part) for part in raw_parts]
+        visible_parts = [_visible_content_text(part, analysis_warnings) for part in raw_parts]
     else:
         # Each MIME part is its own document. Plain text must not be interpreted
         # as markup, nor may an unclosed tag in one part hide another part.
         raw_parts = [subject] + [part['content'] for part in content_parts]
         html_parts = [False] + [part['content_type'] == 'text/html' for part in content_parts]
         visible_parts = [subject] + [
-            _visible_content_text(part['content']) if part['content_type'] == 'text/html' else part['content']
+            _visible_content_text(part['content'], analysis_warnings) if part['content_type'] == 'text/html' else part['content']
             for part in content_parts
         ]
     raw_parts = [_strip_invisible_format_controls(part) for part in raw_parts]
     raw_text = '\n'.join(raw_parts)
     links = [link for part, is_html in zip(raw_parts, html_parts)
-             for link in _extract_links(part, parse_html=is_html)]
+             for link in _extract_links(part, parse_html=is_html, parse_warnings=analysis_warnings)]
     full_orig = re.sub(r'\s+', ' ', '\n'.join(visible_parts)).strip()
     analysis_text = _strip_invisible_format_controls(full_orig)
     full_lower = analysis_text.lower()
@@ -2345,7 +2379,7 @@ def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] 
 
     extra_indicators = []
 
-    if any(_has_password_form(part) for part, is_html in zip(raw_parts, html_parts) if is_html):
+    if any(_has_password_form(part, analysis_warnings) for part, is_html in zip(raw_parts, html_parts) if is_html):
         total_score += 4
         risk_floor = 'medium'
         extra_indicators.append({
@@ -2480,7 +2514,9 @@ def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] 
     else:
         risk_level, risk_label = "high",     "High Risk — Likely Phishing"
 
+    extra_indicators.extend({'level': 'info', 'msg': warning} for warning in analysis_warnings)
     return {
+        "analysis_warnings": analysis_warnings,
         "risk_level":        risk_level,
         "risk_label":        risk_label,
         "total_score":       total_score,
@@ -2651,6 +2687,8 @@ async def _analyze_content(request: ContentRequest, structure: dict | None = Non
         floor_rank = {'safe': 0, 'unknown': 0, 'low': 1, 'medium': 2, 'high': 3, 'critical': 4}
         for nested in structure['nested_messages']:
             nested_result = json.loads((await _analyze_content(ContentRequest(), nested)).body)
+            result['analysis_warnings'].extend('Attached message: ' + warning
+                                                for warning in nested_result['analysis_warnings'])
             result['total_score'] = max(result['total_score'], nested_result['total_score'])
             nested_floor = 'safe' if nested_result['risk_level'] == 'unknown' else nested_result['risk_level']
             result['risk_floor'] = max((result['risk_floor'], nested_floor), key=floor_rank.get)
@@ -2690,7 +2728,9 @@ async def _analyze_content(request: ContentRequest, structure: dict | None = Non
             minimum_level=result["risk_floor"],
         ))
 
-    result['analysis_complete'] = not bool(structure and structure['parse_warnings'])
+    result['analysis_warnings'] = list(dict.fromkeys(result['analysis_warnings']
+        + (structure['parse_warnings'] if structure else [])))
+    result['analysis_complete'] = not bool(result['analysis_warnings'])
     if not result['analysis_complete'] and result['risk_level'] == 'safe':
         result['risk_level'] = 'unknown'
         result['risk_label'] = 'Analysis Incomplete — Risk Undetermined'

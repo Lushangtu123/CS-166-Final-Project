@@ -104,6 +104,13 @@ independently; adding another sender cannot hide a detected brand impersonation.
 Quoted commas in display names remain part of that name, not an address separator.
 Legitimately repeatable `Received` and `Authentication-Results` fields are not
 flagged just because they repeat.
+Each MIME part also checks duplicate `Content-Type`, `Content-Transfer-Encoding`,
+and `Content-Disposition` headers. These always mark analysis incomplete. The
+original interpretation and up to **8 alternate combinations per part**, with
+**32 alternates per independently analyzed message**, are inspected for recoverable
+text and attachment metadata. Candidate exhaustion is reported. Alternate MIME
+trees and encapsulated messages are not reparsed; this is bounded evidence
+recovery, not a claim that every possible interpretation was checked.
 The content response includes `analysis_complete`; `false` means some content
 could not be reliably analyzed, not evidence of phishing by itself. If there is
 no detected risk and parsing is incomplete, `risk_level` is `unknown` and
@@ -119,6 +126,15 @@ attachments uninspected. Outer-header risk is retained; an otherwise risk-free
 fallback is `unknown`, never a complete safe verdict. This is separate from the
 attached-message analysis depth/count limits below. Long monetary digit strings
 are compared without integer conversion, and monetary evidence excerpts are bounded.
+Amount checks distinguish common decimal and three-digit grouping formats
+(`$100.00`, `$10,000.00`, `EUR 10.000,00`); malformed grouping is ignored rather
+than converted to an inflated integer. This is a heuristic, not currency or locale inference.
+
+Malformed HTML that requires parser recovery now reports `analysis_warnings`
+and `analysis_complete=false`, including manual subject/body input and nested
+messages. Recovery attempts to retain text, links, and forms; if necessary it
+falls back to literal text. A parsing failure is neither a server-error verdict
+nor proof that the content is safe. Literal MIME `text/plain` is not parsed as HTML.
 
 Encapsulated `message/rfc822` attachments (and parseable `message/global` parts)
 are analyzed as independent messages, including their subject, sender identity,
@@ -253,6 +269,12 @@ created the uploaded message's authentication results. The upstream receiver
 must remove attacker-supplied copies of its own authentication-service ID before
 adding its result. Untrusted header claims are returned for inspection but
 cannot increase or suppress risk.
+Authentication-result extraction separates semicolon-delimited method clauses
+from nested comments and quoted explanation strings. Text such as `dmarc=pass`
+inside a comment or `reason` cannot overwrite a real `dmarc=fail` result. Common
+whitespace and method-version syntax are supported. Unclosed comments or strings
+produce an incomplete-analysis warning and cannot confer a trusted pass. This
+does not perform live SPF/DKIM/DMARC verification or expand the trust boundary.
 
 ## Runtime configuration
 
