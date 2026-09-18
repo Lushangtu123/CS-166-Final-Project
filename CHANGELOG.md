@@ -22,6 +22,58 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-17 21:01 PT] — Preserve MIME bytes and normalize content evidence
+
+### Why
+- Text-only upload decoding corrupted non-UTF8 and Unicode MIME bodies. HTML
+  formatting hid credential phrases, positive evidence could become a no-indicators
+  verdict, substring shortener checks misfired, and form destinations were omitted.
+
+### Files changed
+- `website/app.py` — bounded binary `/api/analyze-eml` route sharing the existing
+  analysis pipeline; normalized visible text, contextual credential-request floor,
+  consistent low-risk minimum, parsed shortener hosts, form/password evidence.
+- `website/email_structure.py` — byte-aware MIME parsing, legacy Unicode support,
+  charset and transfer decoding with explicit fallback warnings.
+- `website/static/app.js`, `index.html` — original-byte upload, client size feedback,
+  shared response error handling, upload limit copy and v22 assets.
+- `website/tests/test_detection_behavior.py`, `website/static/app.test.mjs` —
+  byte fidelity, stream limits, markup variants, negation/reset controls,
+  shortener boundaries and HTML form regressions.
+- `README.md` — binary API contract and remaining language/heuristic limitations.
+
+### Effect
+- Original message bytes survive transport; rule evidence no longer disappears
+  solely because of common HTML formatting or a low positive score.
+- Urgency + threats + a direct credential request establish a high-risk floor,
+  while tested reset/safety notices do not. Shortener and form targets are checked
+  without executing HTML or visiting links. No new model or empirical accuracy claim.
+
+## [2026-09-17 20:35 PT] — Preserve uploaded-message and normalized-link evidence
+
+### Why
+- Manual text could replace an uploaded message's body. Equivalent link formats
+  bypassed host checks; unknown charsets aborted analysis; attachment-only messages
+  were rejected. Generic login hostnames forced a high-risk verdict on weak evidence.
+
+### Files changed
+- `website/app.py` — authoritative raw-message mode, structural-only input,
+  parsed destination/IP checks, and weaker generic hostname evidence.
+- `website/email_structure.py` — safe charset fallback and explicit parse warnings.
+- `website/static/app.js`, `index.html`, `style.css` — mutually exclusive file/manual
+  input, empty-file feedback, accessible upload status, and v21 static assets.
+- `website/tests/test_detection_behavior.py`, `website/static/app.test.mjs` —
+  positive and negative controls for the reviewed defects and upload state.
+- `README.md` — input precedence, parsing limits, link behavior, and language caveats.
+
+### Effect
+- File evidence cannot be overwritten by stale manual text, and supported IP/link
+  representations retain risk signals without classifying IP-looking hostnames as IPs.
+- Unknown text codecs produce an explicit warning; dangerous attachment-only input
+  receives a verdict. Generic account-host terms alone no longer force high risk.
+- No new model, data download, or real-world accuracy claim; pure-text/multilingual
+  recall still needs independent evaluation.
+
 ## [2026-09-17 19:34 PT] — Keep analysis results aligned with current input
 
 ### Why

@@ -17,11 +17,14 @@ function setError(id, message = '') {
 }
 
 async function postJSON(url, payload) {
+  return postRequest(url, JSON.stringify(payload), 'application/json');
+}
+
+async function postRequest(url, body, contentType) {
   let res;
   try {
     res = await fetch(url, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      method: 'POST', headers: { 'Content-Type': contentType }, body,
     });
   } catch (_error) {
     throw new Error('Cannot reach the service. Check your connection and try again.');
@@ -74,6 +77,9 @@ function clearRawEmail() {
   _rawEmailSource = '';
   document.getElementById('raw-email-file').value = '';
   document.getElementById('raw-email-status').textContent = '';
+  ['content-subject', 'content-body'].forEach(id => {
+    document.getElementById(id).disabled = false;
+  });
 }
 
 function escapeHtml(value) {
@@ -312,13 +318,31 @@ function setupInputEvents() {
       const file = event.target.files?.[0];
       _rawEmailSource = '';
       _rawReadPending = !!file;
+      ['content-subject', 'content-body'].forEach(id => {
+        document.getElementById(id).disabled = !!file;
+      });
       document.getElementById('raw-email-status').textContent = file ? `Reading ${file.name}…` : '';
       try {
-        const source = file ? await file.text() : '';
+        if (file?.size > 60000) {
+          clearRawEmail();
+          setError('content-error', 'Email file exceeds the 60,000-byte limit.');
+          return;
+        }
+        const source = file ? await file.arrayBuffer() : '';
         if (readId !== _rawReadId) return;
+        if (file && source.byteLength > 60000) {
+          clearRawEmail();
+          setError('content-error', 'Email file exceeds the 60,000-byte limit.');
+          return;
+        }
+        if (file && new Uint8Array(source).every(byte => [9, 10, 13, 32].includes(byte))) {
+          clearRawEmail();
+          setError('content-error', 'The email file is empty. Please select a message with content or attachments.');
+          return;
+        }
         _rawEmailSource = source;
         document.getElementById('raw-email-status').textContent = file
-          ? `${file.name} loaded — headers, HTML links, and attachments will be analyzed.` : '';
+          ? `${file.name} loaded — the complete file will be analyzed; manual subject and body are ignored.` : '';
       } catch (_error) {
         if (readId !== _rawReadId) return;
         clearRawEmail();
@@ -921,7 +945,7 @@ function clearContent() {
 }
 
 function buildContentPayload(subject, body, rawEmail) {
-  return { subject, body, raw_email: rawEmail || '' };
+  return rawEmail ? { raw_email: rawEmail } : { subject, body, raw_email: '' };
 }
 
 async function runContentAnalysis() {
@@ -948,7 +972,9 @@ async function runContentAnalysis() {
   document.getElementById('content-loading-area').classList.remove('hidden');
 
   try {
-    const data = await postJSON('/api/analyze-content', buildContentPayload(subject, body, _rawEmailSource));
+    const data = _rawEmailSource
+      ? await postRequest('/api/analyze-eml', _rawEmailSource, 'message/rfc822')
+      : await postJSON('/api/analyze-content', buildContentPayload(subject, body, ''));
     if (requestId !== _contentRequestId) return;
     renderContentResult(data);
   } catch (e) {

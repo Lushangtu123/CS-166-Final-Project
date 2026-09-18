@@ -102,6 +102,7 @@ const contentResult = label => ({
   category_results: [], extra_indicators: [], safety_signals: [],
 });
 const response = data => ({ ok: true, json: async () => data });
+const emlBytes = text => new TextEncoder().encode(text).buffer;
 function deferredFetch() {
   const pending = [];
   return { pending, fetch: () => new Promise(resolve => pending.push(resolve)) };
@@ -200,10 +201,10 @@ test('choosing a content example clears the file, status and pending file read',
   const fileInput = elements.get('raw-email-file');
   fileInput.value = 'previous.eml';
   let finishRead;
-  const read = fileInput.listeners.change({ target: { files: [{name: 'previous.eml', text: () => new Promise(resolve => { finishRead = resolve; })}] } });
+  const read = fileInput.listeners.change({ target: { files: [{name: 'previous.eml', arrayBuffer: () => new Promise(resolve => { finishRead = resolve; })}] } });
   context.runContentAnalysis = () => {};
   context.setContentExample('legit-newsletter');
-  finishRead('From: old@example.com\n\nOld message');
+  finishRead(emlBytes('From: old@example.com\n\nOld message'));
   await read;
   assert.equal(fileInput.value, '');
   assert.equal(elements.get('raw-email-status').textContent, '');
@@ -234,16 +235,83 @@ test('content analysis waits for file reading and clearing prevents a late read'
   elements.get('content-subject').value = 'Note';
   let finishRead;
   const read = elements.get('raw-email-file').listeners.change({ target: { files: [{
-    name: 'email.eml', text: () => new Promise(resolve => { finishRead = resolve; }),
+    name: 'email.eml', arrayBuffer: () => new Promise(resolve => { finishRead = resolve; }),
   }] } });
   await context.runContentAnalysis();
   assert.equal(calls, 0);
   assert.match(elements.get('content-error').textContent, /finish loading/i);
   context.clearContent();
-  finishRead('From: test@example.com\n\nHello');
+  finishRead(emlBytes('From: test@example.com\n\nHello'));
   await read;
   assert.equal(vm.runInContext('_rawEmailSource', context), '');
   assert.equal(elements.get('raw-email-status').textContent, '');
+});
+
+test('upload mode excludes manual fields and restores editing when cleared', async () => {
+  let submitted;
+  const { context, elements } = loadFrontend({ fetch: async (_url, options) => {
+    submitted = _url === '/api/analyze-eml' ? options.body : JSON.parse(options.body);
+    return response(contentResult('File result'));
+  } });
+  context.setupInputEvents();
+  elements.get('content-subject').value = 'Old subject';
+  elements.get('content-body').value = 'Old body';
+  const raw = emlBytes('From: alice@gmail.com\nSubject: File\n\nActual body');
+  await elements.get('raw-email-file').listeners.change({ target: { files: [{
+    name: 'message.eml', arrayBuffer: async () => raw,
+  }] } });
+  assert.equal(elements.get('content-body').disabled, true);
+  assert.equal(elements.get('content-subject').disabled, true);
+  assert.match(elements.get('raw-email-status').textContent, /manual.*ignored/i);
+  await context.runContentAnalysis();
+  assert.deepEqual(new Uint8Array(submitted), new Uint8Array(raw));
+  context.clearRawEmail();
+  assert.equal(elements.get('content-body').disabled, false);
+  assert.equal(elements.get('content-subject').disabled, false);
+  await context.runContentAnalysis();
+  assert.equal(submitted.body, 'Old body');
+});
+
+test('an empty upload restores manual editing and reports an input error', async () => {
+  const { context, elements } = loadFrontend();
+  context.setupInputEvents();
+  await elements.get('raw-email-file').listeners.change({ target: { files: [{
+    name: 'empty.eml', arrayBuffer: async () => emlBytes('   '),
+  }] } });
+  assert.equal(elements.get('content-body').disabled, false);
+  assert.match(elements.get('content-error').textContent, /empty/i);
+  assert.equal(elements.get('raw-email-status').textContent, '');
+});
+
+test('uploaded non-UTF8 bytes reach the binary endpoint unchanged', async () => {
+  let submitted;
+  const { context, elements } = loadFrontend({ fetch: async (url, options) => {
+    submitted = { url, ...options };
+    return response(contentResult('File result'));
+  } });
+  context.setupInputEvents();
+  const bytes = new Uint8Array([72, 233, 98, 101]);
+  await elements.get('raw-email-file').listeners.change({ target: { files: [{
+    name: 'latin1.eml', size: bytes.length,
+    arrayBuffer: async () => bytes.buffer,
+    text: async () => { throw new Error('Must not decode original bytes'); },
+  }] } });
+  await context.runContentAnalysis();
+  assert.equal(submitted?.url, '/api/analyze-eml');
+  assert.equal(submitted.headers['Content-Type'], 'message/rfc822');
+  assert.deepEqual(new Uint8Array(submitted.body), bytes);
+});
+
+test('oversized email is rejected before reading and restores manual input', async () => {
+  let read = false;
+  const { context, elements } = loadFrontend();
+  context.setupInputEvents();
+  await elements.get('raw-email-file').listeners.change({ target: { files: [{
+    name: 'large.eml', size: 60001, arrayBuffer: async () => { read = true; return new ArrayBuffer(60001); },
+  }] } });
+  assert.equal(read, false);
+  assert.equal(elements.get('content-body').disabled, false);
+  assert.match(elements.get('content-error').textContent, /60,000-byte limit/);
 });
 
 test('network and unreadable service responses remain request errors', async () => {

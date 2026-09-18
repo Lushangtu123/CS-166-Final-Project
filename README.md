@@ -68,7 +68,25 @@ uploaded email, and analysis waits while a selected file is still being read.
 ### Full-message mode
 
 `POST /api/analyze-content` accepts `subject` and `body`, or `raw_email` for a
-complete message. Raw input enables additional checks:
+complete message represented as Unicode text. For original files, use
+`POST /api/analyze-eml` with the unchanged bytes and `Content-Type: message/rfc822`
+(or `application/octet-stream`). The browser uses this byte-preserving endpoint.
+Uploads are limited to **60,000 bytes**, checked both before client-side reading
+and while the server consumes the request stream. No file is saved or forwarded
+to a third-party analysis service.
+
+When `raw_email` is non-empty, the file's subject and decoded body are authoritative;
+manual `subject`/`body` fields are ignored, including when a raw field is empty.
+The browser disables manual fields while a file is selected. Empty uploads are
+rejected, but messages containing only headers or attachments can be analyzed.
+Unsupported MIME charsets fall back to UTF-8 replacement decoding; the response
+includes `message_structure.parse_warnings` and an informational UI warning, not
+a silent complete-analysis claim. Invalid encoded byte sequences also produce a
+warning. Original bytes are decoded using each MIME part's charset; UTF-8,
+GB18030, Latin-1, base64 and quoted-printable cases have regression coverage.
+Legacy JSON text cannot recover bytes already lost by a caller's earlier decoding.
+
+Raw input enables these checks:
 
 - SPF, DKIM, and DMARC results from explicitly trusted authentication servers;
 - protected-brand display-name and Unicode/IDN domain impersonation;
@@ -76,11 +94,37 @@ complete message. Raw input enables additional checks:
 - the same sender/domain heuristics used by the sender-only workflow;
 - executable, macro-enabled, disk-image, and archive attachment extensions or
   MIME types;
-- every HTML, Markdown, and plain-text link destination, including displayed-host
+- HTML anchor/form targets, Markdown, and plain-text link destinations, including displayed-host
   mismatch, Unicode/IDN and ASCII digit-substitution lookalikes, URL userinfo,
   deceptive brand subdomains, and credential-themed domains;
 - IP-based and shortened URLs, urgency, credential requests, threats, and
   character obfuscation.
+
+Link checks parse destinations before inspecting hosts. HTML entity escapes,
+protocol-relative targets, IPv6, and integer/hex/octal IPv4 forms retain their
+destination evidence. No link is fetched to perform these checks. Generic
+login/account words on an unrecognized hostname are weak context, not a standalone
+high-risk verdict; brand impersonation, userinfo deception, and explicit
+credential-collection wording retain stronger signals.
+
+Text rules decode HTML entities, preserve words across inline tags, and normalize
+whitespace independently of destination analysis. Script/style/comment text is
+not treated as visible prose. Shortener checks use decoded destination hosts with
+domain boundaries rather than substrings anywhere in a message. Form `action`
+and submit-control `formaction` targets are inspected; an enabled password field
+associated with a form is medium-risk evidence, not proof that a client executes it.
+
+Any positive rule score retains at least a low-risk verdict instead of claiming
+no indicators. A narrow English combination of urgency, threats, and a direct
+credential request establishes a high-risk floor. Direct negations and ordinary
+password-reset notices have negative-control tests; this is not full natural-language
+understanding and does not eliminate false positives or false negatives.
+
+The default content rules are English-oriented. Small bilingual smoke checks are
+not a representative evaluation: pure-text credential lures, especially Chinese,
+can still be missed. Do not interpret passing regression tests or a zero score as
+measured phishing recall. A held-out, labeled multilingual corpus is needed before
+claiming a real-world improvement in detection accuracy.
 
 Safety-footer phrases such as “unsubscribe” and “privacy policy” are reported
 as context but never subtract risk: an attacker can copy them. Regional English
@@ -138,6 +182,7 @@ CS-166-Final-Project/
 |---|---|
 | `POST /api/analyze-email` | Explainable sender/domain risk |
 | `POST /api/analyze-content` | Subject/body or raw-message analysis |
+| `POST /api/analyze-eml` | Original MIME bytes, maximum 60,000 bytes |
 | `POST /api/verify-email` | Local-only network authenticity checks |
 | `GET /api/metrics` | Archived UCI website benchmark and optional live text-model metrics |
 | `GET /api/config` | Public feature flags |

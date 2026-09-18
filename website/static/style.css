@@ -732,6 +732,7 @@ code {
 }
 .content-body-textarea:focus { border-color: rgba(90,209,255,0.6); box-shadow: 0 0 0 4px rgba(90,209,255,0.12); }
 .content-body-textarea.shake { animation: shake 0.4s ease; }
+.content-subject-input:disabled, .content-body-textarea:disabled { opacity: 0.55; cursor: not-allowed; }
 .content-input-actions { display: flex; gap: 12px; align-items: center; margin-bottom: 18px; }
 .content-input-actions .btn-analyze { padding: 12px 24px; }
 .btn-ghost {

@@ -12,6 +12,7 @@ Routes:
   GET  /api/config            → public-safe feature configuration
   POST /api/analyze-email     → explainable sender/domain risk analysis
   POST /api/analyze-content   → message structure + content analysis
+  POST /api/analyze-eml       → byte-preserving MIME upload analysis
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ import warnings
 from collections import deque
 from email.utils import getaddresses
 from html.parser import HTMLParser
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 from pathlib import Path
@@ -1803,12 +1804,65 @@ def _count_urls(text: str) -> int:
 
 
 def _has_ip_url(text: str) -> bool:
-    return bool(re.search(r'https?://\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', text))
+    for _visible, destination in _extract_links(text):
+        try:
+            parsed = _parse_link_target(destination)
+            if parsed.scheme in {'http', 'https'} and _is_ip_host(_link_host(parsed)):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _parse_link_target(destination: str):
+    destination = destination.strip()
+    destination = re.sub(r'^hxxp(s?)://', r'http\1://', destination, flags=re.IGNORECASE)
+    if destination.startswith('//'):
+        destination = 'https:' + destination
+    return urlparse(destination)
+
+
+def _link_host(parsed) -> str:
+    # Decode host escapes only after parsing authority; escaped separators must
+    # not become a different userinfo/path boundary.
+    return unquote(parsed.hostname or '').lower().rstrip('.')
+
+
+def _is_ip_host(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        pass
+    # Also recognize legacy IPv4 URL forms: one integer, abbreviated dotted
+    # components, and hex/octal numbers. Never resolve a hostname on the network.
+    parts = host.split('.')
+    if not 1 <= len(parts) <= 4:
+        return False
+    numbers = []
+    for part in parts:
+        if not re.fullmatch(r'(?:0x[0-9a-f]+|[0-9]+)', part):
+            return False
+        base = 16 if part.startswith('0x') else 8 if len(part) > 1 and part.startswith('0') else 10
+        try:
+            numbers.append(int(part, base))
+        except ValueError:
+            return False
+    return all(number <= 255 for number in numbers[:-1]) and numbers[-1] < 256 ** (5 - len(parts))
 
 
 def _has_shortener_url(text: str) -> bool:
-    lower = text.lower()
-    return any(s in lower for s in SHORTENER_DOMAINS)
+    for _visible, destination in _extract_links(text):
+        try:
+            parsed = _parse_link_target(destination)
+            host = _link_host(parsed)
+            if parsed.scheme in {'http', 'https'} and any(
+                host == shortener or host.endswith('.' + shortener) for shortener in SHORTENER_DOMAINS
+            ):
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def _excessive_caps_ratio(text: str) -> float:
@@ -1906,7 +1960,14 @@ def _extract_links(text: str) -> list[tuple[str, str]]:
             self.links = []
 
         def handle_starttag(self, tag, attrs):
+            attributes = dict(attrs)
+            if tag == 'form' and attributes.get('action'):
+                self.links.append(('', attributes['action']))
+            if tag in {'input', 'button'} and attributes.get('formaction') and 'disabled' not in attributes:
+                self.links.append(('', attributes['formaction']))
             if tag.lower() == "a":
+                if self.href is not None:
+                    self.links.append(("".join(self.visible).strip(), self.href))
                 self.href = dict(attrs).get("href")
                 self.visible = []
 
@@ -1923,7 +1984,10 @@ def _extract_links(text: str) -> list[tuple[str, str]]:
     collector = LinkCollector()
     try:
         collector.feed(text)
+        collector.close()
         links.extend(collector.links)
+        if collector.href is not None:
+            links.append(("".join(collector.visible).strip(), collector.href))
     except Exception:
         pass
 
@@ -1998,7 +2062,7 @@ def _analyze_link_destinations(text: str) -> tuple[int, list[dict], str]:
             else:
                 url = "http://" + url[7:]
         try:
-            parsed = urlparse(url)
+            parsed = _parse_link_target(url)
         except ValueError:
             if "malformed-target" not in finding_types:
                 score += 2
@@ -2036,9 +2100,17 @@ def _analyze_link_destinations(text: str) -> tuple[int, list[dict], str]:
                 ),
             })
 
-        target_host = (parsed.hostname or "").lower().rstrip(".")
+        target_host = _link_host(parsed)
         if not target_host:
             continue
+        if _is_ip_host(target_host) and 'ip-host' not in finding_types:
+            score += 3
+            risk_floor = 'high'
+            finding_types.add('ip-host')
+            findings.append({
+                'level': 'high',
+                'msg': 'Link destination uses an IP address instead of a domain name; inspect it before opening.',
+            })
         decoded_host = _decode_idna_domain(target_host)
 
         visible_host = _visible_link_host(link_text)
@@ -2105,19 +2177,29 @@ def _analyze_link_destinations(text: str) -> tuple[int, list[dict], str]:
                 })
 
         host_tokens = set(re.findall(r"[a-z0-9]+", decoded_skeleton))
+        credential_collection = bool(
+            host_tokens & {"credential", "password", "passcode", "otp"}
+            and host_tokens & {"capture", "harvest", "steal"}
+        )
+        host_finding = "credential-collection-host" if credential_collection else "sensitive-host"
         if (
             not _known_link_host(target_host)
             and host_tokens & sensitive_host_terms
-            and "sensitive-host" not in finding_types
+            and host_finding not in finding_types
         ):
-            score += 4
-            risk_floor = "high"
-            finding_types.add("sensitive-host")
+            # Login/account labels are ordinary on legitimate custom domains.
+            # Keep them as weak context, not a stand-alone high-risk verdict.
+            score += 4 if credential_collection else 2
+            if credential_collection:
+                risk_floor = "high"
+            finding_types.add(host_finding)
             findings.append({
-                "level": "high",
+                "level": "high" if credential_collection else "low",
                 "msg": (
-                    f"Link destination ({target_host}) uses a credential or "
-                    "account-themed untrusted domain."
+                    f"Link destination ({target_host}) combines credential and collection wording."
+                    if credential_collection else
+                    f"Link destination ({target_host}) uses account-related wording on an "
+                    "unrecognized domain; this alone does not establish phishing."
                 ),
             })
 
@@ -2130,9 +2212,82 @@ def _has_mismatched_link_text(text: str) -> bool:
     return any("does not match" in finding["msg"] for finding in findings)
 
 
+def _visible_content_text(text: str) -> str:
+    """Decode HTML text separately from destinations, preserving inline words."""
+    class TextCollector(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.parts = []
+            self.hidden = []
+
+        def handle_starttag(self, tag, attrs):
+            if tag in {'script', 'style', 'head'}:
+                self.hidden.append(tag)
+            if not self.hidden and tag in {'p', 'div', 'br', 'li', 'tr', 'td', 'hr', 'section'}:
+                self.parts.append(' ')
+
+        def handle_endtag(self, tag):
+            if self.hidden and tag == self.hidden[-1]:
+                self.hidden.pop()
+            if not self.hidden and tag in {'p', 'div', 'li', 'tr', 'td', 'section'}:
+                self.parts.append(' ')
+
+        def handle_data(self, data):
+            if not self.hidden:
+                self.parts.append(data)
+
+    collector = TextCollector()
+    collector.feed(text)
+    collector.close()
+    return re.sub(r'\s+', ' ', ''.join(collector.parts)).strip()
+
+
+def _has_password_form(text: str) -> bool:
+    class FormCollector(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.depth = 0
+            self.form_ids = set()
+            self.password_forms = []
+
+        def handle_starttag(self, tag, attrs):
+            attributes = dict(attrs)
+            if tag == 'form':
+                self.depth += 1
+                if attributes.get('id'):
+                    self.form_ids.add(attributes['id'])
+            if tag == 'input' and (attributes.get('type') or '').lower() == 'password' and 'disabled' not in attributes:
+                self.password_forms.append((self.depth > 0, attributes.get('form')))
+
+        def handle_endtag(self, tag):
+            if tag == 'form':
+                self.depth = max(0, self.depth - 1)
+
+    collector = FormCollector()
+    collector.feed(text)
+    collector.close()
+    return any(in_form if form_id is None else form_id in collector.form_ids
+               for in_form, form_id in collector.password_forms)
+
+
+def _has_pressured_credential_request(text: str) -> bool:
+    """Narrow conjunction, not a blanket penalty for password-reset notices."""
+    pattern = r'\b(?:enter|provide|send|share|submit)\s+(?:(?:your|the)\s+)?(?:password|passcode|one-time password|otp code|credit card number)\b'
+    for match in re.finditer(pattern, text, re.IGNORECASE):
+        prefix = re.split(r'[.!?;]', text[max(0, match.start() - 100):match.start()])[-1]
+        if re.search(r"\b(?:never(?:\s+ask(?:\s+you)?\s+to)?|do not|don't|must not|should not|will not|won't|not to)(?:\s+(?:ever|directly))?\s*$", prefix, re.IGNORECASE):
+            continue
+        context = text[max(0, match.start() - 240):match.end() + 240].lower()
+        if all(any(_keyword_matches(context, keyword) for keyword in CONTENT_RULES[key]['keywords'])
+               for key in ('urgency', 'threats')):
+            return True
+    return False
+
+
 def analyze_email_content(subject: str, body: str) -> dict:
     """Rule-based heuristic phishing analysis of email subject + body text."""
-    full_orig = subject + "\n" + body
+    raw_text = _strip_invisible_format_controls(subject + "\n" + body)
+    full_orig = _visible_content_text(subject) + "\n" + _visible_content_text(body)
     analysis_text = _strip_invisible_format_controls(full_orig)
     full_lower = analysis_text.lower()
 
@@ -2161,19 +2316,26 @@ def analyze_email_content(subject: str, body: str) -> dict:
 
     extra_indicators = []
 
-    # ── Structural & heuristic checks ────────────────────────────────────────
-
-    # 1. IP-based URLs
-    if _has_ip_url(analysis_text):
-        total_score += 3
-        risk_floor = "high"
+    if _has_password_form(raw_text):
+        total_score += 4
+        risk_floor = 'medium'
         extra_indicators.append({
-            "level": "high",
-            "msg": "Contains URLs using raw IP addresses — strong phishing signal (legitimate services never do this)",
+            'level': 'medium',
+            'msg': 'Embedded HTML form contains a password field; inspect the submission destination before entering credentials.',
         })
 
+    if _has_pressured_credential_request(analysis_text):
+        total_score += 4
+        risk_floor = 'high'
+        extra_indicators.append({
+            'level': 'high',
+            'msg': 'Direct credential request combined with urgency and threats; verify through an independent channel.',
+        })
+
+    # ── Structural & heuristic checks ────────────────────────────────────────
+
     # 2. URL shorteners
-    if _has_shortener_url(analysis_text):
+    if _has_shortener_url(raw_text):
         total_score += 2
         extra_indicators.append({
             "level": "high",
@@ -2182,7 +2344,7 @@ def analyze_email_content(subject: str, body: str) -> dict:
 
     # 3. Inspect every actual link target, even when its visible text is a
     # generic button such as "Review document".
-    link_score, link_findings, link_floor = _analyze_link_destinations(analysis_text)
+    link_score, link_findings, link_floor = _analyze_link_destinations(raw_text)
     total_score += link_score
     extra_indicators.extend(link_findings)
     if link_floor == "high":
@@ -2216,7 +2378,7 @@ def analyze_email_content(subject: str, body: str) -> dict:
         })
 
     # 7. High URL count
-    url_count = _count_urls(full_orig)
+    url_count = _count_urls(raw_text)
     if url_count > 6:
         total_score += 1
         extra_indicators.append({
@@ -2295,8 +2457,8 @@ def analyze_email_content(subject: str, body: str) -> dict:
         "extra_indicators":  extra_indicators,
         "safety_signals":    safety_found,
         "url_count":         url_count,
-        "has_ip_url":        _has_ip_url(analysis_text),
-        "has_shortener":     _has_shortener_url(analysis_text),
+        "has_ip_url":        _has_ip_url(raw_text),
+        "has_shortener":     _has_shortener_url(raw_text),
         "risk_floor":        risk_floor,
     }
 
@@ -2326,7 +2488,7 @@ def fuse_content_risk(
         "high": 0.55,
         "critical": 0.80,
     }
-    floor_score = floor_scores.get(minimum_level, 0.0)
+    floor_score = max(floor_scores.get(minimum_level, 0.0), 0.10 if heuristic_score > 0 else 0.0)
     combined = max(heuristic_risk, ml_risk, floor_score)
 
     if minimum_level == "critical" or combined >= 0.80:
@@ -2351,18 +2513,42 @@ def fuse_content_risk(
 
 @app.post("/api/analyze-content")
 async def analyze_content_endpoint(request: ContentRequest):
+    return await _analyze_content(request)
+
+
+@app.post("/api/analyze-eml")
+async def analyze_eml_endpoint(request: Request):
+    if request.headers.get('content-type', '').split(';', 1)[0].lower() not in {'message/rfc822', 'application/octet-stream'}:
+        raise HTTPException(status_code=415, detail='Upload the original .eml bytes as message/rfc822')
+    raw = bytearray()
+    async for chunk in request.stream():
+        if len(raw) + len(chunk) > 60_000:
+            raise HTTPException(status_code=413, detail='Email file exceeds the 60,000-byte limit')
+        raw.extend(chunk)
+    structure = analyze_raw_email(bytes(raw), trusted_authserv_ids=SETTINGS.trusted_authserv_ids)
+    return await _analyze_content(ContentRequest(), structure)
+
+
+async def _analyze_content(request: ContentRequest, structure: dict | None = None):
     subject = request.subject.strip()
     body    = request.body.strip()
-    structure = None
-    if request.raw_email.strip():
-        structure = analyze_raw_email(
-            request.raw_email,
-            trusted_authserv_ids=SETTINGS.trusted_authserv_ids,
-        )
-        subject = subject or structure["subject"]
-        body = body or structure["body"]
-    if not subject and not body:
-        raise HTTPException(status_code=400, detail="Subject or body is required")
+    if structure is not None or request.raw_email.strip():
+        if structure is None:
+            structure = analyze_raw_email(
+                request.raw_email,
+                trusted_authserv_ids=SETTINGS.trusted_authserv_ids,
+            )
+        # Raw-message mode is authoritative, including empty fields. Stale
+        # manual input must not replace evidence from the uploaded message.
+        subject = structure["subject"]
+        body = structure["body"]
+    has_structure = structure and (
+        structure["attachments"] or structure["from"] or structure["reply_to"]
+        or structure["return_path"] or structure["auth_results"]
+        or structure["untrusted_authentication_claims"]
+    )
+    if not subject and not body and not has_structure:
+        raise HTTPException(status_code=400, detail="Subject, body, or message structure is required")
 
     # 1. Rule-based heuristic scan (explainable categories + extra indicators)
     result = analyze_email_content(subject, body)
@@ -2376,7 +2562,7 @@ async def analyze_content_endpoint(request: ContentRequest):
             for key in (
                 "from", "reply_to", "return_path", "auth_results",
                 "authentication_trusted", "authentication_results_trusted",
-                "untrusted_authentication_claims", "attachments", "risk_floor",
+                "untrusted_authentication_claims", "attachments", "risk_floor", "parse_warnings",
             )
         }
         floor_rank = {"safe": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}

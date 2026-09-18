@@ -228,6 +228,120 @@ class DisposableEmailClassificationTests(unittest.TestCase):
 
 
 class ContentRuleRobustnessTests(unittest.TestCase):
+    def test_form_targets_and_password_controls_are_inspected(self):
+        samples = (
+            ('<form action="//paypa1.example/"><input type="password"></form>', 'high'),
+            ('<form action="/local"><input type="password"><button formaction="//paypa1.example/">Go</button></form>', 'high'),
+            ('<form action="https://example.net/"><input type="password"></form>', 'medium'),
+            ('<form action="https://example.net/"><input type="text" name="search"></form>', 'safe'),
+        )
+        for body, expected in samples:
+            with self.subTest(body=body):
+                result = json.loads(asyncio.run(app.analyze_content_endpoint(app.ContentRequest(body=body))).body)
+                self.assertEqual(result['risk_level'], expected)
+                if 'password' in body:
+                    self.assertTrue(any('password' in i['msg'].lower() for i in result['extra_indicators']))
+
+    def test_shorteners_match_decoded_destination_hosts_only(self):
+        for body, expected in (
+            ('<a href="https://bit.ly/demo">Review</a>', True),
+            ('<a href="https://b&#105;t.ly/demo">Review</a>', True),
+            ('<a href="//bit.ly/demo">Review</a>', True),
+            ('Read https://bit.ly/demo', True),
+            ('We discuss bit.ly without any hyperlinks.', False),
+            ('https://notbit.ly.example.com/', False),
+            ('https://example.com/?redirect=bit.ly', False),
+        ):
+            with self.subTest(body=body):
+                result = app.analyze_email_content('Note', body)
+                self.assertEqual(result['has_shortener'], expected)
+                self.assertEqual(any('shortened URLs' in i['msg'] for i in result['extra_indicators']), expected)
+
+    def test_pressure_and_direct_credential_request_set_high_floor(self):
+        for body in (
+            'Your account has been suspended. Act now, click here and enter your password to verify your account: https://example.net/',
+            'URGENT: account suspended. Please provide your password.',
+            'Your account has been suspended. Do not delay, enter your password immediately.',
+        ):
+            with self.subTest(body=body):
+                result = json.loads(asyncio.run(app.analyze_content_endpoint(app.ContentRequest(body=body))).body)
+                self.assertIn(result['risk_level'], {'high', 'critical'})
+                self.assertTrue(any('credential request' in i['msg'].lower() for i in result['extra_indicators']))
+        for body in (
+            'You requested a password reset. Reset your password at https://example.com/reset.',
+            'Security reminder: never enter your password from an email link. If your account has been suspended, do not act immediately.',
+            'URGENT account suspended. Do not provide your password to anyone.',
+        ):
+            with self.subTest(negative=body):
+                result = json.loads(asyncio.run(app.analyze_content_endpoint(app.ContentRequest(body=body))).body)
+                self.assertNotIn(result['risk_level'], {'high', 'critical'})
+
+    def test_positive_rule_evidence_never_becomes_no_indicators_verdict(self):
+        result = json.loads(asyncio.run(app.analyze_content_endpoint(
+            app.ContentRequest(body='Please enter your password.')
+        )).body)
+        self.assertTrue(result['category_results'])
+        self.assertNotEqual(result['risk_level'], 'safe')
+        self.assertNotIn('No Phishing Indicators', result['risk_label'])
+
+    def test_html_visible_text_preserves_credential_phrases(self):
+        variants = ('Please enter your password.', 'Please enter your <b>password</b>.',
+                    'Please enter your p&#97;ssword.', 'Please enter&nbsp;your\npassword.',
+                    '<p>Please enter your</p><p>password.</p>')
+        for body in variants:
+            with self.subTest(body=body):
+                result = app.analyze_email_content('Note', body)
+                self.assertTrue(any(c['key'] == 'credential' for c in result['category_results']))
+        for body in ('<style>.password:after {content: "enter your password"}</style>Hello',
+                     '<script>const text = "enter your password";</script>Hello',
+                     '<!-- enter your password -->Hello', 'Please enter your name.'):
+            with self.subTest(negative=body):
+                result = app.analyze_email_content('Note', body)
+                self.assertFalse(any(c['key'] == 'credential' for c in result['category_results']))
+
+    def test_generic_login_hostname_alone_does_not_force_high_risk(self):
+        for host in ('login.example.com', 'account.example.com', 'secure.example.com'):
+            with self.subTest(host=host):
+                result = app.analyze_email_content('Note', f'<a href="https://{host}/">Open portal</a>')
+                self.assertNotIn(result['risk_level'], {'high', 'critical'})
+                self.assertFalse(any(i['level'] == 'high' for i in result['extra_indicators']))
+        for destination in ('https://login.paypa1.example/', 'https://paypal.com@account.example.com/',
+                            'https://credential-capture.example/'):
+            with self.subTest(strong_evidence=destination):
+                result = app.analyze_email_content('Note', f'<a href="{destination}">Open portal</a>')
+                self.assertIn(result['risk_level'], {'high', 'critical'})
+
+    def test_ip_link_formats_keep_the_same_evidence(self):
+        destinations = (
+            'http://192.0.2.10/', 'http://[2001:db8::10]/',
+            'http://3221225994/', 'http://0xc000020a/', 'http://0300.0.2.012/',
+            'http://&#49;&#57;&#50;.0.2.10/', 'http://%31%39%32.0.2.10/',
+            '//192.0.2.10/',
+        )
+        for destination in destinations:
+            with self.subTest(destination=destination):
+                result = app.analyze_email_content(
+                    'Note', f'<a href="{destination}">Review document</a>',
+                )
+                self.assertTrue(result['has_ip_url'])
+                self.assertIn(result['risk_level'], {'high', 'critical'})
+                self.assertEqual(sum('IP address' in i['msg'] for i in result['extra_indicators']), 1)
+        for destination in ('https://192.0.2.10.example.com/', 'http://4294967296/',
+                            'https://example.com/192.0.2.10'):
+            with self.subTest(negative_control=destination):
+                result = app.analyze_email_content('Note', destination)
+                self.assertFalse(result['has_ip_url'])
+
+    def test_protocol_relative_links_keep_destination_evidence(self):
+        for ending in ('</a>', ''):
+            for prefix in ('https:', ''):
+                with self.subTest(ending=ending, prefix=prefix):
+                    result = app.analyze_email_content(
+                        'Note', f'<a href="{prefix}//paypa1.example/">Review document{ending}',
+                    )
+                    self.assertIn(result['risk_level'], {'high', 'critical'})
+                    self.assertTrue(any('lookalike' in i['msg'] for i in result['extra_indicators']))
+
     def test_attacker_supplied_footer_does_not_reduce_risk(self):
         lure = (
             "URGENT: account suspended\n"
@@ -461,6 +575,105 @@ class ContentRuleRobustnessTests(unittest.TestCase):
 
 
 class RawEmailAnalysisTests(unittest.TestCase):
+    def upload(self, chunks, content_type='message/rfc822'):
+        iterator = iter(chunks)
+        async def receive():
+            chunk = next(iterator, None)
+            return {'type': 'http.request', 'body': chunk or b'', 'more_body': chunk is not None}
+        request = app.Request({'type': 'http', 'headers': [(b'content-type', content_type.encode())]}, receive)
+        return json.loads(asyncio.run(app.analyze_eml_endpoint(request)).body)
+
+    def test_binary_upload_runs_full_message_analysis(self):
+        raw = ('From: alice@gmail.com\nContent-Type: text/html; charset=iso-8859-1\n\n'
+               'Hébergement <a href="//paypa1.example/">Open</a>').encode('iso-8859-1')
+        result = self.upload([raw[:40], raw[40:]])
+        self.assertEqual(result['input_mode'], 'raw-email')
+        self.assertEqual(result['message_structure']['parse_warnings'], [])
+        self.assertEqual(result['risk_level'], 'high')
+
+    def test_encoded_mime_and_invalid_byte_warnings(self):
+        import base64
+        import quopri
+        body = '您的账户异常：enter your password'
+        for encoding, encoded in (('base64', base64.b64encode(body.encode('gb18030'))),
+                                  ('quoted-printable', quopri.encodestring(body.encode('gb18030')))):
+            with self.subTest(encoding=encoding):
+                headers = f'Content-Type: text/plain; charset=gb18030\nContent-Transfer-Encoding: {encoding}\n\n'
+                self.assertEqual(app.analyze_raw_email(headers.encode() + encoded)['body'], body)
+                self.assertEqual(app.analyze_raw_email(headers + encoded.decode('ascii'))['body'], body)
+        damaged = app.analyze_raw_email(b'Content-Type: text/plain; charset=utf-8\n\n\xff enter your password')
+        self.assertTrue(damaged['parse_warnings'])
+        self.assertIn('enter your password', damaged['body'])
+
+    def test_binary_upload_rejects_oversize_empty_and_wrong_media(self):
+        for chunks, media, status in (([b'x' * 30_000, b'x' * 30_001], 'message/rfc822', 413),
+                                      ([b'   '], 'message/rfc822', 400),
+                                      ([b'hello'], 'text/plain', 415)):
+            with self.subTest(status=status):
+                with self.assertRaises(app.HTTPException) as error:
+                    self.upload(chunks, media)
+                self.assertEqual(error.exception.status_code, status)
+        self.assertIn('risk_level', self.upload([b'x' * 60_000]))
+
+    def test_mime_bytes_and_legacy_unicode_preserve_decoded_text(self):
+        for charset, body in [('utf-8', '您的账户存在异常'),
+                              ('gb18030', '您的账户存在异常'),
+                              ('iso-8859-1', 'Voici votre hébergement')]:
+            with self.subTest(charset=charset):
+                headers = (f'Subject: Note\nContent-Type: text/plain; charset={charset}\n'
+                           'Content-Transfer-Encoding: 8bit\n\n')
+                raw = headers.encode('ascii') + body.encode(charset)
+                result = app.analyze_raw_email(raw)
+                self.assertEqual(result['body'], body)
+                self.assertEqual(result['parse_warnings'], [])
+                self.assertEqual(app.analyze_raw_email(headers + body)['body'], body)
+
+    def test_attachment_only_email_can_return_a_verdict(self):
+        for filename, expected in (('invoice.exe', 'high'), ('invoice.zip', 'medium'),
+                                   ('notes.txt', 'safe')):
+            with self.subTest(filename=filename):
+                raw = ('Content-Type: application/octet-stream\n'
+                       f'Content-Disposition: attachment; filename="{filename}"\n\npayload')
+                result = json.loads(asyncio.run(app.analyze_content_endpoint(
+                    app.ContentRequest(raw_email=raw)
+                )).body)
+                self.assertEqual(result['risk_level'], expected)
+                self.assertEqual(result['message_structure']['attachments'][0]['filename'], filename)
+        for request in (app.ContentRequest(), app.ContentRequest(raw_email='\n\n')):
+            with self.assertRaises(app.HTTPException) as error:
+                asyncio.run(app.analyze_content_endpoint(request))
+            self.assertEqual(error.exception.status_code, 400)
+
+    def test_unknown_charset_keeps_evidence_and_reports_fallback(self):
+        for charset in ('utf-8', 'x-unknown-charset'):
+            with self.subTest(charset=charset):
+                raw = ('From: alice@gmail.com\nSubject: Note\n'
+                       f'Content-Type: text/html; charset={charset}\n\n'
+                       '<a href="https://paypa1.example/">Review document</a>')
+                result = json.loads(asyncio.run(app.analyze_content_endpoint(
+                    app.ContentRequest(raw_email=raw)
+                )).body)
+                self.assertIn(result['risk_level'], {'high', 'critical'})
+                warnings = result['message_structure'].get('parse_warnings', [])
+                self.assertEqual(bool(warnings), charset != 'utf-8')
+                if warnings:
+                    self.assertTrue(any('decoding' in i['msg'].lower()
+                                        for i in result['extra_indicators']))
+
+    def test_uploaded_message_is_authoritative_over_manual_text(self):
+        raw = ('From: alice@gmail.com\nSubject: Note\n'
+               'Content-Type: text/html; charset=utf-8\n\n'
+               '<a href="https://paypa1.example/">Review document</a>')
+        for manual_body in ('', 'Hi, meeting is at noon.'):
+            with self.subTest(manual_body=manual_body):
+                result = json.loads(asyncio.run(app.analyze_content_endpoint(
+                    app.ContentRequest(raw_email=raw, subject='Old subject', body=manual_body)
+                )).body)
+                self.assertEqual(result['input_mode'], 'raw-email')
+                self.assertIn(result['risk_level'], {'high', 'critical'})
+                self.assertTrue(any('lookalike' in item['msg']
+                                    for item in result['extra_indicators']))
+
     def test_disposable_context_does_not_score_but_dangerous_links_still_do(self):
         for body, dangerous in (("Lunch is at noon.", False),
                                 ("Visit http://192.0.2.10/login", True)):

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from email import policy
-from email.parser import Parser
+from email.parser import BytesParser, Parser
 from email.utils import parseaddr
 from pathlib import PurePath
 import re
 import unicodedata
+import codecs
 
 
 _AUTH_FAILURES = {"fail", "softfail", "permerror", "temperror"}
@@ -136,10 +137,11 @@ def _brand_identity_signals(from_header: str, from_domain: str) -> tuple[int, li
     return score, indicators
 
 
-def _message_text(message) -> tuple[str, str, list[dict]]:
+def _message_text(message, *, unicode_source: bool = False) -> tuple[str, str, list[dict], list[str]]:
     plain_parts: list[str] = []
     html_parts: list[str] = []
     attachments: list[dict] = []
+    parse_warnings: list[str] = []
 
     for part in message.walk():
         if part.is_multipart():
@@ -161,30 +163,47 @@ def _message_text(message) -> tuple[str, str, list[dict]]:
         if content_type not in {"text/plain", "text/html"}:
             continue
         try:
-            content = part.get_content()
+            if unicode_source and str(part.get('Content-Transfer-Encoding', '')).lower() not in {'base64', 'quoted-printable'}:
+                # Legacy JSON already contains Unicode text, not original MIME
+                # bytes. Do not round-trip it through raw-unicode-escape.
+                codecs.lookup(part.get_content_charset() or 'utf-8')
+                content = part.get_payload()
+            else:
+                content = part.get_content(errors='strict')
         except Exception:
             payload = part.get_payload(decode=True) or b""
-            content = payload.decode(part.get_content_charset() or "utf-8", errors="replace")
+            try:
+                content = payload.decode(part.get_content_charset() or 'utf-8', errors='replace')
+            except (LookupError, UnicodeError):
+                content = payload.decode('utf-8', errors='replace')
+            warning = "MIME text decoding required a fallback or replacement; analysis may be incomplete."
+            if warning not in parse_warnings:
+                parse_warnings.append(warning)
         if content_type == "text/html":
             html_parts.append(str(content))
         else:
             plain_parts.append(str(content))
 
-    return "\n".join(plain_parts), "\n".join(html_parts), attachments
+    return "\n".join(plain_parts), "\n".join(html_parts), attachments, parse_warnings
 
 
 def analyze_raw_email(
-    raw_email: str,
+    raw_email: str | bytes,
     *,
     trusted_authserv_ids: set[str] | frozenset[str] | None = None,
 ) -> dict:
     """Return normalized content plus authentication, identity, and attachment signals."""
-    message = Parser(policy=policy.default).parsestr(raw_email)
-    plain, html, attachments = _message_text(message)
+    if isinstance(raw_email, bytes):
+        message = BytesParser(policy=policy.default).parsebytes(raw_email)
+    else:
+        message = Parser(policy=policy.default).parsestr(raw_email)
+    plain, html, attachments, parse_warnings = _message_text(message, unicode_source=isinstance(raw_email, str))
     # Analyze both alternatives. Phishers commonly put harmless text in the
     # plain part and the credential link only in the HTML part.
     body = "\n".join(part for part in (plain, html) if part)
-    indicators: list[dict] = []
+    indicators: list[dict] = [
+        {"level": "info", "msg": warning} for warning in parse_warnings
+    ]
     score = 0
     risk_floor = "safe"
 
@@ -295,6 +314,7 @@ def analyze_raw_email(
         "authentication_results_trusted": bool(auth_results),
         "untrusted_authentication_claims": untrusted_authentication_claims,
         "attachments": attachments,
+        "parse_warnings": parse_warnings,
         "structure_score": score,
         "risk_floor": risk_floor,
         "indicators": indicators,

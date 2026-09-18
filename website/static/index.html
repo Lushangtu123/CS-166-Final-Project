@@ -17,7 +17,7 @@
       document.documentElement.dataset.themeMode = stored || 'auto';
     })();
   </script>
-  <link rel="stylesheet" href="/static/style.css?v=20" />
+  <link rel="stylesheet" href="/static/style.css?v=22" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -412,13 +412,14 @@
         <div class="raw-email-upload-row">
           <label class="content-label" for="raw-email-file">Full email file (recommended)</label>
           <input id="raw-email-file" class="raw-email-file" type="file" accept=".eml,message/rfc822,text/plain" />
-          <div id="raw-email-status" class="raw-email-status">Upload an .eml file to include authentication headers, sender alignment, HTML links, and attachment metadata.</div>
+          <div id="raw-email-status" class="raw-email-status" role="status">Upload the original .eml file (maximum 60,000 bytes) to preserve MIME encodings and analyze its headers, body, links, and attachment metadata. Manual fields are ignored while a file is selected.</div>
         </div>
         <div class="content-input-subject-row">
           <label class="content-label" for="content-subject">Subject</label>
           <input
             type="text"
             id="content-subject"
+            aria-describedby="raw-email-status"
             class="content-subject-input"
             placeholder="e.g. URGENT: Your account has been suspended"
             autocomplete="off"
@@ -429,6 +430,7 @@
           <label class="content-label" for="content-body">Email Body</label>
           <textarea
             id="content-body"
+            aria-describedby="raw-email-status"
             class="content-body-textarea"
             rows="9"
             placeholder="Paste the full email body text here…"
@@ -772,6 +774,6 @@
   </div>
 </footer>
 
-<script src="/static/app.js?v=20"></script>
+<script src="/static/app.js?v=22"></script>
 </body>
 </html>
