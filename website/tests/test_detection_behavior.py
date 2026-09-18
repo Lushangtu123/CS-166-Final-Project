@@ -895,7 +895,7 @@ Please review.
         self.assertEqual(result["sender_analysis"]["verdict"], "critical")
         self.assertIn(result["risk_level"], {"high", "critical"})
 
-    def test_raw_email_ignores_malformed_quoted_from_value(self):
+    def test_raw_email_marks_malformed_quoted_from_value_incomplete(self):
         raw_email = """From: "quoted@display"
 To: user@example.com
 Subject: Project update
@@ -909,7 +909,9 @@ Here is the requested update.
         result = json.loads(response.body)
 
         self.assertNotIn("sender_analysis", result)
-        self.assertEqual(result["risk_level"], "safe")
+        self.assertEqual(result["risk_level"], "unknown")
+        self.assertFalse(result['analysis_complete'])
+        self.assertTrue(result['message_structure']['parse_warnings'])
 
     def test_raw_email_keeps_known_provider_sender_benign(self):
         raw_email = """From: Alice <alice@gmail.com>

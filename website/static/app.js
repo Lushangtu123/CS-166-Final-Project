@@ -461,6 +461,12 @@ function renderVerifyResult(data) {
   }
 
   // Step 2 – DNS / MX
+  if (data.null_mx && data.overall === 'no_mail_service') {
+    setStep('mx', 'info', data.smtp_message);
+    ['smtp', 'ptr', 'spf', 'dmarc', 'age'].forEach(s => setStep(s, 'skip', 'Skipped: domain declares no mail service.'));
+    showVerifyVerdict('no_mail_service');
+    return;
+  }
   if (data.mx_found) {
     const recs = (data.mx_records || [])
       .map(r => `${r[1]} (pref ${r[0]})`).join(' · ');
@@ -537,13 +543,15 @@ function renderVerifyResult(data) {
     setStep('age', 'skip', age.message || 'WHOIS data unavailable.');
   }
 
-  showVerifyVerdict(data.overall);
+  showVerifyVerdict(data.overall, data.verification_complete);
 }
 
-function showVerifyVerdict(overall) {
+function showVerifyVerdict(overall, complete) {
   const VERDICTS = {
     verified:    { cls: 'vv-ok',      icon: 'check',
-      text: 'Verified — This mailbox exists and can receive email.' },
+      text: 'SMTP Accepted — The mail server accepted this address. This does not guarantee mailbox existence, delivery, or sender authenticity.' },
+    no_mail_service: { cls: 'vv-warn', icon: 'info',
+      text: 'No Mail Service — This domain explicitly does not accept email (Null MX). This alone is not evidence of phishing.' },
     likely_invalid: { cls: 'vv-fail', icon: 'x',
       text: 'Likely Invalid — This address probably does not exist.' },
     unverifiable: { cls: 'vv-warn',   icon: 'alert',
@@ -557,8 +565,10 @@ function showVerifyVerdict(overall) {
   };
   const cfg = VERDICTS[overall] || { cls: 'vv-warn', icon: 'minus', text: 'Result inconclusive.' };
   const el  = document.getElementById('verify-verdict');
-  el.className  = 'verify-verdict ' + cfg.cls;
-  el.innerHTML  = `${icon(cfg.icon, 'ico-lead')} <span>${cfg.text}</span>`;
+  const incomplete = complete === false;
+  el.className  = 'verify-verdict ' + (incomplete && overall === 'verified' ? 'vv-warn' : cfg.cls);
+  const warning = incomplete ? ' Verification Incomplete — One or more checks failed, timed out, or could not run. See the individual results above.' : '';
+  el.innerHTML  = `${icon(cfg.icon, 'ico-lead')} <span>${cfg.text}${warning}</span>`;
 
   document.getElementById('verify-result').classList.remove('hidden');
 }

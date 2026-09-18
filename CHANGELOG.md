@@ -22,6 +22,26 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-17 21:55 PT] — Preserve ambiguous-header evidence and clarify verification results
+
+### Why
+- Duplicate key headers could hide sender or subject risk. SMTP rejections,
+  Null MX records, and caught lookup failures produced misleading verification results.
+
+### Files changed
+- `website/email_structure.py`, `website/app.py`: candidate-header analysis,
+  header defects, SMTP response distinctions, Null MX, and explicit check status.
+- `website/static/app.js`, `website/static/index.html`: incomplete-verification
+  and no-mail-service messages; cache version 25.
+- Backend and frontend regression tests; `README.md` documents API semantics.
+
+### Effect
+- Duplicate critical headers preserve detected risk and flag incomplete analysis.
+- Policy rejection and full mailboxes are not classified as nonexistent.
+- Null MX stops further checks without labeling the domain as phishing.
+- Failed checks cannot report complete verification; SMTP acceptance is not
+  presented as guaranteed mailbox existence or delivery.
+
 ## [2026-09-17 21:36 PT] — Unify sender checks and bound nested analysis and verification
 
 ### Why

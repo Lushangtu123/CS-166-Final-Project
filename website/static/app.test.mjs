@@ -93,6 +93,27 @@ test('content summary handles zero, singular, and plural categories', () => {
   assert.equal(elements.get('crb-sub').textContent, '2 suspicious categories detected.');
 });
 
+test('Null MX explains no mail service without claiming phishing or a missing mailbox', () => {
+  const { context, elements } = loadFrontend();
+  context.renderVerifyResult({email: 'user@example.com', format_valid: true, mx_found: false,
+    null_mx: true, overall: 'no_mail_service', verification_complete: false,
+    smtp_message: 'Domain publishes Null MX: it does not accept email.'});
+  assert.match(elements.get('verify-verdict').innerHTML, /No Mail Service/);
+  assert.doesNotMatch(elements.get('verify-verdict').innerHTML, /Likely Invalid|probably does not exist/);
+  assert.match(elements.get('vstep-mx').className, /vstep-info/);
+});
+
+test('partial verification preserves SMTP result while showing incomplete checks', () => {
+  const { context, elements } = loadFrontend();
+  context.renderVerifyResult({email: 'user@example.com', format_valid: true, mx_found: true,
+    overall: 'verified', smtp_result: 'exists', verification_complete: false,
+    domain_age: {found: false, status: 'timeout', message: 'WHOIS lookup failed.'}});
+  assert.match(elements.get('verify-verdict').innerHTML, /Verification Incomplete/);
+  assert.match(elements.get('verify-verdict').innerHTML, /server accepted/i);
+  assert.doesNotMatch(elements.get('verify-verdict').innerHTML, /mailbox exists and can receive/);
+  assert.match(elements.get('verify-verdict').className, /vv-warn/);
+});
+
 test('DNS timeout remains unverifiable rather than an invalid mailbox', () => {
   const { context, elements } = loadFrontend();
   context.renderVerifyResult({email: 'user@example.com', format_valid: true, mx_found: false,

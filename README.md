@@ -94,6 +94,13 @@ MIME text parts are inspected independently with their declared type: literal
 plain text is not parsed as HTML, and unclosed markup, forms, or base addresses
 cannot affect another MIME part. Recovered parser defects (including missing or
 truncated multipart boundaries) are included in `parse_warnings`.
+Duplicate `From`, `Subject`, `Reply-To`, and `Return-Path` fields and parsed header
+defects also mark analysis incomplete. All duplicate candidates remain available
+in `message_structure.header_candidates`; sender and identity checks retain the
+highest-risk candidate, subjects are scanned together, and mismatching reply or
+return domains remain visible. Duplicates do not add a phishing score by themselves.
+Legitimately repeatable `Received` and `Authentication-Results` fields are not
+flagged just because they repeat.
 The content response includes `analysis_complete`; `false` means some content
 could not be reliably analyzed, not evidence of phishing by itself. If there is
 no detected risk and parsing is incomplete, `risk_level` is `unknown` and
@@ -293,6 +300,18 @@ Restart after changing environment variables, then reload the browser.
 the UI distinguishes local-disabled, public-disabled, and unavailable configuration.
 DNS/WHOIS records and SMTP probes do not authenticate a particular email, and an
 SMTP timeout does not prove whether a mailbox exists.
+SMTP rejection is interpreted conservatively: a permanent `5.1.1` response means
+the server reports a missing mailbox; `5.7.*` policy rejection, `5.2.2` mailbox-full,
+and generic rejection remain inconclusive. `smtp_result` can now include
+`policy_rejected` and `mailbox_full`. Existing `exists`/`verified` API values are
+retained for compatibility but mean only that the server accepted the address,
+not guaranteed delivery or sender authenticity. The UI uses “SMTP Accepted”.
+See [enhanced SMTP status codes](https://www.rfc-editor.org/rfc/rfc3463.html).
+
+A sole Null MX (`0 .`) returns `null_mx=true`, `mx_found=false`, and
+`overall=no_mail_service`, without A-record fallback or further probing. Mixed
+or nonzero-preference Null MX configurations are inconclusive. Declaring no mail
+service is not phishing evidence; see [RFC 7505](https://www.rfc-editor.org/rfc/rfc7505.html#section-3).
 
 Local verification has a **12-second response deadline**, including initial DNS
 discovery. Queries use a shared pool with at most **10 outstanding jobs per
@@ -300,6 +319,13 @@ process** and no unbounded waiting queue. At capacity, discovery returns HTTP 50
 with `Retry-After`; individual unavailable checks are reported explicitly.
 `verification_complete=false` identifies unfinished/unavailable work. DNS timeouts
 remain “Unverifiable” in the UI rather than becoming an invalid-mailbox verdict.
+Each executed SPF, DMARC, WHOIS, and PTR check now carries `status`; SMTP exposes
+`smtp_status`. `ok` and successful `not_found` results count as completed checks,
+while `timeout`, `error`, `busy`, `unavailable`, and `skipped` do not. Completion
+describes check execution, not address validity. A fast caught exception therefore
+cannot produce a complete-verification claim. A partial result preserves any
+SMTP evidence and visibly warns “Verification Incomplete”. Early exits such as
+Null MX skip remaining checks and retain `verification_complete=false`.
 DNS lookups use explicit lifetimes, WHOIS uses a 5-second socket timeout, and SMTP
 uses a per-probe deadline with socket cleanup. Running threads cannot be forcibly
 cancelled; they retain their capacity slot until they actually exit. The response

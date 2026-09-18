@@ -229,15 +229,35 @@ def analyze_raw_email(
 
 def _analyze_message(message, *, unicode_source, trusted_authserv_ids, depth, budget):
     plain, html, attachments, parse_warnings, content_parts = _message_text(message, unicode_source=unicode_source)
-    if depth and not (plain.strip() or html.strip() or attachments or any(
-            message.get(name) for name in ('Subject', 'From', 'Reply-To', 'Return-Path', 'Authentication-Results'))):
+    header_candidates = {name: [] for name in ('From', 'Subject', 'Reply-To', 'Return-Path')}
+    canonical_names = {name.lower(): name for name in header_candidates}
+    # headerregistry can itself raise for malformed address headers. Parse one
+    # field at a time, preserving raw candidates and other evidence on failure.
+    defect_names = set()
+    for part in _walk_message_parts(message):
+        defect_names.update(type(defect).__name__ for defect in part.defects)
+        for name, raw_value in part.raw_items():
+            try:
+                header = part.policy.header_fetch_parse(name, raw_value)
+                value = str(header)
+                defect_names.update(type(defect).__name__ for defect in getattr(header, 'defects', ()))
+            except Exception:
+                value = raw_value
+                warning = f'{name} header could not be parsed; raw value preserved, analysis is incomplete.'
+                if warning not in parse_warnings:
+                    parse_warnings.append(warning)
+            candidate_name = canonical_names.get(name.lower())
+            if part is message and candidate_name:
+                header_candidates[candidate_name].append(value)
+    for name, values in header_candidates.items():
+        if len(values) > 1:
+            parse_warnings.append(f'Duplicate {name} headers are ambiguous; all candidates inspected, analysis is incomplete.')
+    if depth and not (plain.strip() or html.strip() or attachments or any(header_candidates.values())
+                      or message.get('Authentication-Results')):
         parse_warnings.append('Attached message has no analyzable content; analysis is incomplete.')
-    # The parser recovers without raising; decoding may append more defects.
-    defect_names = sorted({type(defect).__name__ for part in _walk_message_parts(message)
-                           for defect in part.defects})
     if defect_names:
         parse_warnings.append('MIME structure is incomplete or malformed ('
-                              + ', '.join(defect_names) + '); analysis may be incomplete.')
+                              + ', '.join(sorted(defect_names)) + '); analysis may be incomplete.')
     nested_messages = []
     for part in _walk_message_parts(message):
         if part.get_content_type() not in {'message/rfc822', 'message/global'}:
@@ -275,31 +295,24 @@ def _analyze_message(message, *, unicode_source, trusted_authserv_ids, depth, bu
     score = 0
     risk_floor = "safe"
 
-    from_domain = _domain(message.get("From", ""))
-    reply_domain = _domain(message.get("Reply-To", ""))
-    return_domain = _domain(message.get("Return-Path", ""))
-
-    brand_score, brand_indicators = _brand_identity_signals(
-        str(message.get("From", "") or ""),
-        from_domain,
+    from_domains = {_domain(value) for value in header_candidates['From']} - {''}
+    brand_score, brand_indicators = max(
+        (_brand_identity_signals(value, _domain(value)) for value in header_candidates['From']),
+        key=lambda pair: pair[0], default=(0, []),
     )
     score += brand_score
     indicators.extend(brand_indicators)
     if brand_score:
         risk_floor = "high"
 
-    if from_domain and reply_domain and not _domains_align(reply_domain, from_domain):
-        score += 4
-        indicators.append({
-            "level": "high",
-            "msg": f"Reply-To domain ({reply_domain}) differs from From domain ({from_domain}).",
-        })
-    if from_domain and return_domain and not _domains_align(return_domain, from_domain):
-        score += 2
-        indicators.append({
-            "level": "medium",
-            "msg": f"Return-Path domain ({return_domain}) differs from From domain ({from_domain}).",
-        })
+    for name, points, level in (('Reply-To', 4, 'high'), ('Return-Path', 2, 'medium')):
+        domains = {_domain(value) for value in header_candidates[name]} - {''}
+        mismatch = next(((other, sender) for other in sorted(domains)
+                         for sender in sorted(from_domains) if not _domains_align(other, sender)), None)
+        if mismatch:
+            score += points
+            indicators.append({'level': level, 'msg':
+                f'{name} domain ({mismatch[0]}) differs from From domain ({mismatch[1]}).'})
 
     trusted_ids = {
         value.strip().lower()
@@ -371,14 +384,15 @@ def _analyze_message(message, *, unicode_source, trusted_authserv_ids, depth, bu
 
     return {
         "input_mode": "raw-email",
-        "subject": str(message.get("Subject", "") or ""),
+        "subject": '\n'.join(header_candidates['Subject']),
+        "header_candidates": header_candidates,
         "body": body,
         "html_body": html,
         "content_parts": content_parts,
         "nested_messages": nested_messages,
-        "from": str(message.get("From", "") or ""),
-        "reply_to": str(message.get("Reply-To", "") or ""),
-        "return_path": str(message.get("Return-Path", "") or ""),
+        "from": next(iter(header_candidates['From']), ''),
+        "reply_to": next(iter(header_candidates['Reply-To']), ''),
+        "return_path": next(iter(header_candidates['Return-Path']), ''),
         "auth_results": auth_results,
         "authentication_trusted": dmarc_passes,
         "authentication_results_trusted": bool(auth_results),

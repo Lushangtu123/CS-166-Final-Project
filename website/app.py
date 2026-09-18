@@ -2591,14 +2591,16 @@ async def _analyze_content(request: ContentRequest, structure: dict | None = Non
             for key in (
                 "from", "reply_to", "return_path", "auth_results",
                 "authentication_trusted", "authentication_results_trusted",
-                "untrusted_authentication_claims", "attachments", "risk_floor", "parse_warnings",
+                "untrusted_authentication_claims", "attachments", "risk_floor", "parse_warnings", "header_candidates",
             )
         }
         floor_rank = {"safe": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
         if floor_rank[structure["risk_floor"]] > floor_rank[result["risk_floor"]]:
             result["risk_floor"] = structure["risk_floor"]
 
-        sender_addresses = _raw_sender_addresses(structure["from"])
+        sender_addresses = list(dict.fromkeys(
+            address for header in structure['header_candidates']['From']
+            for address in _raw_sender_addresses(header)))
         if sender_addresses:
             sender_analysis = max(
                 (_analyze_sender_address(address) for address in sender_addresses),
@@ -2750,7 +2752,7 @@ def _smtp_probe(
     smtp_address: str | None = None,
     timeout: int = 8,
 ) -> dict:
-    result = {"connectable": False, "result": "unverifiable", "message": ""}
+    result = {"connectable": False, "result": "unverifiable", "message": "", "status": "error"}
     deadline = time.monotonic() + timeout
     if smtp_address is None:
         public_addresses = _resolve_public_smtp_addresses(mx_host, timeout=min(5, timeout))
@@ -2762,6 +2764,7 @@ def _smtp_probe(
     except ValueError:
         is_public_target = False
     if not is_public_target:
+        result['status'] = 'unavailable'
         result["message"] = f"SMTP target for {mx_host} is non-public or could not be validated."
         return result
 
@@ -2781,7 +2784,10 @@ def _smtp_probe(
         smtp.mail("")
         smtp.sock.settimeout(remaining())
         code, msg_bytes = smtp.rcpt(email)
+        result['status'] = 'ok'
         msg_str = msg_bytes.decode(errors="replace") if isinstance(msg_bytes, bytes) else str(msg_bytes)
+        enhanced_match = re.match(r'^\s*([245]\.\d{1,3}\.\d{1,3})(?:\s|$)', msg_str)
+        enhanced = enhanced_match.group(1) if enhanced_match else None
         try:
             smtp.sock.settimeout(remaining())
             smtp.quit()
@@ -2790,20 +2796,27 @@ def _smtp_probe(
         if code == 250:
             result["result"] = "exists"
             result["message"] = f"Mail server accepted the address (SMTP {code})"
-        elif code in (550, 551, 552, 553):
+        elif 500 <= code < 600 and enhanced == '5.1.1':
             result["result"] = "does_not_exist"
-            result["message"] = f"Mail server rejected the address (SMTP {code}): {msg_str[:120]}"
+            result["message"] = f"Mail server reports no such mailbox (SMTP {code}): {msg_str[:120]}"
+        elif 500 <= code < 600 and enhanced and enhanced.startswith('5.7.'):
+            result['result'] = 'policy_rejected'
+            result['message'] = f'Policy rejection does not establish mailbox existence (SMTP {code}): {msg_str[:120]}'
+        elif 500 <= code < 600 and enhanced == '5.2.2':
+            result['result'] = 'mailbox_full'
+            result['message'] = f'Mailbox full; not evidence of a nonexistent address (SMTP {code}): {msg_str[:120]}'
         elif code in (421, 450, 451, 452):
             result["result"] = "temporarily_unavailable"
             result["message"] = f"Server returned a temporary error (SMTP {code}) — try again later"
         else:
             result["result"] = "unknown"
-            result["message"] = f"Unexpected server response (SMTP {code}): {msg_str[:120]}"
+            result["message"] = f"Mailbox existence is inconclusive (SMTP {code}): {msg_str[:120]}"
     except smtplib.SMTPConnectError as e:
         result["message"] = f"Cannot connect to {mx_host}:25 — {e}"
     except smtplib.SMTPServerDisconnected as e:
         result["message"] = f"Server disconnected unexpectedly — {e}"
     except socket.timeout:
+        result['status'] = 'timeout'
         result["message"] = f"Connection to {mx_host} timed out after {timeout}s"
     except OSError as e:
         result["message"] = f"Network error: {e}"
@@ -2822,11 +2835,12 @@ def _smtp_probe(
 def _check_spf(domain: str) -> dict:
     """Look up SPF TXT record and parse the enforcement policy."""
     import dns.resolver, dns.exception
-    result = {"found": False, "record": None, "policy": None, "message": ""}
+    result = {"found": False, "record": None, "policy": None, "message": "", "status": "not_found"}
     try:
         for r in dns.resolver.resolve(domain, "TXT", lifetime=5):
             txt = r.to_text().strip('"')
             if txt.startswith("v=spf1"):
+                result['status'] = 'ok'
                 result["found"]  = True
                 result["record"] = txt[:250]
                 if "-all" in txt:
@@ -2850,8 +2864,10 @@ def _check_spf(domain: str) -> dict:
     except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
         result["message"] = "No TXT records found for domain."
     except dns.exception.DNSException as e:
+        result['status'] = 'timeout' if isinstance(e, dns.exception.Timeout) else 'error'
         result["message"] = f"DNS error: {e}"
     except Exception as e:
+        result['status'] = 'error'
         result["message"] = f"SPF check error: {str(e)[:100]}"
     return result
 
@@ -2860,12 +2876,13 @@ def _check_spf(domain: str) -> dict:
 def _check_dmarc(domain: str) -> dict:
     """Look up DMARC TXT record at _dmarc.<domain> and parse the p= policy."""
     import dns.resolver, dns.exception
-    result = {"found": False, "record": None, "policy": None, "pct": None, "message": ""}
+    result = {"found": False, "record": None, "policy": None, "pct": None, "message": "", "status": "not_found"}
     try:
         dmarc_domain = f"_dmarc.{domain}"
         for r in dns.resolver.resolve(dmarc_domain, "TXT", lifetime=5):
             txt = r.to_text().strip('"')
             if "v=DMARC1" in txt:
+                result['status'] = 'ok'
                 result["found"]  = True
                 result["record"] = txt[:250]
                 m_p   = re.search(r'\bp=(\w+)',   txt)
@@ -2892,8 +2909,10 @@ def _check_dmarc(domain: str) -> dict:
     except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
         result["message"] = f"No DMARC record at _dmarc.{domain}."
     except dns.exception.DNSException as e:
+        result['status'] = 'timeout' if isinstance(e, dns.exception.Timeout) else 'error'
         result["message"] = f"DNS error: {e}"
     except Exception as e:
+        result['status'] = 'error'
         result["message"] = f"DMARC check error: {str(e)[:100]}"
     return result
 
@@ -2902,7 +2921,7 @@ def _check_dmarc(domain: str) -> dict:
 def _check_domain_age(domain: str) -> dict:
     """Retrieve domain creation date via WHOIS and assess age."""
     result = {"found": False, "creation_date": None, "age_days": None,
-              "registrar": None, "message": ""}
+              "registrar": None, "message": "", "status": "not_found"}
     try:
         import whois
         from datetime import datetime, timezone
@@ -2916,6 +2935,7 @@ def _check_domain_age(domain: str) -> dict:
                 creation = creation.replace(tzinfo=timezone.utc)
             age = (now - creation).days
             result["found"]         = True
+            result['status'] = 'ok'
             result["creation_date"] = creation.strftime("%Y-%m-%d")
             result["age_days"]      = age
             result["registrar"]     = (w.registrar or "")[:80] if w.registrar else None
@@ -2940,6 +2960,7 @@ def _check_domain_age(domain: str) -> dict:
         else:
             result["message"] = "WHOIS returned no creation date for this domain."
     except Exception as e:
+        result['status'] = 'timeout' if isinstance(e, TimeoutError) else 'error'
         result["message"] = f"WHOIS lookup failed or data unavailable: {str(e)[:100]}"
     return result
 
@@ -2948,7 +2969,7 @@ def _check_domain_age(domain: str) -> dict:
 def _check_mx_ptr(mx_host: str) -> dict:
     """Check if the primary MX server has a valid PTR (reverse DNS) record."""
     import dns.resolver, dns.reversename, dns.exception
-    result = {"found": False, "ptr": None, "ip": None, "message": ""}
+    result = {"found": False, "ptr": None, "ip": None, "message": "", "status": "not_found"}
     try:
         a_records = dns.resolver.resolve(mx_host, "A", lifetime=5)
         ip = str(a_records[0])
@@ -2958,6 +2979,7 @@ def _check_mx_ptr(mx_host: str) -> dict:
         ptr = str(ptr_records[0]).rstrip(".")
         result["found"] = True
         result["ptr"]   = ptr
+        result['status'] = 'ok'
         result["message"] = f"MX server {ip} → PTR: {ptr}"
     except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
         result["message"] = (
@@ -2965,8 +2987,10 @@ def _check_mx_ptr(mx_host: str) -> dict:
             f"— legitimate mail servers almost always have reverse DNS configured."
         )
     except dns.exception.DNSException as e:
+        result['status'] = 'timeout' if isinstance(e, dns.exception.Timeout) else 'error'
         result["message"] = f"PTR lookup error: {e}"
     except Exception as e:
+        result['status'] = 'error'
         result["message"] = f"PTR check error: {str(e)[:100]}"
     return result
 
@@ -2983,6 +3007,11 @@ def _lookup_mail_domain(domain: str, deadline: float) -> dict:
             return result
         answers = dns.resolver.resolve(domain, 'MX', lifetime=min(6, remaining))
         records = sorted((r.preference, str(r.exchange).rstrip('.')) for r in answers)
+        if any(not host for _, host in records):
+            if records == [(0, '')]:
+                return {**result, 'null_mx': True, 'overall': 'no_mail_service',
+                        'smtp_message': 'Domain publishes Null MX: it does not accept email. This is not evidence of phishing.'}
+            return {**result, 'smtp_message': 'Invalid mixed or nonzero-preference Null MX records; mail service is inconclusive.'}
         if records:
             return {'mx_found': True, 'mx_records': records}
     except dns.resolver.NXDOMAIN:
@@ -3031,9 +3060,11 @@ def verify_email_endpoint(req: VerifyRequest):
         "format_valid": False,
         "mx_found": False,
         "mx_records": [],
+        "null_mx": False,
         "smtp_connectable": False,
         "smtp_result": None,
         "smtp_message": None,
+        "smtp_status": "skipped",
         "spf":  None,
         "dmarc": None,
         "domain_age": None,
@@ -3089,20 +3120,18 @@ def verify_email_endpoint(req: VerifyRequest):
     f_ptr = _verification_pool.submit(_check_mx_ptr, mx_host)
     futures = [f for f in (f_smtp, f_spf, f_dmarc, f_age, f_ptr) if f is not None]
     done, pending = futures_wait(futures, timeout=max(0, deadline - time.monotonic()))
-    out['verification_complete'] = len(done) == 5
     for future in pending:
         future.cancel()
 
     def safe_result(future, fallback):
         if future is None:
-            return {**fallback, 'message': 'Verification capacity is busy; this check was not run.'}
+            return {**fallback, 'status': 'busy', 'message': 'Verification capacity is busy; this check was not run.'}
         if future not in done:
-            return fallback
+            return {**fallback, 'status': 'timeout'}
         try:
             return future.result(timeout=0)
         except Exception:
-            out['verification_complete'] = False
-            return fallback
+            return {**fallback, 'status': 'error', 'message': 'Verification check failed; result unavailable.'}
 
     probe        = safe_result(f_smtp,  {"connectable": False, "result": "unverifiable",
                                           "message": "SMTP probe timed out."})
@@ -3116,12 +3145,16 @@ def verify_email_endpoint(req: VerifyRequest):
                                           "message": "PTR check timed out."})
 
     out["smtp_connectable"] = probe["connectable"]
+    out['smtp_status'] = probe['status']
     out["smtp_result"]      = probe["result"]
     out["smtp_message"]     = probe["message"]
     out["spf"]              = spf_info
     out["dmarc"]            = dmarc_info
     out["domain_age"]       = age_info
     out["mx_ptr"]           = ptr_info
+    out['verification_complete'] = all(
+        info.get('status') in {'ok', 'not_found'}
+        for info in (probe, spf_info, dmarc_info, age_info, ptr_info))
 
     # ── Overall verdict ───────────────────────────────────────────────────────
     if probe["result"] == "exists":
