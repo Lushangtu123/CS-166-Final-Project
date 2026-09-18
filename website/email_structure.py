@@ -137,11 +137,12 @@ def _brand_identity_signals(from_header: str, from_domain: str) -> tuple[int, li
     return score, indicators
 
 
-def _message_text(message, *, unicode_source: bool = False) -> tuple[str, str, list[dict], list[str]]:
+def _message_text(message, *, unicode_source: bool = False) -> tuple[str, str, list[dict], list[str], list[dict]]:
     plain_parts: list[str] = []
     html_parts: list[str] = []
     attachments: list[dict] = []
     parse_warnings: list[str] = []
+    content_parts: list[dict] = []
 
     for part in message.walk():
         if part.is_multipart():
@@ -179,12 +180,13 @@ def _message_text(message, *, unicode_source: bool = False) -> tuple[str, str, l
             warning = "MIME text decoding required a fallback or replacement; analysis may be incomplete."
             if warning not in parse_warnings:
                 parse_warnings.append(warning)
+        content_parts.append({'content_type': content_type, 'content': str(content)})
         if content_type == "text/html":
             html_parts.append(str(content))
         else:
             plain_parts.append(str(content))
 
-    return "\n".join(plain_parts), "\n".join(html_parts), attachments, parse_warnings
+    return "\n".join(plain_parts), "\n".join(html_parts), attachments, parse_warnings, content_parts
 
 
 def analyze_raw_email(
@@ -197,7 +199,13 @@ def analyze_raw_email(
         message = BytesParser(policy=policy.default).parsebytes(raw_email)
     else:
         message = Parser(policy=policy.default).parsestr(raw_email)
-    plain, html, attachments, parse_warnings = _message_text(message, unicode_source=isinstance(raw_email, str))
+    plain, html, attachments, parse_warnings, content_parts = _message_text(message, unicode_source=isinstance(raw_email, str))
+    # The parser recovers without raising; decoding may append more defects.
+    defect_names = sorted({type(defect).__name__ for part in message.walk()
+                           for defect in part.defects})
+    if defect_names:
+        parse_warnings.append('MIME structure is incomplete or malformed ('
+                              + ', '.join(defect_names) + '); analysis may be incomplete.')
     # Analyze both alternatives. Phishers commonly put harmless text in the
     # plain part and the credential link only in the HTML part.
     body = "\n".join(part for part in (plain, html) if part)
@@ -306,6 +314,7 @@ def analyze_raw_email(
         "subject": str(message.get("Subject", "") or ""),
         "body": body,
         "html_body": html,
+        "content_parts": content_parts,
         "from": str(message.get("From", "") or ""),
         "reply_to": str(message.get("Reply-To", "") or ""),
         "return_path": str(message.get("Return-Path", "") or ""),

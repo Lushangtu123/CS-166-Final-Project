@@ -989,6 +989,7 @@ async function runContentAnalysis() {
 }
 
 const RISK_CONFIG = {
+  unknown:  { icon: 'alert', color: 'medium', scoreColor: '#f0c05a' },
   safe:     { icon: 'check', color: 'safe',     scoreColor: '#3fd58f' },
   low:      { icon: 'info',  color: 'low',      scoreColor: '#6fb6ff' },
   medium:   { icon: 'alert', color: 'medium',   scoreColor: '#f0c05a' },
@@ -1006,6 +1007,9 @@ function renderContentResult(data) {
   document.getElementById('crb-title').textContent = data.risk_label;
   // Sub-line: now combines heuristic categories with ML verdict
   const subParts = [];
+  if (data.analysis_complete === false) {
+    subParts.push('Analysis incomplete: some message content could not be reliably parsed. Review the warnings below.');
+  }
   if (data.ml_label != null) {
     subParts.push(`ML: ${data.ml_label} (${data.ml_phishing_probability}% phishing)`);
   }
@@ -1014,7 +1018,7 @@ function renderContentResult(data) {
     ['low', 'medium', 'high', 'critical'].includes(ind.level)).length;
   if (categoryCount) subParts.push(`${categoryCount} suspicious ${categoryCount === 1 ? 'category' : 'categories'} detected.`);
   if (technicalCount) subParts.push(`${technicalCount} technical risk ${technicalCount === 1 ? 'indicator' : 'indicators'} detected.`);
-  if (!categoryCount && !technicalCount) {
+  if (!categoryCount && !technicalCount && data.analysis_complete !== false) {
     subParts.push(data.risk_level === 'safe'
       ? 'No indicators detected by the available checks. This does not prove the message is safe.'
       : 'Risk detected by the combined analysis. Review the evidence below.');
@@ -1022,7 +1026,10 @@ function renderContentResult(data) {
   document.getElementById('crb-sub').textContent = subParts.join(' • ');
   const scoreEl = document.getElementById('crb-score');
   // Prefer the blended ML+heuristic score when available; fall back to raw heuristic total.
-  if (data.combined_phishing_score != null) {
+  if (data.risk_level === 'unknown') {
+    animateNumber(scoreEl, 0, () => '—');
+    setRing('crb-ring', 0, cfg.scoreColor);
+  } else if (data.combined_phishing_score != null) {
     animateNumber(scoreEl, data.combined_phishing_score, v => `${Math.round(v)}%`);
     setRing('crb-ring', data.combined_phishing_score, cfg.scoreColor);
   } else {

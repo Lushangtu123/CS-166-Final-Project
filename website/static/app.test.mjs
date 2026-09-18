@@ -93,6 +93,25 @@ test('content summary handles zero, singular, and plural categories', () => {
   assert.equal(elements.get('crb-sub').textContent, '2 suspicious categories detected.');
 });
 
+test('incomplete analysis is not displayed as zero risk and cancels old animation', () => {
+  const frames = [];
+  const { context, elements } = loadFrontend({
+    performance: { now: () => 0 }, requestAnimationFrame: fn => frames.push(fn),
+  });
+  const data = { total_score: 0, category_results: [], extra_indicators: [], safety_signals: [] };
+  context.renderContentResult({ ...data, risk_level: 'high', risk_label: 'High', combined_phishing_score: 55 });
+  context.renderContentResult({ ...data, risk_level: 'unknown', risk_label: 'Analysis Incomplete — Risk Undetermined',
+    analysis_complete: false, combined_phishing_score: null });
+  frames.splice(0).forEach(fn => fn(2000));
+  assert.equal(elements.get('crb-score').textContent, '—');
+  assert.match(elements.get('crb-sub').textContent, /incomplete/i);
+  assert.doesNotMatch(elements.get('crb-sub').textContent, /risk detected|no indicators detected/i);
+  context.renderContentResult({ ...data, risk_level: 'high', risk_label: 'High',
+    analysis_complete: false, combined_phishing_score: 55 });
+  assert.equal(elements.get('crb-title').textContent, 'High');
+  assert.match(elements.get('crb-sub').textContent, /incomplete/i);
+});
+
 const senderResult = email => ({
   email, verdict: 'low', label: 'Low Sender Risk', risk_score: 0,
   risk_indicators: [], feature_breakdown: [], high_risk_count: 0, med_risk_count: 0,

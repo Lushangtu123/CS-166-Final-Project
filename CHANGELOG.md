@@ -22,6 +22,30 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-17 21:18 PT] — Isolate MIME evidence and expose incomplete analysis
+
+### Why
+- Concatenated MIME parts allowed unclosed markup to hide other content; parser
+  defects silently discarded bodies. Relative HTML targets were not resolved,
+  and medium destination-risk floors disappeared during aggregation.
+
+### Files changed
+- `website/email_structure.py` — typed content parts and recovered MIME defects.
+- `website/app.py` — per-part text/link/form analysis, HTML base resolution,
+  risk-floor preservation, and explicit incomplete-analysis response state.
+- `website/static/app.js`, `style.css`, `index.html` — amber unknown-risk state,
+  incomplete-analysis explanation, nonnumeric score display, and v23 assets.
+- `website/tests/test_detection_behavior.py`, `website/static/app.test.mjs` —
+  multipart isolation, malformed MIME, relative destinations, risk floors,
+  plain-text URL preservation, and unknown-state/animation regressions.
+- `README.md` — parsing guarantees, limitations, and new response compatibility.
+
+### Effect
+- MIME parts cannot suppress each other's visible evidence. Incomplete parsing
+  without detected risk produces `unknown`/null rather than a clean zero; existing
+  risk evidence is retained. Relative targets are checked without network access.
+- These are bounded parser and rule fixes, not a measured accuracy improvement.
+
 ## [2026-09-17 21:01 PT] — Preserve MIME bytes and normalize content evidence
 
 ### Why

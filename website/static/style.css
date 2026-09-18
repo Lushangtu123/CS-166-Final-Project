@@ -758,7 +758,7 @@ code {
 }
 .crb-safe     { background: rgba(63,213,143,0.09);  border-color: rgba(63,213,143,0.28);  color: var(--accent2); }
 .crb-low      { background: rgba(111,182,255,0.09); border-color: rgba(111,182,255,0.28); color: var(--info); }
-.crb-medium   { background: rgba(240,192,90,0.09);  border-color: rgba(240,192,90,0.30);  color: var(--yellow); }
+.crb-medium, .crb-unknown { background: rgba(240,192,90,0.09);  border-color: rgba(240,192,90,0.30);  color: var(--yellow); }
 .crb-high     { background: rgba(255,138,76,0.09);  border-color: rgba(255,138,76,0.32);  color: var(--orange); }
 .crb-critical { background: rgba(255,92,108,0.10);  border-color: rgba(255,92,108,0.36);  color: var(--red); }
 
@@ -992,7 +992,7 @@ code {
 .banner-legit   .vb-icon  { color: var(--accent2); background: rgba(63,213,143,0.14);  border-color: rgba(63,213,143,0.28); }
 .crb-safe       .crb-icon { color: var(--accent2); background: rgba(63,213,143,0.14);  border-color: rgba(63,213,143,0.28); }
 .crb-low        .crb-icon { color: var(--info);    background: rgba(111,182,255,0.14); border-color: rgba(111,182,255,0.28); }
-.crb-medium     .crb-icon { color: var(--yellow);  background: rgba(240,192,90,0.14);  border-color: rgba(240,192,90,0.28); }
+.crb-medium .crb-icon, .crb-unknown .crb-icon { color: var(--yellow); background: rgba(240,192,90,0.14); border-color: rgba(240,192,90,0.28); }
 .crb-high       .crb-icon { color: var(--orange);  background: rgba(255,138,76,0.14);  border-color: rgba(255,138,76,0.28); }
 .crb-critical   .crb-icon { color: var(--red);     background: rgba(255,92,108,0.14);  border-color: rgba(255,92,108,0.28); }
 

@@ -86,6 +86,17 @@ warning. Original bytes are decoded using each MIME part's charset; UTF-8,
 GB18030, Latin-1, base64 and quoted-printable cases have regression coverage.
 Legacy JSON text cannot recover bytes already lost by a caller's earlier decoding.
 
+MIME text parts are inspected independently with their declared type: literal
+plain text is not parsed as HTML, and unclosed markup, forms, or base addresses
+cannot affect another MIME part. Recovered parser defects (including missing or
+truncated multipart boundaries) are included in `parse_warnings`.
+The content response includes `analysis_complete`; `false` means some content
+could not be reliably analyzed, not evidence of phishing by itself. If there is
+no detected risk and parsing is incomplete, `risk_level` is `unknown` and
+`combined_phishing_score` is `null`. The UI shows “Analysis Incomplete” and a dash
+instead of a green zero. Detected risks remain visible alongside the warning.
+API consumers must accept this additional risk level and nullable score.
+
 Raw input enables these checks:
 
 - SPF, DKIM, and DMARC results from explicitly trusted authentication servers;
@@ -113,6 +124,11 @@ not treated as visible prose. Shortener checks use decoded destination hosts wit
 domain boundaries rather than substrings anywhere in a message. Form `action`
 and submit-control `formaction` targets are inspected; an enabled password field
 associated with a form is medium-risk evidence, not proof that a client executes it.
+Relative HTML link and form targets are resolved against the document's first
+`base href` when it supplies a usable HTTP(S) address, including a protocol-relative base. No base is
+inferred from the sender, and no external resource is fetched. Without a usable
+base, relative targets cannot identify a destination host. Medium and high
+destination-risk floors are both preserved when results are combined.
 
 Any positive rule score retains at least a low-risk verdict instead of claiming
 no indicators. A narrow English combination of urgency, threats, and a direct

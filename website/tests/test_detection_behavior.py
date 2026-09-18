@@ -228,6 +228,28 @@ class DisposableEmailClassificationTests(unittest.TestCase):
 
 
 class ContentRuleRobustnessTests(unittest.TestCase):
+    def test_malformed_link_retains_medium_floor_without_lowering_high_evidence(self):
+        malformed = '<a href="https://[broken">Continue</a>'
+        for body, expected in ((malformed, 'medium'),
+                               (malformed + '<a href="//paypa1.example/">Go</a>', 'high')):
+            result = json.loads(asyncio.run(app.analyze_content_endpoint(app.ContentRequest(body=body))).body)
+            self.assertEqual(result['risk_level'], expected)
+            self.assertEqual(result['risk_floor'], expected)
+
+    def test_relative_targets_use_the_first_base_in_the_same_document(self):
+        for body, expected in (
+            ('<base href="//paypa1.example/"><a href="collect">Continue</a>', 'high'),
+            ('<base href="//paypa1.example/"><form action="/collect"></form>', 'high'),
+            ('<base href="//paypa1.example/"><form><button formaction="collect">Go</button></form>', 'high'),
+            ('<base href="//example.org/"><a href="collect">Continue</a>', 'safe'),
+            ('<base href="//example.org/"><base href="//paypa1.example/"><a href="collect">Continue</a>', 'safe'),
+            ('<base href="//paypa1.example/"><a href="https://example.org/">Continue</a>', 'safe'),
+            ('<a href="collect">Continue</a>', 'safe'),
+        ):
+            with self.subTest(body=body):
+                result = json.loads(asyncio.run(app.analyze_content_endpoint(app.ContentRequest(body=body))).body)
+                self.assertEqual(result['risk_level'], expected)
+
     def test_form_targets_and_password_controls_are_inspected(self):
         samples = (
             ('<form action="//paypa1.example/"><input type="password"></form>', 'high'),
@@ -575,6 +597,64 @@ class ContentRuleRobustnessTests(unittest.TestCase):
 
 
 class RawEmailAnalysisTests(unittest.TestCase):
+    def test_plain_mime_preserves_urls_and_whitespace_without_interpreting_markup(self):
+        raw = b'Content-Type: text/plain\n\nSee <https://bit.ly>'
+        self.assertTrue(self.upload([raw])['has_shortener'])
+        raw = (b'Content-Type: text/plain\n\nYour account has been suspended. '
+               b'Act now and enter\n your\tpassword.')
+        self.assertEqual(self.upload([raw])['risk_level'], 'high')
+        raw = b'Content-Type: text/plain\n\n<form><input type="password"></form>'
+        self.assertFalse(any('Embedded HTML form' in i['msg'] for i in self.upload([raw])['extra_indicators']))
+
+    def test_html_base_and_form_state_do_not_cross_mime_parts(self):
+        from email.message import EmailMessage
+        message = EmailMessage()
+        message.make_mixed()
+        for html in ('<base href="//paypa1.example/"><form id="a">',
+                     '<a href="collect">Continue</a><input type="password" form="a">'):
+            part = EmailMessage()
+            part.set_content(html, subtype='html')
+            message.attach(part)
+        result = self.upload([message.as_bytes()])
+        self.assertEqual(result['risk_level'], 'safe')
+        self.assertTrue(result['analysis_complete'])
+
+    def test_mime_defects_report_incomplete_instead_of_clean_verdict(self):
+        raw = (b'Content-Type: multipart/mixed; boundary=declared\n\n'
+               b'--different\nContent-Type: text/plain\n\nHello\n--different--\n')
+        for result in (self.upload([raw]), json.loads(asyncio.run(
+                app.analyze_content_endpoint(app.ContentRequest(raw_email=raw.decode()))).body)):
+            self.assertFalse(result['analysis_complete'])
+            self.assertEqual(result['risk_level'], 'unknown')
+            self.assertIn('Incomplete', result['risk_label'])
+            self.assertIsNone(result['combined_phishing_score'])
+            self.assertTrue(result['message_structure']['parse_warnings'])
+        truncated = (b'Content-Type: multipart/mixed; boundary=x\n\n--x\n'
+                     b'Content-Type: text/html\n\n<a href="https://paypa1.example/">Go</a>')
+        result = self.upload([truncated])
+        self.assertFalse(result['analysis_complete'])
+        self.assertEqual(result['risk_level'], 'high')
+        clean = self.upload([b'Content-Type: text/plain\n\nHello'])
+        self.assertTrue(clean['analysis_complete'])
+        self.assertEqual(clean['risk_level'], 'safe')
+
+    def test_mime_parts_cannot_hide_each_others_visible_text(self):
+        from email.message import EmailMessage
+        lure = 'Your account has been suspended. Act now and enter your password.'
+        for prefix in ('Hello', '<style>', '<script>', '<head>'):
+            with self.subTest(prefix=prefix):
+                message = EmailMessage()
+                message['From'] = 'alice@gmail.com'
+                message.set_content(prefix)
+                message.add_alternative('<p>' + lure + '</p>', subtype='html')
+                for result in (self.upload([message.as_bytes()]), json.loads(asyncio.run(
+                        app.analyze_content_endpoint(app.ContentRequest(raw_email=message.as_string()))).body)):
+                    self.assertEqual(result['risk_level'], 'high')
+        for subtype, expected in (('plain', 'high'), ('html', 'safe')):
+            message = EmailMessage()
+            message.set_content('<style>' + lure + '</style>', subtype=subtype)
+            self.assertEqual(self.upload([message.as_bytes()])['risk_level'], expected)
+
     def upload(self, chunks, content_type='message/rfc822'):
         iterator = iter(chunks)
         async def receive():

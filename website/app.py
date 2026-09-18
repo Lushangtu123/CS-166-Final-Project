@@ -30,7 +30,7 @@ import warnings
 from collections import deque
 from email.utils import getaddresses
 from html.parser import HTMLParser
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urlparse, urljoin
 
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 from pathlib import Path
@@ -1803,8 +1803,8 @@ def _count_urls(text: str) -> int:
     return len(re.findall(r'https?://\S+', text))
 
 
-def _has_ip_url(text: str) -> bool:
-    for _visible, destination in _extract_links(text):
+def _has_ip_url(text: str, *, links=None) -> bool:
+    for _visible, destination in (_extract_links(text) if links is None else links):
         try:
             parsed = _parse_link_target(destination)
             if parsed.scheme in {'http', 'https'} and _is_ip_host(_link_host(parsed)):
@@ -1851,8 +1851,8 @@ def _is_ip_host(host: str) -> bool:
     return all(number <= 255 for number in numbers[:-1]) and numbers[-1] < 256 ** (5 - len(parts))
 
 
-def _has_shortener_url(text: str) -> bool:
-    for _visible, destination in _extract_links(text):
+def _has_shortener_url(text: str, *, links=None) -> bool:
+    for _visible, destination in (_extract_links(text) if links is None else links):
         try:
             parsed = _parse_link_target(destination)
             host = _link_host(parsed)
@@ -1948,7 +1948,7 @@ def _detect_non_native_phrases(text: str) -> list[str]:
     return [m for m in markers if m in lower]
 
 
-def _extract_links(text: str) -> list[tuple[str, str]]:
+def _extract_links(text: str, *, parse_html: bool = True) -> list[tuple[str, str]]:
     """Extract visible text and destination from Markdown and HTML links."""
     links = list(re.findall(r'\[([^\]]+)\]\(((?:https?|hxxps?)://[^)]+)\)', text, re.IGNORECASE))
 
@@ -1958,9 +1958,12 @@ def _extract_links(text: str) -> list[tuple[str, str]]:
             self.href = None
             self.visible = []
             self.links = []
+            self.base_href = None
 
         def handle_starttag(self, tag, attrs):
             attributes = dict(attrs)
+            if tag == 'base' and self.base_href is None and 'href' in attributes:
+                self.base_href = attributes['href'] or ''
             if tag == 'form' and attributes.get('action'):
                 self.links.append(('', attributes['action']))
             if tag in {'input', 'button'} and attributes.get('formaction') and 'disabled' not in attributes:
@@ -1983,11 +1986,25 @@ def _extract_links(text: str) -> list[tuple[str, str]]:
 
     collector = LinkCollector()
     try:
-        collector.feed(text)
+        if parse_html:
+            collector.feed(text)
         collector.close()
-        links.extend(collector.links)
         if collector.href is not None:
-            links.append(("".join(collector.visible).strip(), collector.href))
+            collector.links.append(("".join(collector.visible).strip(), collector.href))
+        base = None
+        try:
+            candidate = _parse_link_target(collector.base_href or '')
+            if candidate.scheme in {'http', 'https'} and candidate.hostname:
+                base = candidate.geturl()
+        except ValueError:
+            pass
+        for visible, destination in collector.links:
+            try:
+                # Only resolve HTML targets, not unrelated plain-text URLs.
+                resolved = urljoin(base, destination) if base else destination
+            except ValueError:
+                resolved = destination  # Preserve malformed-target evidence.
+            links.append((visible, resolved))
     except Exception:
         pass
 
@@ -2034,7 +2051,7 @@ def _label_uses_brand_lookalike(label: str, brand: str) -> bool:
     return brand in compact
 
 
-def _analyze_link_destinations(text: str) -> tuple[int, list[dict], str]:
+def _analyze_link_destinations(text: str, *, links=None) -> tuple[int, list[dict], str]:
     """Inspect actual link targets, including links with generic button text."""
     score = 0
     findings: list[dict] = []
@@ -2046,7 +2063,7 @@ def _analyze_link_destinations(text: str) -> tuple[int, list[dict], str]:
         "wallet",
     }
 
-    for link_text, url in _extract_links(text):
+    for link_text, url in (_extract_links(text) if links is None else links):
         lowered_url = url.lower()
         if lowered_url.startswith(("hxxp://", "hxxps://")):
             if "obfuscated-scheme" not in finding_types:
@@ -2284,10 +2301,26 @@ def _has_pressured_credential_request(text: str) -> bool:
     return False
 
 
-def analyze_email_content(subject: str, body: str) -> dict:
+def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] | None = None) -> dict:
     """Rule-based heuristic phishing analysis of email subject + body text."""
-    raw_text = _strip_invisible_format_controls(subject + "\n" + body)
-    full_orig = _visible_content_text(subject) + "\n" + _visible_content_text(body)
+    if content_parts is None:
+        raw_parts = [subject, body]
+        html_parts = [True, True]
+        visible_parts = [_visible_content_text(part) for part in raw_parts]
+    else:
+        # Each MIME part is its own document. Plain text must not be interpreted
+        # as markup, nor may an unclosed tag in one part hide another part.
+        raw_parts = [subject] + [part['content'] for part in content_parts]
+        html_parts = [False] + [part['content_type'] == 'text/html' for part in content_parts]
+        visible_parts = [subject] + [
+            _visible_content_text(part['content']) if part['content_type'] == 'text/html' else part['content']
+            for part in content_parts
+        ]
+    raw_parts = [_strip_invisible_format_controls(part) for part in raw_parts]
+    raw_text = '\n'.join(raw_parts)
+    links = [link for part, is_html in zip(raw_parts, html_parts)
+             for link in _extract_links(part, parse_html=is_html)]
+    full_orig = re.sub(r'\s+', ' ', '\n'.join(visible_parts)).strip()
     analysis_text = _strip_invisible_format_controls(full_orig)
     full_lower = analysis_text.lower()
 
@@ -2316,7 +2349,7 @@ def analyze_email_content(subject: str, body: str) -> dict:
 
     extra_indicators = []
 
-    if _has_password_form(raw_text):
+    if any(_has_password_form(part) for part, is_html in zip(raw_parts, html_parts) if is_html):
         total_score += 4
         risk_floor = 'medium'
         extra_indicators.append({
@@ -2335,7 +2368,7 @@ def analyze_email_content(subject: str, body: str) -> dict:
     # ── Structural & heuristic checks ────────────────────────────────────────
 
     # 2. URL shorteners
-    if _has_shortener_url(raw_text):
+    if _has_shortener_url(raw_text, links=links):
         total_score += 2
         extra_indicators.append({
             "level": "high",
@@ -2344,11 +2377,11 @@ def analyze_email_content(subject: str, body: str) -> dict:
 
     # 3. Inspect every actual link target, even when its visible text is a
     # generic button such as "Review document".
-    link_score, link_findings, link_floor = _analyze_link_destinations(raw_text)
+    link_score, link_findings, link_floor = _analyze_link_destinations(raw_text, links=links)
     total_score += link_score
     extra_indicators.extend(link_findings)
-    if link_floor == "high":
-        risk_floor = "high"
+    floor_rank = {'safe': 0, 'low': 1, 'medium': 2, 'high': 3, 'critical': 4}
+    risk_floor = max((risk_floor, link_floor), key=floor_rank.get)
 
     # 4. Excessive exclamation marks
     excl = full_orig.count("!")
@@ -2440,6 +2473,8 @@ def analyze_email_content(subject: str, body: str) -> dict:
         risk_level, risk_label = "critical", "Critical Risk — Very Likely Phishing"
     elif risk_floor == "high":
         risk_level, risk_label = "high", "High Risk — Likely Phishing"
+    elif risk_floor == "medium" and total_score <= 8:
+        risk_level, risk_label = "medium", "Medium Risk — Suspicious Content"
     elif total_score == 0:
         risk_level, risk_label = "safe",     "No Phishing Indicators Found"
     elif total_score <= 3:
@@ -2457,8 +2492,8 @@ def analyze_email_content(subject: str, body: str) -> dict:
         "extra_indicators":  extra_indicators,
         "safety_signals":    safety_found,
         "url_count":         url_count,
-        "has_ip_url":        _has_ip_url(raw_text),
-        "has_shortener":     _has_shortener_url(raw_text),
+        "has_ip_url":        _has_ip_url(raw_text, links=links),
+        "has_shortener":     _has_shortener_url(raw_text, links=links),
         "risk_floor":        risk_floor,
     }
 
@@ -2525,6 +2560,8 @@ async def analyze_eml_endpoint(request: Request):
         if len(raw) + len(chunk) > 60_000:
             raise HTTPException(status_code=413, detail='Email file exceeds the 60,000-byte limit')
         raw.extend(chunk)
+    if not raw.strip():
+        raise HTTPException(status_code=400, detail='Email file is empty')
     structure = analyze_raw_email(bytes(raw), trusted_authserv_ids=SETTINGS.trusted_authserv_ids)
     return await _analyze_content(ContentRequest(), structure)
 
@@ -2546,12 +2583,13 @@ async def _analyze_content(request: ContentRequest, structure: dict | None = Non
         structure["attachments"] or structure["from"] or structure["reply_to"]
         or structure["return_path"] or structure["auth_results"]
         or structure["untrusted_authentication_claims"]
+        or structure["parse_warnings"]
     )
     if not subject and not body and not has_structure:
         raise HTTPException(status_code=400, detail="Subject, body, or message structure is required")
 
     # 1. Rule-based heuristic scan (explainable categories + extra indicators)
-    result = analyze_email_content(subject, body)
+    result = analyze_email_content(subject, body, content_parts=structure['content_parts'] if structure else None)
     result["input_mode"] = "raw-email" if structure else "subject-body"
     result["structure_score"] = structure["structure_score"] if structure else 0
     if structure:
@@ -2630,6 +2668,11 @@ async def _analyze_content(request: ContentRequest, structure: dict | None = Non
             minimum_level=result["risk_floor"],
         ))
 
+    result['analysis_complete'] = not bool(structure and structure['parse_warnings'])
+    if not result['analysis_complete'] and result['risk_level'] == 'safe':
+        result['risk_level'] = 'unknown'
+        result['risk_label'] = 'Analysis Incomplete — Risk Undetermined'
+        result['combined_phishing_score'] = None
     return JSONResponse(result)
 
 
