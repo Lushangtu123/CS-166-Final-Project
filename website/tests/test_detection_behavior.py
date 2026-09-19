@@ -233,6 +233,14 @@ class DisposableEmailClassificationTests(unittest.TestCase):
         self.assertTrue(all(domain == domain.lower() for domain in privacy_relays))
         self.assertTrue(app.DISPOSABLE_DOMAINS.isdisjoint(privacy_relays))
 
+    def test_disposable_registry_has_versioned_provenance(self):
+        metadata = getattr(app, "DISPOSABLE_REGISTRY_METADATA", None)
+        self.assertIsNotNone(metadata, "disposable registry metadata is missing")
+        self.assertEqual(metadata.get("schema"), "phishguard-disposable-domains-v1")
+        self.assertRegex(metadata.get("version", ""), r"^\d{4}\.\d{2}\.\d{2}$")
+        self.assertEqual(metadata.get("domain_count"), len(app._DISPOSABLE_DOMAIN_SOURCE))
+        self.assertTrue(metadata.get("provenance"))
+
 
 class ContentRuleRobustnessTests(unittest.TestCase):
     def test_malformed_link_retains_medium_floor_without_lowering_high_evidence(self):

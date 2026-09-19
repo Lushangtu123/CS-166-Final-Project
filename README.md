@@ -50,6 +50,24 @@ Disposable-email results include `disposable_status`,
 it does not establish how long an individual mailbox exists or that its sender
 is malicious.
 
+The disposable-provider registry is stored in
+`website/data/disposable_domains.json` with a schema version, release version,
+entry count, and provenance note. Runtime startup validates that it is sorted,
+duplicate-free, syntactically valid, and internally consistent. To rebuild it
+from reviewed offline line files, run:
+
+```bash
+python website/tools/build_disposable_registry.py \
+  --input /path/to/reviewed-domains.txt \
+  --output website/data/disposable_domains.json \
+  --version YYYY.MM.DD \
+  --provenance "source name, URL, retrieval date, and license"
+```
+
+Review generated changes before committing them. Gmail and Outlook account age
+or intended lifetime cannot be inferred from an address alone; random-looking
+mailboxes remain heuristic suspicion rather than confirmed disposable accounts.
+
 Confirmed disposable-provider and privacy-relay matches are informational and
 do not add phishing-risk points on their own. Independent address, domain,
 link, and message risks still contribute normally. The UI separates mailbox
@@ -311,6 +329,7 @@ does not perform live SPF/DKIM/DMARC verification or expand the trust boundary.
 | `TRUSTED_AUTHSERV_IDS` | empty | Comma-separated authentication service IDs allowed to affect raw-message risk |
 | `RATE_LIMIT_BUCKET_CAPACITY` | `4096` | Hard bound for in-process rate-limit keys |
 | `MAX_REQUEST_BYTES` | `65536` | Actual HTTP request-body byte limit before decoding; applies without Content-Length |
+| `CUSTOM_DOMAINS` | empty | Comma-separated custom hostnames appended to `ALLOWED_HOSTS` |
 | `CONTENT_MODEL_USE_REAL` | profile-dependent | Offline training: load local public corpora |
 | `CONTENT_MODEL_AUTO_DOWNLOAD` | profile-dependent | Offline training: download configured public corpora when missing |
 | `CONTENT_MODEL_USE_CACHE` | `false` | Offline training: explicitly trust/load the local pickle cache |
@@ -336,7 +355,15 @@ Training remains local-only. When `website/model/content_model_artifact.pkl` is
 present, `vercel.json` must contain its exact SHA-256 digest and enables the
 model. Startup verifies the digest plus Python/scikit-learn compatibility before
 deserializing. A rejected or missing artifact leaves rule and structure analysis
-available and reports the model error through `/health`.
+available and reports the model error through `/health`. Successful health and
+metrics responses expose the loaded artifact digest and a short `model_id`, so
+displayed metrics can be tied to the deployed binary rather than a different
+training run.
+
+Before attaching a custom domain, add its apex and optional `www` hostname to
+the Vercel `CUSTOM_DOMAINS` environment variable, for example
+`phishguard.example,www.phishguard.example`, and redeploy. Do not include a URL
+scheme or path. The default `*.vercel.app` allow-list remains active.
 
 Deploy from the repository root with Vercel CLI 48.1.8 or newer, or import the
 Git repository in the Vercel dashboard. The deployment is intended for a
@@ -493,8 +520,11 @@ process. Rules and message-structure analysis remain available without it.
 
 ## Testing
 
-GitHub Actions runs the suite on both Python 3.12 and 3.13, including HTML
-recovery regressions that must not depend on standard-library exceptions.
+GitHub Actions runs the development suite on both Python 3.12 and 3.13,
+including HTML recovery regressions that must not depend on standard-library
+exceptions. A separate Python 3.12 job installs the root Vercel dependencies,
+checks their consistency, verifies the committed model digest, starts the real
+Lite profile with ML enabled, and performs a high-risk prediction smoke test.
 
 ```bash
 # From repository root, after installing website dependencies

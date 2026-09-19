@@ -5,7 +5,7 @@
   "functions": {
     "app.py": {
       "maxDuration": 30,
-      "includeFiles": "website/model/**",
+      "includeFiles": "{website/model/**,website/data/**}",
       "excludeFiles": "{docs/**,website/tests/**,phishing-detection/**,**/*.test.py,**/*.test.mjs}"
     }
   },

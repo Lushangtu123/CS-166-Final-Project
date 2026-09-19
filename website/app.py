@@ -42,6 +42,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
 from config import load_settings
+from disposable_registry import REGISTRY_DOMAIN_RE as _REGISTRY_DOMAIN_RE
+from disposable_registry import load_disposable_registry
 from request_limits import RequestBodyLimitMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -309,262 +311,15 @@ COMMON_TLDS = {'com', 'org', 'net', 'edu', 'gov', 'mil', 'io', 'co', 'cn'}
 ABUSED_CCTLDS = {'ru', 'cn', 'tk', 'ml', 'ga', 'cf', 'gq', 'pw', 'xyz'}
 SHORT_SERVICES = {'bit.ly', 'tinyurl.com', 'goo.gl', 'ow.ly', 't.co', 'short.io'}
 
-# ── Disposable / temporary email domain database (500+ domains) ───────────────
-_DISPOSABLE_DOMAIN_SOURCE = {
-    # ── Mailinator family ──────────────────────────────────────────────────────
-    'mailinator.com', 'mailinator.net', 'mailinator.org', 'mailinator2.com',
-    'mailinater.com', 'suremail.info', 'binkmail.com', 'safetymail.info',
-    'chammy.info', 'tradermail.info', 'bobmail.info', 'clrmail.com',
-    'devnullmail.com', 'dispostable.com', 'letthemeatspam.com',
-    'mailin8r.com', 'mailme.ir', 'mailme.lv', 'mailmetrash.com',
-    'mailnew.com', 'mailscrap.com', 'mailsiphon.com', 'mailslapping.com',
-    'mailtemp.info', 'mailtome.de', 'mailtothis.com', 'mailzilla.org',
-    'spamgoes.in', 'spamgoeshere.com', 'spamgourmet.net', 'spamgourmet.org',
-
-    # ── Guerrilla Mail family ──────────────────────────────────────────────────
-    'guerrillamail.com', 'guerrillamail.net', 'guerrillamail.org',
-    'guerrillamail.biz', 'guerrillamail.de', 'guerrillamail.info',
-    'guerrillamailblock.com', 'sharklasers.com', 'grr.la', 'spam4.me',
-    'guerrillamail.us', 'guerrillamail.ca', 'guerrillamail.co.uk',
-
-    # ── 10 Minute Mail / Minute-based ─────────────────────────────────────────
-    '10minutemail.com', '10minutemail.net', '10minutemail.org',
-    '10minutemail.co.uk', '10minutemail.de', '10minutemail.ru',
-    '10minutemail.us', '10minutemail.be', '10minutemail.cf',
-    '10minutemail.ga', '10minutemail.gq', '10minutemail.ml',
-    '10minemail.com', 'tenminutemail.com', 'tempr.email',
-    '20minutemail.com', '20minutemail.it', '30minutemail.com',
-    '60minutemail.com', 'minutemailbox.com',
-
-    # ── Temp-Mail / TempMail ───────────────────────────────────────────────────
-    'tempmail.com', 'tempmail.net', 'tempmail.org', 'tempmail.de',
-    'tempmail.io', 'tempmail.it', 'tempmail.us', 'tempmail.co',
-    'temp-mail.org', 'temp-mail.io', 'temp-mail.ru', 'temp-mail.de',
-    'tempail.com', 'temporaryemail.net', 'temporary-mail.net',
-    'mytemp.email', 'emailtemporario.com.br', 'tempemail.net',
-    'tempemail.co', 'tempinbox.com', 'tempinbox.org', 'tempsky.com',
-    'tempr.email', 'tempthe.net', 'temp.bartdevries.nl',
-
-    # ── YOPmail ────────────────────────────────────────────────────────────────
-    'yopmail.com', 'yopmail.fr', 'yopmail.pp.ua', 'cool.fr.nf',
-    'jetable.fr.nf', 'nospam.ze.tc', 'nomail.xl.cx', 'mega.zik.dj',
-    'speed.1s.fr', 'courriel.fr.nf', 'moncourrier.fr.nf',
-    'monemail.fr.nf', 'monmail.fr.nf', 'cool.fr.nf',
-    'no-spam.ws', 'spamgoes.in',
-
-    # ── Trash Mail ─────────────────────────────────────────────────────────────
-    'trashmail.com', 'trashmail.me', 'trashmail.net', 'trashmail.org',
-    'trashmail.io', 'trashmail.at', 'trashmail.xyz', 'trashmailer.com',
-    'trashmail.app', 'trashmail.fr', 'trashmail.eu',
-    'discard.email', 'discardmail.com', 'discardmail.de',
-    'trashdevil.com', 'trashdevil.de',
-
-    # ── Maildrop / Mailnull / Mailnesia ───────────────────────────────────────
-    'mailnull.com', 'maildrop.cc', 'mailnesia.com', 'mailfreeonline.com',
-    'mailme.gq', 'mailme.cf', 'mailme.ga', 'mailme.ml',
-
-    # ── Throwaway / One-use ───────────────────────────────────────────────────
-    'throwam.com', 'throwaway.email', 'throwam.com',
-    'throwtrash.com', 'throw.email', 'throwamail.com',
-
-    # ── GetNada / Nada ─────────────────────────────────────────────────────────
-    'getnada.com', 'nada.email', 'nakedtruth.biz', 'nada.ltd',
-
-    # ── Fake Inbox ─────────────────────────────────────────────────────────────
-    'fakeinbox.com', 'fakeinbox.net', 'fakeinbox.cf', 'fakeinbox.ga',
-    'fakemail.net', 'fakemailgenerator.com', 'fakemailz.com',
-    'fake-box.com', 'fakeemailaddress.com',
-
-    # ── SpamBox / SpamGourmet ─────────────────────────────────────────────────
-    'spambox.us', 'spambox.info', 'spambox.me', 'spambox.xyz',
-    'spamgourmet.com', 'spamgourmet.net', 'spamgourmet.org',
-
-    # ── Dispostable / Filzmail ────────────────────────────────────────────────
-    'dispostable.com', 'filzmail.com', 'filzmail.de',
-
-    # ── AnonBox / Incognito ───────────────────────────────────────────────────
-    'anonbox.net', 'incognitomail.com', 'incognitomail.net', 'incognitomail.org',
-    'anon-mail.de', 'anonymbox.com', 'anonymail.dk',
-
-    # ── Mohmal ────────────────────────────────────────────────────────────────
-    'mohmal.com', 'mohmal.im', 'mohmal.tech', 'mohmal.in',
-
-    # ── Harakiri / Mailexpire ─────────────────────────────────────────────────
-    'harakirimail.com', 'mailexpire.com', 'suicidesquad.email',
-
-    # ── EmailOnDeck / OwlyMail ────────────────────────────────────────────────
-    'emailondeck.com', 'owlymail.com', 'inboxalias.com',
-
-    # ── DropMail ──────────────────────────────────────────────────────────────
-    'dropmail.me', 'emailwarden.com', 'inbox.ml',
-
-    # ── Jetable ───────────────────────────────────────────────────────────────
-    'jetable.com', 'jetable.fr', 'jetable.net', 'jetable.org',
-    'jetable.pp.ua', 'jetable.me', 'jetable.info',
-    'no-spam.ws', 'nospam.ze.tc',
-
-    # ── Spamfree / Spamhere ───────────────────────────────────────────────────
-    'spamfree24.org', 'spamfree.eu', 'spamfree247.com',
-    'spamhere.net', 'spamhereplease.com', 'spamherelots.com',
-    'spam.la', 'spaml.de', 'spaml.com', 'spam4.me', 'spamcon.org',
-    'spamfighter.cf', 'spamfighter.ga', 'spamgoes.in',
-    'spamkill.info', 'spaml.de', 'spamtrail.com',
-
-    # ── BurnerMail / Wegwerfmail ──────────────────────────────────────────────
-    'burnermail.io', 'burner.kiwi', 'burn.im',
-    'wegwerfadresse.de', 'wegwerfmail.de', 'wegwerfmail.net',
-    'wegwerfmail.org', 'zehnminuten.de', 'wetrash.com',
-
-    # ── GetairMail / InboxBear ────────────────────────────────────────────────
-    'getairmail.com', 'airmail.in', 'inboxbear.com',
-    'inboxkitten.com', 'inboxalias.com',
-
-    # ── Anonaddy / SimpleLogin / Mask services ────────────────────────────────
-    'anonaddy.com', 'anonaddy.me',
-    'simplelogin.co', 'simplelogin.io', 'simplelogin.fr',
-    'relay.firefox.com', 'mozmail.com',
-    'duck.com', 'duckmail.sytes.net',
-
-    # ── CrazyMailing / Spamevader ─────────────────────────────────────────────
-    'crazymailing.com', 'spamevader.com', 'spamgob.com',
-
-    # ── Misc: Spambob / Dontsendmespam / Spamavert ───────────────────────────
-    'spambob.net', 'spambob.org', 'spambob.com',
-    'dontsendmespam.de', 'spamavert.com', 'sogetthis.com',
-    'mailzilla.com', 'mailzilla.org', 'sendspamhere.com',
-    'yourspam.info', 'notsharingmy.info',
-    'spamoff.de', 'spamgoes.in', 'spam.la',
-
-    # ── E4ward / Trbvm / Armyspy ─────────────────────────────────────────────
-    'e4ward.com', 'trbvm.com', 'armyspy.com', 'cuvox.de',
-    'dayrep.com', 'einrot.com', 'fleckens.hu', 'gustr.com',
-    'ieh-mail.de', 'jassi.de', 'klzlk.com', 'pecinan.com',
-    'rhyta.com', 'superrito.com', 'teleworm.us', 'zetmail.com',
-    'chacuo.net', 'soodonims.com', 'daintly.com', 'winemaven.info',
-
-    # ── MailDeveloper / EzMail / Trash-me ────────────────────────────────────
-    'maildeveloper.com', 'ezmail.ro', 'trash-me.com',
-    'trash.email', 'trashmail.live', 'trashmail.top',
-    'trash2009.com', 'trash2010.com', 'trash2011.com',
-
-    # ── Lastmail / Tempsky / Nope ─────────────────────────────────────────────
-    'lastmail.co', 'nope.cl', 'deagot.com', 'bspamfree.org',
-    # ── User-reported disposable domains ──────────────────────────────────────
-    'brajraj.org',
-
-    # ── Korean / Japanese / Chinese disposable ────────────────────────────────
-    'spambox.jp', 'trashmail.jp', 'mailtemp.jp', 'mt2014.com', 'mt2015.com',
-    'tempmail.cn', 'mailtemp.cn',
-
-    # ── Guerrilla / Yopmail aliases ───────────────────────────────────────────
-    'mejjang.com', 'yopmail.gq', 'yopmail.ml', 'yopmail.cf',
-
-    # ── Inboxkitten / Kitten.email ────────────────────────────────────────────
-    'inboxkitten.com', 'kitten.email', 'cat.email',
-
-    # ── Temp email quick-service ──────────────────────────────────────────────
-    'mailtemp.org', 'mailtemp.eu', 'mailtemp.de',
-    'mailtemp.net', 'mailtemp.us', 'mailtemp.co',
-    'tempemail.com', 'tempemail.org', 'tempemail.net',
-    'emailtemporar.ro', 'emailtemporare.com',
-    'emailtemp.org', 'emailtemp.net', 'emailtemp.de',
-
-    # ── GuerrillaMail community aliases ──────────────────────────────────────
-    'solarunity.eu', 'breakthru.com', 'springfield.me',
-    'slingshot.com', 'barricade.com', 'myfastmail.com',
-    'throwam.com', 'thrma.com', 'thraml.com',
-
-    # ── TempEMail / QuickMail / FastMail disposable ───────────────────────────
-    'quickmail.nl', 'quickinbox.com', 'instant-mail.de',
-    'instantemailaddress.com', 'instantmail.fr', 'instantbox.co',
-
-    # ── German disposable (Wegwerf*) ──────────────────────────────────────────
-    'wegwerf-email.de', 'wegwerf-email.net', 'wegwerf-email.at',
-    'wegwerf-email.org', 'wegwerfemail.de', 'wegwerfemail.at',
-    'wegwerfmail.info', 'wegwerfnummer.de',
-
-    # ── MailDrop / OneClick / TempBox ────────────────────────────────────────
-    'tempbox.com', 'tempbox.me', 'tempbox.org',
-    'mailtemp.info', 'mailfort.de', 'mailseal.de',
-    'mailshuttle.com', 'mailslapping.com', 'mailsnull.com',
-
-    # ── OTC / OPM disposable ──────────────────────────────────────────────────
-    'mailpipe.me', 'mailprotech.com', 'mailquack.com',
-    'mailrock.biz', 'mailrox.com', 'mailsac.com',
-    'mailseal.de', 'mailshuttle.com', 'mailslapping.com',
-    'mailsnull.com', 'mailssource.com', 'mailstash.com',
-    'mailsucker.net', 'mailtemp.eu', 'mailtome.de',
-    'mailzapper.com', 'mailzeug.de',
-
-    # ── Various extra ─────────────────────────────────────────────────────────
-    'nwytg.com', 'nwytg.net', 'pjjkp.com',
-    'savetoemail.com', 'se7en.ws', 'selfdestructingmail.com',
-    'sendspamhere.com', 'skeefmail.com', 'smellfear.com',
-    'smwg.info', 'snakemail.com', 'sneakemail.com',
-    'sneakmail.de', 'snkmail.com', 'sofimail.com',
-    'solliver.com', 'spam.la', 'spamcon.org',
-    'spamcorpse.com', 'spamday.com', 'spamfighter.cf',
-    'spamgoes.in', 'spaminator.de', 'spammotel.com',
-    'spammy.host', 'spamnot.de', 'spamoff.de',
-    'spampoison.com', 'spamspot.com', 'spamthis.co.uk',
-    'spamthisplease.com', 'spamtrash.ru', 'spamvault.net',
-    'spamwc.com', 'spaml.com', 'spamlab.com',
-    'spoofmail.de', 'squizzy.de', 'stuffmail.de',
-    'suremail.info', 'svk.jp', 'sweetxxx.de',
-    'tafmail.com', 'tagyourself.com', 'talkinator.com',
-    'teewars.org', 'tele2mail.com', 'teleworm.com',
-    'tempinbox.co.uk', 'tempomail.fr', 'temporaryinbox.com',
-    'thankyou2010.com', 'thc.st', 'thecloudindex.com',
-    'thisisnotmyrealemail.com', 'thismail.net', 'thismail.ru',
-    'throwam.com', 'tilien.com', 'tittbit.in',
-    'tmail.io', 'tmail.ws', 'tmailinator.com',
-    'tmailinator.net', 'tmails.net', 'tokuriders.co.jp',
-    'toomail.biz', 'toprumours.com', 'topranklist.de',
-    'tradermail.info', 'trashcanmail.com', 'trashmail.at',
-    'trashmail.me', 'trashymail.com', 'treatcancer.com',
-    'trh.dk', 'tryalert.com', 'turual.com',
-    'twinmail.de', 'tyldd.com', 'ufacturing.com',
-    'uggsrock.com', 'uroid.com', 'utt.com',
-    'valemail.net', 'venompen.com', 'veryrealemail.com',
-    'viditag.com', 'viewcastmedia.com', 'viewcastmedia.net',
-    'vinernet.com', 'vip-mail.ga', 'vipepe.com',
-    'vkcode.ru', 'vlmail.com', 'vomoto.com',
-    'vpn.st', 'vsimcard.com', 'vubby.com',
-    'w3internet.co.uk', 'warnme.ga', 'wasteland.rfc822.org',
-    'watch-dog.net', 'wc.pilotsbeachclub.com', 'webm4il.info',
-    'webposter.us', 'wetrash.com', 'whyspam.me',
-    'willhackforfood.biz', 'wilemail.com', 'willselfdestruct.com',
-    'winemaven.info', 'wispo.net', 'wmailonline.com',
-    'wollan.info', 'writeme.us', 'wronghead.com',
-    'wuzup.net', 'wuzupmail.net', 'xagloo.com',
-    'xemaps.com', 'xents.com', 'xmaily.com',
-    'xnmail.com', 'xoiox.com', 'xoxy.net',
-    'xyzfree.net', 'yabbe.de', 'yapped.net',
-    'yeah.net', 'yep.it', 'yogamaven.com',
-    'yomail.info', 'yopmail.pp.ua', 'yourdomain.com',
-    'yourmailtoday.com', 'ypmail.webarnak.fr.eu.org',
-    'yuurok.com', 'z1p.biz', 'za.com',
-    'zebins.com', 'zebins.eu', 'zehnminuten.de',
-    'zep.it', 'zetmail.com', 'zippymail.info',
-    'zoaxe.com', 'zoemail.net', 'zoemail.org',
-    'zomail.org', 'zombos.com', 'zooglemail.com',
-    'zopqwhgqdn.com', 'zxcvbnm.co',     'zzi.us',
-}
+# ── Versioned disposable / temporary email domain registry ────────────────────
+_DISPOSABLE_DOMAIN_SOURCE, DISPOSABLE_REGISTRY_METADATA = load_disposable_registry()
 
 PRIVACY_RELAY_DOMAINS = frozenset({
     "anonaddy.com", "anonaddy.me", "duck.com", "duckmail.sytes.net",
     "mozmail.com", "relay.firefox.com", "simplelogin.co", "simplelogin.fr",
     "simplelogin.io", "privaterelay.appleid.com", "private.icloud.com",
 })
-_REGISTRY_DOMAIN_RE = re.compile(
-    r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
-    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z"
-)
-DISPOSABLE_DOMAINS = frozenset(
-    domain.strip().lower().rstrip(".")
-    for domain in _DISPOSABLE_DOMAIN_SOURCE
-    if _REGISTRY_DOMAIN_RE.fullmatch(domain.strip().lower().rstrip("."))
-) - PRIVACY_RELAY_DOMAINS
+DISPOSABLE_DOMAINS = _DISPOSABLE_DOMAIN_SOURCE - PRIVACY_RELAY_DOMAINS
 
 _DISPOSABLE_DOMAIN_PATTERNS = tuple(re.compile(pattern) for pattern in (
     r"^(?:temp|temporary)-?(?:mail|email|inbox|box)\d*$",
@@ -604,6 +359,7 @@ MODEL_METRICS = {
 
 # ── Global optional model state ───────────────────────────────────────────────
 _content_model_error: str | None = None
+_content_model_artifact_sha256: str | None = None
 
 def normalize_homoglyphs(text: str) -> str:
     """Convert typosquatting characters back to normal letters."""
@@ -1221,7 +977,7 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    global _content_pipeline, _content_model_error
+    global _content_pipeline, _content_model_error, _content_model_artifact_sha256
     if SETTINGS.content_model_enabled:
         if not SETTINGS.content_model_artifact or not SETTINGS.content_model_artifact_sha256:
             _content_pipeline = None
@@ -1229,6 +985,7 @@ async def lifespan(_app: FastAPI):
                 "Content ML is enabled but CONTENT_MODEL_ARTIFACT and "
                 "CONTENT_MODEL_ARTIFACT_SHA256 are not both configured."
             )
+            _content_model_artifact_sha256 = None
         else:
             try:
                 _content_pipeline = load_content_pipeline_artifact(
@@ -1236,33 +993,65 @@ async def lifespan(_app: FastAPI):
                     SETTINGS.content_model_artifact_sha256,
                 )
                 _content_model_error = None
+                _content_model_artifact_sha256 = SETTINGS.content_model_artifact_sha256.lower()
                 print("Loaded verified offline email-content model artifact.")
             except ValueError as exc:
                 _content_pipeline = None
                 _content_model_error = f"Content-model artifact rejected: {exc}"
+                _content_model_artifact_sha256 = None
                 print(_content_model_error)
             except Exception as exc:
                 _content_pipeline = None
                 _content_model_error = (
                     f"Content-model artifact unavailable ({type(exc).__name__})."
                 )
+                _content_model_artifact_sha256 = None
                 print(_content_model_error)
     else:
         _content_pipeline = None
         _content_model_error = None
+        _content_model_artifact_sha256 = None
         print("Content ML disabled; verified heuristic and message-structure analysis remain available.")
     yield
 
 
 app = FastAPI(title="Phishing Email Detector", version="2.0.0", lifespan=lifespan)
 
-allowed_hosts = [
-    host.strip()
-    for host in os.getenv(
-        "ALLOWED_HOSTS", "*.onrender.com,localhost,127.0.0.1,testserver"
-    ).split(",")
-    if host.strip()
-]
+
+def _build_allowed_hosts(base_hosts: str, custom_domains: str = "") -> list[str]:
+    """Merge configured deployment hosts and custom domains without duplicates."""
+    hosts: list[str] = []
+    for host in base_hosts.split(","):
+        normalized = host.strip().lower().rstrip(".")
+        if normalized and normalized not in hosts:
+            hosts.append(normalized)
+
+    custom_host_re = re.compile(
+        r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*"
+        r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z"
+    )
+    for host in custom_domains.split(","):
+        raw_host = host.strip().lower()
+        if not raw_host:
+            continue
+        normalized = raw_host.rstrip(".")
+        if (
+            not normalized
+            or len(normalized) > 253
+            or not custom_host_re.fullmatch(normalized)
+        ):
+            raise ValueError(
+                "CUSTOM_DOMAINS entries must be hostnames without a URL scheme, port, or path"
+            )
+        if normalized not in hosts:
+            hosts.append(normalized)
+    return hosts
+
+
+allowed_hosts = _build_allowed_hosts(
+    os.getenv("ALLOWED_HOSTS", "*.onrender.com,localhost,127.0.0.1,testserver"),
+    os.getenv("CUSTOM_DOMAINS", ""),
+)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
 app.add_middleware(RequestBodyLimitMiddleware, max_bytes=MAX_REQUEST_BYTES)
 
@@ -1380,6 +1169,11 @@ async def health():
             "model_loaded": _content_pipeline is not None,
             "content_model_loaded": _content_pipeline is not None,
             "content_model_error": _content_model_error,
+            "content_model_artifact_sha256": _content_model_artifact_sha256,
+            "content_model_id": (
+                f"sha256:{_content_model_artifact_sha256[:12]}"
+                if _content_model_artifact_sha256 else None
+            ),
             "model_data_source": (
                 _content_pipeline.get("metrics", {}).get("data_source")
                 if _content_pipeline is not None else None
@@ -1413,6 +1207,11 @@ async def get_metrics():
             "metrics":     m,
             "data_source": m.get("data_source", ""),
             "top_terms":   _content_pipeline["top_terms"],
+            "artifact_sha256": _content_model_artifact_sha256,
+            "model_id": (
+                f"sha256:{_content_model_artifact_sha256[:12]}"
+                if _content_model_artifact_sha256 else None
+            ),
         }
     return JSONResponse(payload)
 

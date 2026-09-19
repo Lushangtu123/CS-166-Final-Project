@@ -24,7 +24,53 @@ import content_model
 from config import Settings
 
 
+class AllowedHostConfigurationTests(unittest.TestCase):
+    def test_custom_domains_are_merged_with_base_allowed_hosts(self):
+        builder = getattr(app, "_build_allowed_hosts", None)
+        self.assertIsNotNone(builder, "custom-domain host configuration is missing")
+
+        self.assertEqual(
+            builder(
+                "*.vercel.app,localhost",
+                "phishguard.example, www.phishguard.example,phishguard.example",
+            ),
+            [
+                "*.vercel.app",
+                "localhost",
+                "phishguard.example",
+                "www.phishguard.example",
+            ],
+        )
+
+    def test_custom_domains_reject_urls_and_paths(self):
+        invalid_domains = (
+            "https://phishguard.example/settings",
+            ".",
+            "a" * 250 + ".com",
+        )
+        for invalid in invalid_domains:
+            with self.subTest(domain=invalid), self.assertRaisesRegex(ValueError, "hostname"):
+                app._build_allowed_hosts("*.vercel.app,localhost", invalid)
+
+
 class VercelEntrypointTests(unittest.TestCase):
+    def test_committed_vercel_profile_has_a_runtime_smoke_test(self):
+        smoke_test = WEBSITE_DIR / "tests" / "vercel_runtime_smoke.py"
+        self.assertTrue(smoke_test.is_file(), "Vercel runtime smoke test is missing")
+
+        result = subprocess.run(
+            [sys.executable, str(smoke_test)],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout.splitlines()[-1])
+        self.assertTrue(payload["model_loaded"])
+        self.assertEqual(payload["verification_mode"], "lite")
+        self.assertIn(payload["risk_level"], {"high", "critical"})
+
     def test_root_entrypoint_starts_lite_profile_without_training_stack(self):
         environment = os.environ.copy()
         environment.update({
@@ -281,6 +327,20 @@ class RateLimitBoundaryTests(unittest.TestCase):
 
 
 class ContentModelArtifactTests(unittest.TestCase):
+    def test_metrics_identify_the_loaded_artifact(self):
+        pipeline = {
+            "metrics": {"model": "fixture"},
+            "top_terms": [],
+        }
+        with patch.object(app, "_content_pipeline", pipeline), patch.object(
+            app, "_content_model_artifact_sha256", "a" * 64, create=True
+        ):
+            payload = json.loads(asyncio.run(app.get_metrics()).body)
+
+        content_model = payload["content_model"]
+        self.assertEqual(content_model.get("artifact_sha256"), "a" * 64)
+        self.assertEqual(content_model.get("model_id"), "sha256:aaaaaaaaaaaa")
+
     def test_inference_runtime_does_not_import_pandas(self):
         code = (
             "import builtins; original=builtins.__import__; "
@@ -357,6 +417,8 @@ class ContentModelArtifactTests(unittest.TestCase):
         load_artifact.assert_called_once()
         self.assertTrue(payload["content_model_loaded"])
         self.assertIsNone(payload["content_model_error"])
+        self.assertEqual(payload.get("content_model_artifact_sha256"), "a" * 64)
+        self.assertEqual(payload.get("content_model_id"), "sha256:aaaaaaaaaaaa")
 
     def test_invalid_artifact_degrades_to_rules_without_failing_startup(self):
         artifact_settings = Settings(

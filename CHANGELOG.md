@@ -22,6 +22,36 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-18 18:28 PT] — Harden custom-domain and model deployment maintenance
+
+### Why
+- A custom Vercel domain was not part of the backend Host allow-list and would
+  be rejected after DNS attachment.
+- CI installed the broader training dependency set instead of independently
+  exercising the exact Vercel runtime, committed artifact, and Lite profile.
+- The disposable-provider list was embedded in application code without
+  version or provenance metadata, and deployed metrics did not identify their
+  exact model artifact.
+
+### Files changed
+- `website/app.py`, `.env.example`, and `vercel.json`: additive custom-domain
+  configuration, data-file bundling, and deployed artifact identity reporting.
+- `website/disposable_registry.py`, `website/data/disposable_domains.json`, and
+  `website/tools/build_disposable_registry.py`: validated versioned registry
+  loading and deterministic offline maintenance.
+- `.github/workflows/ci.yml` and `website/tests/vercel_runtime_smoke.py`: a
+  production-dependency CI job that loads and predicts with the real artifact.
+- Python regressions and README deployment guidance.
+
+### Effect
+- Operators can attach explicit custom domains without weakening the default
+  Vercel Host policy.
+- Dependency or artifact incompatibility fails CI before deployment, while
+  `/health` and `/api/metrics` identify the model that actually loaded.
+- All 466 existing registry entries are preserved in a reviewable data file;
+  future updates can record their source and version without editing detector
+  logic. Gmail/Outlook mailbox lifetime remains explicitly unobservable.
+
 ## [2026-09-18 17:50 PT] — Add an almost-full Vercel profile
 
 ### Why
