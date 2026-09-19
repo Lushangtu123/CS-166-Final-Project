@@ -123,6 +123,32 @@ test('DNS timeout remains unverifiable rather than an invalid mailbox', () => {
   assert.doesNotMatch(elements.get('verify-verdict').innerHTML, /Likely Invalid|records are real/i);
 });
 
+test('lite result presents domain evidence without claiming mailbox verification', () => {
+  const { context, elements } = loadFrontend();
+  context.renderVerifyResult({
+    email: 'user@example.com',
+    format_valid: true,
+    mx_found: true,
+    mx_records: [[10, 'mx.example.com']],
+    smtp_result: 'unavailable',
+    smtp_status: 'skipped',
+    smtp_message: 'SMTP mailbox probing is unavailable on this deployment.',
+    overall: 'domain_valid',
+    verification_complete: false,
+    domain_verification: { status: 'valid', complete: true },
+    mailbox_verification: { status: 'unavailable' },
+    spf: { found: true, policy: 'strict', message: 'Strict SPF.' },
+    dmarc: { found: true, policy: 'reject', message: 'Reject DMARC.' },
+    mx_ptr: { found: true, message: 'PTR found.' },
+    domain_age: { found: true, age_days: 365, message: 'Established domain.' },
+  });
+
+  assert.match(elements.get('vstep-smtp').className, /vstep-info/);
+  assert.match(elements.get('verify-verdict').innerHTML, /Domain Valid/);
+  assert.match(elements.get('verify-verdict').innerHTML, /mailbox.*not verified/i);
+  assert.doesNotMatch(elements.get('verify-verdict').innerHTML, /SMTP Accepted/);
+});
+
 test('incomplete analysis is not displayed as zero risk and cancels old animation', () => {
   const frames = [];
   const { context, elements } = loadFrontend({
@@ -409,6 +435,22 @@ test('enabling verification only exposes the idle controls', () => {
   assert.equal(elements.get('verify-idle').classList.contains('hidden'), false);
   assert.equal(elements.get('verify-loading').classList.contains('hidden'), true);
   assert.equal(elements.get('verify-result').classList.contains('hidden'), true);
+});
+
+test('lite verification exposes domain checks and explains unavailable SMTP', () => {
+  const { context, elements } = loadFrontend();
+  context.applyPublicConfig({
+    deployment_profile: 'production',
+    verification_mode: 'lite',
+    email_verification_enabled: true,
+    domain_verification_enabled: true,
+    smtp_verification_enabled: false,
+  });
+
+  assert.equal(elements.get('verify-idle').classList.contains('hidden'), false);
+  assert.equal(elements.get('verification-local-notice').classList.contains('hidden'), false);
+  assert.match(elements.get('verification-local-notice').textContent, /domain checks are enabled/i);
+  assert.match(elements.get('verification-local-notice').textContent, /SMTP mailbox probing is unavailable/i);
 });
 
 test('disposable status and low sender score have distinct neutral presentation', () => {

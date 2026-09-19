@@ -39,6 +39,8 @@ class SettingsTests(unittest.TestCase):
         env = os.environ.copy()
         for name in (
             "APP_ENV", "ENABLE_EMAIL_VERIFICATION",
+            "VERIFICATION_MODE", "ENABLE_DOMAIN_VERIFICATION",
+            "ENABLE_SMTP_VERIFICATION",
             "CONTENT_MODEL_ENABLED", "CONTENT_MODEL_ARTIFACT",
             "CONTENT_MODEL_ARTIFACT_SHA256", "TRUSTED_AUTHSERV_IDS",
         ):
@@ -89,6 +91,17 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIs(json.loads(result.stdout)["content_model_enabled"], False)
 
+    def test_public_lite_verification_enables_domain_checks_without_smtp(self):
+        settings = load_settings({
+            "APP_ENV": "production",
+            "VERIFICATION_MODE": "lite",
+        })
+
+        self.assertTrue(settings.enable_email_verification)
+        self.assertTrue(settings.domain_verification_enabled)
+        self.assertFalse(settings.smtp_verification_enabled)
+        self.assertEqual(settings.effective_verification_mode, "lite")
+
     def test_production_rejects_email_verification_opt_in(self):
         result = self.run_settings({
             "APP_ENV": "production",
@@ -115,6 +128,12 @@ class SettingsTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("ENABLE_EMAIL_VERIFICATION", result.stderr)
+
+    def test_invalid_verification_mode_is_rejected(self):
+        result = self.run_settings({"VERIFICATION_MODE": "almost"})
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("VERIFICATION_MODE", result.stderr)
 
     def test_unknown_app_environment_is_rejected(self):
         result = self.run_settings({"APP_ENV": "staging"})

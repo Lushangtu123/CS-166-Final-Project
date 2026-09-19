@@ -1,0 +1,25 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "fastapi",
+  "fluid": true,
+  "functions": {
+    "app.py": {
+      "maxDuration": 30,
+      "includeFiles": "website/model/**",
+      "excludeFiles": "{docs/**,website/tests/**,phishing-detection/**,**/*.test.py,**/*.test.mjs}"
+    }
+  },
+  "env": {
+    "APP_ENV": "production",
+    "PHISHGUARD_DEPLOYMENT_PROFILE": "vercel-free",
+    "VERIFICATION_MODE": "lite",
+    "VERIFICATION_WORKERS": "4",
+    "CONTENT_MODEL_ENABLED": "true",
+    "CONTENT_MODEL_ARTIFACT": "website/model/content_model_artifact.pkl",
+    "CONTENT_MODEL_ARTIFACT_SHA256": "d25fc27b8e00e02b6de99f47625edda562a874118307a19e3e1778039ac53631",
+    "RATE_LIMIT_PER_MINUTE": "10",
+    "RATE_LIMIT_BUCKET_CAPACITY": "1024",
+    "MAX_REQUEST_BYTES": "65536",
+    "ALLOWED_HOSTS": "*.vercel.app,localhost,127.0.0.1,testserver"
+  }
+}

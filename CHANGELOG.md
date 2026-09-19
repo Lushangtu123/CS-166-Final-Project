@@ -22,6 +22,62 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-18 17:50 PT] — Add an almost-full Vercel profile
+
+### Why
+- The public deployment disabled all network verification because SMTP mailbox
+  probing was unsuitable, even though bounded domain-level checks can run
+  independently.
+- The web runtime also needed a compact, prebuilt model path that did not import
+  the pandas-based training stack or train during service startup.
+
+### Files changed
+- `app.py`, `vercel.json`, `requirements.txt`, `.python-version`, and
+  `.vercelignore`: Vercel FastAPI entrypoint, runtime dependencies, bounded Lite
+  profile, and bundle controls.
+- `website/config.py`, `website/app.py`, and `website/static/app.js`: explicit
+  `off`/`lite`/`full` verification modes, separate domain/mailbox summaries,
+  configurable workers, and honest Lite-mode presentation.
+- `website/content_inference.py` and `website/model/content_model_artifact.pkl`:
+  runtime-only verified inference and a 3.4 MB Logistic Regression artifact.
+- Python and frontend tests plus README/design documentation: public contracts,
+  compatibility behavior, and deployment boundaries.
+
+### Effect
+- Vercel Lite mode runs format, MX/A/AAAA, SPF, DMARC, PTR, and best-effort
+  WHOIS checks without opening SMTP connections or claiming mailbox existence.
+- The deployed artifact is SHA-256 pinned (`d25fc27b...53631`), contains 24,000
+  training and 6,000 held-out samples after grouped splitting, and reports zero
+  train/test group overlap. Its held-out corpus metrics are model-development
+  evidence only, not a real-world phishing-accuracy claim.
+- Startup validates the artifact and loads inference without requiring pandas;
+  a rejected artifact degrades to the existing rule and structure analyzer.
+
+## [2026-09-18 10:30 PT] — Preserve equivalent message evidence and correct verification summaries
+
+### Why
+- Browser-readable slash/backslash URL variants and omitted HTML head end tags
+  could suppress otherwise detected message risk.
+- DNS TXT fragments and substring-based SPF/DMARC parsing produced incorrect
+  policy summaries; verification and sender analysis disagreed on address syntax.
+
+### Files changed
+- `website/app.py`: shared HTTP(S) destination normalization before base resolution,
+  incomplete malformed-target handling, implicit head recovery, TXT/policy parsing,
+  and shared address normalization for verification.
+- `website/tests/test_review_regressions.py`: equivalent-target, HTML visibility,
+  policy-record, and address-validation regressions with offline network fixtures.
+- `README.md`: documented recovery boundaries and policy-summary limitations.
+
+### Effect
+- Equivalent URL forms retain destination-host checks; malformed explicit
+  authorities do not silently inherit a base URL or claim complete analysis.
+- An omitted head end tag no longer hides body evidence; inert text remains hidden.
+- Fragmented TXT records retain policy values. Ambiguous/invalid recognized
+  policies remain inconclusive instead of receiving a successful policy verdict.
+- Verification uses canonical IDNA addresses while retaining submitted text for
+  display, and rejects unsupported address syntax before DNS.
+
 ## [2026-09-18 09:58 PT] — Make HTML recovery independent of Python parser tolerance
 
 ### Why

@@ -180,7 +180,60 @@ class ParserResourceTests(unittest.TestCase):
                                         for warning in result['message_structure']['parse_warnings']))
 
 
+class LinkNormalizationTests(unittest.TestCase):
+    def test_normalization_preserves_relative_links_and_query_boundaries(self):
+        for target in ('https:news', '/news', 'https://paypal.com/?next=\\example.org',
+                       'https://paypal.com\\@example.org/'):
+            with self.subTest(target=target):
+                body = '<base href="https://paypal.com/docs/"><a href="' + target + '">Read more</a>'
+                result = json.loads(asyncio.run(app.analyze_content_endpoint(app.ContentRequest(body=body))).body)
+                self.assertEqual(result['risk_level'], 'safe')
+                self.assertTrue(result['analysis_complete'])
+
+    def test_unparseable_web_targets_are_not_complete_analysis(self):
+        for target in ('https://', 'https://#notice', 'https://example.org:bad/', 'https://[bad/'):
+            for base in ('', '<base href="https://example.org/docs/">'):
+                with self.subTest(target=target, base=bool(base)):
+                    result = json.loads(asyncio.run(app.analyze_content_endpoint(
+                        app.ContentRequest(body=base + f'<a href="{target}">Read document</a>'))).body)
+                    self.assertFalse(result['analysis_complete'])
+                    self.assertTrue(any('destination' in warning for warning in result['analysis_warnings']))
+
+    def test_equivalent_web_targets_keep_the_same_host_risk(self):
+        for host, expected in (('paypal.com.evil.example', 'high'), ('paypal.com', 'safe')):
+            for prefix in ('https://', 'https:////', 'https:\\\\', '//', '////'):
+                for base in ('', '<base href="https://example.org/docs/">'):
+                    body = base + f'<a href="{prefix}{host}/">Review document</a>'
+                    for request in (app.ContentRequest(body=body), app.ContentRequest(
+                            raw_email='Content-Type: text/html\n\n' + body)):
+                        with self.subTest(host=host, prefix=prefix, base=bool(base), raw=bool(request.raw_email)):
+                            result = json.loads(asyncio.run(app.analyze_content_endpoint(request)).body)
+                            self.assertEqual(result['risk_level'], expected)
+                            self.assertTrue(result['analysis_complete'])
+
+
 class HtmlRecoveryTests(unittest.TestCase):
+    def test_implicit_head_end_keeps_metadata_and_inert_text_hidden(self):
+        risky = 'Act now. Enter your password immediately or your account will be suspended.'
+        for tag in ('title', 'script', 'style', 'template'):
+            body = f'<head><{tag}>{risky}</{tag}><body>The meeting is on Tuesday.</body>'
+            with self.subTest(tag=tag):
+                result = json.loads(asyncio.run(app.analyze_content_endpoint(app.ContentRequest(body=body))).body)
+                self.assertEqual(result['risk_level'], 'safe')
+                self.assertTrue(result['analysis_complete'])
+
+    def test_implicit_head_end_preserves_body_risk(self):
+        risky = 'Act now. Enter your password immediately or your account will be suspended.'
+        for text, expected in ((risky, 'high'), ('The meeting is on Tuesday.', 'safe')):
+            for boundary in ('</head><body>', '<body>', '<p>', ''):
+                body = '<html><head><title>Notice</title>' + boundary + text + '</p></body></html>'
+                for request in (app.ContentRequest(body=body), app.ContentRequest(
+                        raw_email='Content-Type: text/html\n\n' + body)):
+                    with self.subTest(boundary=boundary, expected=expected, raw=bool(request.raw_email)):
+                        result = json.loads(asyncio.run(app.analyze_content_endpoint(request)).body)
+                        self.assertEqual(result['risk_level'], expected)
+                        self.assertTrue(result['analysis_complete'])
+
     def test_recovery_does_not_depend_on_stdlib_raising(self):
         original = app.HTMLParser.parse_html_declaration
 
@@ -266,15 +319,63 @@ class AmountResourceTests(unittest.TestCase):
 
 
 class VerificationSemanticsTests(unittest.TestCase):
+    def test_public_config_separates_domain_and_mailbox_capabilities(self):
+        settings = Settings(
+            app_env='production',
+            enable_email_verification=True,
+            verification_mode='lite',
+        )
+
+        with patch.object(app, 'SETTINGS', settings):
+            result = json.loads(asyncio.run(app.get_public_config()).body)
+
+        self.assertEqual(result['verification_mode'], 'lite')
+        self.assertTrue(result['domain_verification_enabled'])
+        self.assertFalse(result['smtp_verification_enabled'])
+        self.assertTrue(result['email_verification_enabled'])
+
+    def test_verification_and_sender_validation_agree_on_addresses(self):
+        with patch.object(app, 'SETTINGS', Settings(app_env='development', enable_email_verification=True)):
+            for email, domain in (
+                ('user@example.com', 'example.com'),
+                ('user@example.com.', 'example.com'),
+                ('user@例子.公司', 'xn--fsqu00a.xn--55qx5d'),
+                ('user@xn--fsqu00a.xn--55qx5d', 'xn--fsqu00a.xn--55qx5d'),
+                ('user+tag@EXAMPLE.COM', 'example.com'),
+            ):
+                with self.subTest(email=email), patch('dns.resolver.resolve', return_value=[
+                        SimpleNamespace(preference=0, exchange='.')]) as resolve:
+                    sender = asyncio.run(app.analyze_email(app.EmailRequest(email=email)))
+                    result = json.loads(app.verify_email_endpoint(app.VerifyRequest(email=email)).body)
+                    self.assertEqual(sender.status_code, 200)
+                    self.assertTrue(result['format_valid'])
+                    self.assertEqual(result['email'], email)
+                    self.assertEqual(result['overall'], 'no_mail_service')
+                    self.assertEqual(resolve.call_args.args[0], domain)
+            for email in ('.user@example.com', 'user.@example.com', 'user@-example.com',
+                          'user@example-.com', 'user..tag@example.com', 'a@example.com,b@example.com'):
+                with self.subTest(email=email), patch('dns.resolver.resolve',
+                        side_effect=AssertionError('Invalid input must not query DNS')) as resolve:
+                    with self.assertRaises(app.HTTPException):
+                        asyncio.run(app.analyze_email(app.EmailRequest(email=email)))
+                    result = json.loads(app.verify_email_endpoint(app.VerifyRequest(email=email)).body)
+                    self.assertFalse(result['format_valid'])
+                    self.assertEqual(result['overall'], 'invalid_format')
+                    resolve.assert_not_called()
+
     def verify(self, reply=(250, b'2.1.5 Accepted'), *, mx=None, whois_error=None, dns_error_kind=None,
-               address_answers=None):
+               address_answers=None, txt_records=None, email='user@example.com', settings=None):
         import dns.resolver
         import dns.exception
+        import dns.rdata
         def resolve(_name, kind, **_kwargs):
             if kind == dns_error_kind:
                 raise dns.exception.Timeout
             if kind == 'MX':
                 return mx if mx is not None else [SimpleNamespace(preference=0, exchange='mx.example.com.')]
+            if kind == 'TXT' and txt_records is not None:
+                key = 'dmarc' if str(_name).startswith('_dmarc.') else 'spf'
+                return [dns.rdata.from_text('IN', 'TXT', record) for record in txt_records.get(key, [])]
             if address_answers is not None and kind in {'A', 'AAAA'}:
                 if address_answers.get(kind):
                     return address_answers[kind]
@@ -282,13 +383,82 @@ class VerificationSemanticsTests(unittest.TestCase):
             if kind == 'A':
                 return ['8.8.8.8']
             raise dns.resolver.NoAnswer
-        with patch.object(app, 'SETTINGS', Settings(app_env='development', enable_email_verification=True)), \
+        settings = settings or Settings(app_env='development', enable_email_verification=True)
+        with patch.object(app, 'SETTINGS', settings), \
              patch('dns.resolver.resolve', side_effect=resolve), \
              patch('whois.whois', return_value=SimpleNamespace(creation_date=None), side_effect=whois_error), \
              patch('smtplib.SMTP') as smtp:
             smtp.return_value.rcpt.return_value = reply
-            result = json.loads(app.verify_email_endpoint(app.VerifyRequest(email='user@example.com')).body)
+            result = json.loads(app.verify_email_endpoint(app.VerifyRequest(email=email)).body)
             return result, smtp.called
+
+    def test_lite_mode_verifies_domain_without_contacting_smtp(self):
+        settings = Settings(
+            app_env='production',
+            enable_email_verification=True,
+            verification_mode='lite',
+        )
+
+        result, contacted = self.verify(settings=settings)
+
+        self.assertFalse(contacted)
+        self.assertEqual(result['overall'], 'domain_valid')
+        self.assertEqual(result['domain_verification']['status'], 'valid')
+        self.assertTrue(result['domain_verification']['complete'])
+        self.assertEqual(result['mailbox_verification']['status'], 'unavailable')
+        self.assertEqual(result['smtp_status'], 'skipped')
+        self.assertFalse(result['verification_complete'])
+
+    def test_split_txt_records_keep_their_policy(self):
+        for records in (
+            {'spf': ['"v=spf1 -all"'], 'dmarc': ['"v=DMARC1; p=reject"']},
+            {'spf': ['"v=spf1 -" "all"'], 'dmarc': ['"v=DMARC1; p=" "reject"']},
+        ):
+            with self.subTest(records=records):
+                result, _ = self.verify(txt_records=records)
+                self.assertEqual(result['spf']['policy'], 'strict')
+                self.assertEqual(result['dmarc']['policy'], 'reject')
+                self.assertTrue(result['verification_complete'])
+
+    def test_spf_policy_uses_complete_mechanisms_in_order(self):
+        for txt, policy in (
+            ('v=spf1 -all', 'strict'), ('v=spf1 ~all', 'softfail'),
+            ('v=spf1 include:mail-all.example ~all', 'softfail'),
+            ('v=spf1 +all -all', 'open'), ('v=spf1 all', 'open'),
+            ('v=spf1 ?all -all', 'neutral'), ('v=spf1 -all +all', 'strict'),
+            ('v=spf1 redirect=mail-all.example', 'unknown'),
+        ):
+            with self.subTest(txt=txt):
+                result, _ = self.verify(txt_records={'spf': [json.dumps(txt)]})
+                self.assertEqual(result['spf']['policy'], policy)
+
+    def test_dmarc_policy_uses_tags_not_substrings(self):
+        for txt, expected in (
+            ('v=DMARC1; p = reject; pct = 25', 'reject'),
+            ('v=DMARC1; rua=mailto:p=reject@example.com; p=none', 'none'),
+        ):
+            with self.subTest(txt=txt):
+                result, _ = self.verify(txt_records={'dmarc': [json.dumps(txt)]})
+                self.assertEqual(result['dmarc']['policy'], expected)
+                if expected == 'reject':
+                    self.assertEqual(result['dmarc']['pct'], 25)
+
+    def test_ambiguous_policy_records_do_not_claim_success(self):
+        for records in (
+            {'spf': ['"v=spf1 -all"', '"v=spf1 +all"']},
+            {'spf': ['"v=spf1 include: -all"']},
+            {'spf': ['"v=spf1 -all:example.com"']},
+            {'dmarc': ['"v=DMARC1; p=reject"', '"v=DMARC1; p=none"']},
+            {'dmarc': ['"v=DMARC1; p=reject; p=none"']},
+            {'dmarc': ['"v=DMARC1; p=reject; pct=101"']},
+            {'dmarc': ['"v=DMARC1; rua=mailto:p=reject@example.com"']},
+        ):
+            with self.subTest(records=records):
+                result, _ = self.verify(txt_records=records)
+                key = next(iter(records))
+                self.assertIsNone(result[key]['policy'])
+                self.assertEqual(result[key]['status'], 'error')
+                self.assertFalse(result['verification_complete'])
 
     def test_ipv6_implicit_mx_and_uncertain_address_lookups(self):
         result, contacted = self.verify(mx=[], address_answers={'AAAA': ['2606:4700:4700::1111']})

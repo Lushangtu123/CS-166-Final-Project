@@ -48,10 +48,21 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 BASE_DIR = Path(__file__).parent
 SETTINGS = load_settings()
 
-from content_model import (
-    load_content_pipeline_artifact,
-    predict_content,
-)
+
+def load_content_pipeline_artifact(path: Path, expected_sha256: str) -> dict:
+    """Load the optional scientific stack only when ML is enabled."""
+    from content_inference import load_content_pipeline_artifact as loader
+
+    return loader(path, expected_sha256)
+
+
+def predict_content(pipeline: dict, subject: str, body: str) -> dict:
+    """Run optional inference without importing training dependencies."""
+    from content_inference import predict_content as predictor
+
+    return predictor(pipeline, subject, body)
+
+
 from email_structure import (
     _PROTECTED_BRAND_DOMAINS,
     _confusable_skeleton,
@@ -1375,7 +1386,11 @@ async def health():
             ),
             "sender_analysis_method": "sender-domain-heuristics",
             "deployment_profile": SETTINGS.app_env,
-            "email_verification_enabled": SETTINGS.enable_email_verification,
+            "email_verification_enabled": SETTINGS.domain_verification_enabled,
+            "verification_mode": SETTINGS.effective_verification_mode,
+            "domain_verification_enabled": SETTINGS.domain_verification_enabled,
+            "smtp_verification_enabled": SETTINGS.smtp_verification_enabled,
+            "verification_workers": VERIFICATION_WORKERS,
         },
     )
 
@@ -1411,7 +1426,10 @@ async def get_features():
 async def get_public_config():
     return JSONResponse({
         "deployment_profile": SETTINGS.app_env,
-        "email_verification_enabled": SETTINGS.enable_email_verification,
+        "email_verification_enabled": SETTINGS.domain_verification_enabled,
+        "verification_mode": SETTINGS.effective_verification_mode,
+        "domain_verification_enabled": SETTINGS.domain_verification_enabled,
+        "smtp_verification_enabled": SETTINGS.smtp_verification_enabled,
         "content_model_enabled": SETTINGS.content_model_enabled,
         "full_version_local_only": True,
     })
@@ -1806,12 +1824,37 @@ def _has_ip_url(text: str, *, links=None) -> bool:
     return False
 
 
-def _parse_link_target(destination: str):
-    destination = destination.strip()
+def _parse_link_target(destination: str, *, base: str | None = None):
+    destination = re.sub(r'[\t\r\n]', '', destination.strip())
     destination = re.sub(r'^hxxp(s?)://', r'http\1://', destination, flags=re.IGNORECASE)
-    if destination.startswith('//'):
-        destination = 'https:' + destination
-    return urlparse(destination)
+    scheme = re.match(r'^([a-z][a-z0-9+.-]*):', destination, re.IGNORECASE)
+    if not scheme or scheme.group(1).lower() in {'http', 'https'}:
+        # HTTP(S) uses backslashes as separators, but not inside query/fragment.
+        # Normalize authority slashes BEFORE joining a base, otherwise urljoin
+        # can turn an external host into an apparently same-origin path.
+        pieces = re.split(r'([?#])', destination, maxsplit=1)
+        pieces[0] = pieces[0].replace('\\', '/')
+        destination = ''.join(pieces)
+        if scheme:
+            protocol = scheme.group(1).lower()
+            rest = destination[scheme.end():]
+            if not base or protocol != urlparse(base).scheme or rest.startswith('//'):
+                destination = protocol + '://' + rest.lstrip('/')
+        elif destination.startswith('//'):
+            destination = '//' + destination.lstrip('/')
+            if not base:
+                destination = 'https:' + destination
+    if (destination.startswith('//') or re.match(r'^https?://', destination, re.IGNORECASE)):
+        if not urlparse(destination).hostname:
+            raise ValueError('Explicit HTTP(S) authority has no host')
+    if base:
+        destination = urljoin(base, destination)
+    parsed = urlparse(destination)
+    if parsed.scheme in {'http', 'https'}:
+        if not parsed.hostname:
+            raise ValueError('HTTP(S) destination has no host')
+        _ = parsed.port  # Validate ports as well as bracketed address syntax.
+    return parsed
 
 
 def _link_host(parsed) -> str:
@@ -2050,7 +2093,10 @@ def _extract_links(text: str, *, parse_html: bool = True, parse_warnings=None) -
         for visible, destination in collector.links:
             try:
                 # Only resolve HTML targets, not unrelated plain-text URLs.
-                resolved = urljoin(base, destination) if base else destination
+                # Keep obfuscated schemes intact for their existing indicator.
+                resolved = (_parse_link_target(destination, base=base).geturl()
+                            if base and not re.match(r'^hxxps?:', destination, re.IGNORECASE)
+                            else destination)
             except ValueError:
                 resolved = destination  # Preserve malformed-target evidence.
             links.append((visible, resolved))
@@ -2100,7 +2146,7 @@ def _label_uses_brand_lookalike(label: str, brand: str) -> bool:
     return brand in compact
 
 
-def _analyze_link_destinations(text: str, *, links=None) -> tuple[int, list[dict], str]:
+def _analyze_link_destinations(text: str, *, links=None, parse_warnings=None) -> tuple[int, list[dict], str]:
     """Inspect actual link targets, including links with generic button text."""
     score = 0
     findings: list[dict] = []
@@ -2130,6 +2176,9 @@ def _analyze_link_destinations(text: str, *, links=None) -> tuple[int, list[dict
         try:
             parsed = _parse_link_target(url)
         except ValueError:
+            warning = 'A link destination could not be reliably parsed; analysis is incomplete.'
+            if parse_warnings is not None and warning not in parse_warnings:
+                parse_warnings.append(warning)
             if "malformed-target" not in finding_types:
                 score += 2
                 if risk_floor == "safe":
@@ -2281,24 +2330,37 @@ def _has_mismatched_link_text(text: str) -> bool:
 def _visible_content_text(text: str, parse_warnings=None) -> str:
     """Decode HTML text separately from destinations, preserving inline words."""
     class TextCollector(_AnalysisHTMLParser):
+        head_elements = {'html', 'head', 'base', 'basefont', 'bgsound', 'link',
+                         'meta', 'title', 'noscript', 'noframes', 'script', 'style', 'template'}
+
         def __init__(self):
             super().__init__(convert_charrefs=True)
             self.parts = []
             self.hidden = []
 
         def handle_starttag(self, tag, attrs):
-            if tag in {'script', 'style', 'head'}:
+            # A head end tag is optional: body content implicitly closes it.
+            # Do not do this inside title/script/style or inert template text.
+            if self.hidden == ['head'] and tag not in self.head_elements:
+                self.hidden.pop()
+            if tag == 'head' and 'head' in self.hidden:
+                return
+            if tag in {'script', 'style', 'head', 'title', 'template', 'noframes'}:
                 self.hidden.append(tag)
             if not self.hidden and tag in {'p', 'div', 'br', 'li', 'tr', 'td', 'hr', 'section'}:
                 self.parts.append(' ')
 
         def handle_endtag(self, tag):
+            if self.hidden == ['head'] and tag in {'body', 'html', 'br'}:
+                self.hidden.pop()
             if self.hidden and tag == self.hidden[-1]:
                 self.hidden.pop()
             if not self.hidden and tag in {'p', 'div', 'li', 'tr', 'td', 'section'}:
                 self.parts.append(' ')
 
         def handle_data(self, data):
+            if self.hidden == ['head'] and data.strip():
+                self.hidden.pop()
             if not self.hidden:
                 self.parts.append(data)
 
@@ -2423,7 +2485,8 @@ def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] 
 
     # 3. Inspect every actual link target, even when its visible text is a
     # generic button such as "Review document".
-    link_score, link_findings, link_floor = _analyze_link_destinations(raw_text, links=links)
+    link_score, link_findings, link_floor = _analyze_link_destinations(
+        raw_text, links=links, parse_warnings=analysis_warnings)
     total_score += link_score
     extra_indicators.extend(link_findings)
     floor_rank = {'safe': 0, 'low': 1, 'medium': 2, 'high': 3, 'critical': 4}
@@ -2760,7 +2823,13 @@ from concurrent.futures import TimeoutError as FutureTimeout, wait as futures_wa
 from verification_runtime import BoundedExecutor
 
 VERIFICATION_TIMEOUT = 12.0
-_verification_pool = BoundedExecutor(workers=10)
+try:
+    VERIFICATION_WORKERS = int(os.getenv("VERIFICATION_WORKERS", "10"))
+except ValueError as exc:
+    raise ValueError("VERIFICATION_WORKERS must be an integer") from exc
+if not 1 <= VERIFICATION_WORKERS <= 32:
+    raise ValueError("VERIFICATION_WORKERS must be between 1 and 32")
+_verification_pool = BoundedExecutor(workers=VERIFICATION_WORKERS)
 
 
 class VerifyRequest(BaseModel):
@@ -2898,22 +2967,38 @@ def _check_spf(domain: str) -> dict:
     import dns.resolver, dns.exception
     result = {"found": False, "record": None, "policy": None, "message": "", "status": "not_found"}
     try:
-        for r in dns.resolver.resolve(domain, "TXT", lifetime=5):
-            txt = r.to_text().strip('"')
-            if txt.startswith("v=spf1"):
+        records = [b''.join(r.strings).decode('ascii', errors='replace')
+                   for r in dns.resolver.resolve(domain, 'TXT', lifetime=5)]
+        records = [txt for txt in records if re.match(r'^v=spf1(?:\s|$)', txt, re.IGNORECASE)]
+        if len(records) > 1:
+            raise ValueError('Multiple SPF records; policy is inconclusive')
+        for txt in records:
+            terms = txt.split()
+            if terms and terms[0].lower() == 'v=spf1':
+                # Validate local term shapes before summarizing the first all.
+                # This does not expand macros or evaluate include/redirect.
+                mechanism = (r'[+?~-]?(?:all|(?:include|exists):\S+|'
+                             r'(?:a|mx)(?::\S+|/[0-9]+(?://[0-9]+)?|//[0-9]+)?|'
+                             r'ptr(?::\S+)?|ip[46]:\S+)')
+                modifier = r'[a-z][a-z0-9._-]*=\S+'
+                if any(not re.fullmatch(mechanism + '|' + modifier, term, re.IGNORECASE)
+                       for term in terms[1:]):
+                    raise ValueError('Malformed or unsupported SPF mechanism')
                 result['status'] = 'ok'
                 result["found"]  = True
                 result["record"] = txt[:250]
-                if "-all" in txt:
+                all_term = next((term.lower() for term in terms[1:]
+                                 if re.fullmatch(r'[+?~-]?all', term, re.IGNORECASE)), None)
+                if all_term == '-all':
                     result["policy"]  = "strict"
                     result["message"] = "Strict policy (-all): unauthorized senders are rejected."
-                elif "~all" in txt:
+                elif all_term == '~all':
                     result["policy"]  = "softfail"
                     result["message"] = "Soft-fail policy (~all): unauthorized senders are flagged but not blocked."
-                elif "?all" in txt:
+                elif all_term == '?all':
                     result["policy"]  = "neutral"
                     result["message"] = "Neutral policy (?all): no enforcement — spoofing possible."
-                elif "+all" in txt:
+                elif all_term in {'+all', 'all'}:
                     result["policy"]  = "open"
                     result["message"] = "Open policy (+all): ANY server may send — high spoofing risk!"
                 else:
@@ -2940,31 +3025,35 @@ def _check_dmarc(domain: str) -> dict:
     result = {"found": False, "record": None, "policy": None, "pct": None, "message": "", "status": "not_found"}
     try:
         dmarc_domain = f"_dmarc.{domain}"
-        for r in dns.resolver.resolve(dmarc_domain, "TXT", lifetime=5):
-            txt = r.to_text().strip('"')
-            if "v=DMARC1" in txt:
-                result['status'] = 'ok'
-                result["found"]  = True
-                result["record"] = txt[:250]
-                m_p   = re.search(r'\bp=(\w+)',   txt)
-                m_pct = re.search(r'\bpct=(\d+)', txt)
-                if m_p:
-                    p = m_p.group(1).lower()
-                    result["policy"] = p
-                    pct = int(m_pct.group(1)) if m_pct else 100
-                    result["pct"] = pct
-                    pct_str = f" (applied to {pct}% of messages)" if pct < 100 else ""
-                    if p == "reject":
-                        result["message"] = f"p=reject{pct_str}: unauthorized emails are rejected."
-                    elif p == "quarantine":
-                        result["message"] = f"p=quarantine{pct_str}: unauthorized emails go to spam."
-                    elif p == "none":
-                        result["message"] = f"p=none: monitoring only — no enforcement, spoofing possible."
-                    else:
-                        result["message"] = f"DMARC policy: {p}{pct_str}"
-                else:
-                    result["message"] = "DMARC record found but p= policy tag is missing."
-                break
+        records = [b''.join(r.strings).decode('ascii', errors='replace')
+                   for r in dns.resolver.resolve(dmarc_domain, 'TXT', lifetime=5)]
+        records = [txt for txt in records if re.match(r'^v\s*=\s*DMARC1\s*(?:;|$)', txt)]
+        if len(records) > 1:
+            raise ValueError('Multiple DMARC records; policy is inconclusive')
+        for txt in records:
+            result['found'] = True
+            result['record'] = txt[:250]
+            tags = {}
+            for field in txt.rstrip().rstrip(';').split(';'):
+                match = re.fullmatch(r'\s*([a-zA-Z][a-zA-Z0-9_]*)\s*=\s*(.*?)\s*', field)
+                if not match or match.group(1) in tags:
+                    raise ValueError('Malformed or duplicate DMARC tag')
+                tags[match.group(1)] = match.group(2)
+            p = tags.get('p')
+            if p not in {'reject', 'quarantine', 'none'}:
+                raise ValueError('Missing or invalid DMARC p= policy')
+            pct_text = tags.get('pct', '100')
+            if not re.fullmatch(r'[0-9]{1,3}', pct_text) or int(pct_text) > 100:
+                raise ValueError('DMARC pct must be between 0 and 100')
+            pct = int(pct_text)
+            result.update(status='ok', policy=p, pct=pct)
+            pct_str = f" (requested for {pct}% of messages)" if pct < 100 else ""
+            messages = {
+                'reject': f'p=reject{pct_str}: domain requests rejection of DMARC-failing messages.',
+                'quarantine': f'p=quarantine{pct_str}: domain requests quarantine of DMARC-failing messages.',
+                'none': 'p=none: monitoring only — no enforcement requested.',
+            }
+            result['message'] = messages[p]
         if not result["found"]:
             result["message"] = f"No DMARC record at _dmarc.{domain} — no anti-spoofing policy set."
     except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
@@ -3100,22 +3189,74 @@ def _lookup_mail_domain(domain: str, deadline: float) -> dict:
     return {**result, 'overall': 'likely_invalid', 'smtp_message': 'Domain has no MX, A, or AAAA records.'}
 
 
+def _summarize_verification(out: dict, *, smtp_enabled: bool) -> None:
+    """Add explicit domain/mailbox summaries without overstating evidence."""
+    domain_complete = False
+    if not out["format_valid"]:
+        domain_status = "invalid_format"
+    elif out["null_mx"]:
+        domain_status = "no_mail_service"
+    elif out["mx_found"]:
+        domain_checks = (out["spf"], out["dmarc"], out["domain_age"], out["mx_ptr"])
+        domain_complete = all(
+            info is not None and info.get("status") in {"ok", "not_found"}
+            for info in domain_checks
+        )
+        domain_status = "valid" if domain_complete else "partial"
+    elif out["overall"] == "likely_invalid":
+        domain_status = "invalid"
+    else:
+        domain_status = "unavailable"
+
+    if not smtp_enabled:
+        mailbox_status = "unavailable"
+        mailbox_reason = (
+            "SMTP mailbox probing is unavailable on this deployment; "
+            "domain evidence does not prove that the mailbox exists."
+        )
+    elif out["smtp_result"] == "exists":
+        mailbox_status = "accepted"
+        mailbox_reason = out["smtp_message"]
+    elif out["smtp_result"] == "does_not_exist":
+        mailbox_status = "rejected"
+        mailbox_reason = out["smtp_message"]
+    else:
+        mailbox_status = "inconclusive"
+        mailbox_reason = out["smtp_message"]
+
+    out["domain_verification"] = {
+        "status": domain_status,
+        "complete": domain_complete,
+        "mx_found": out["mx_found"],
+    }
+    out["mailbox_verification"] = {
+        "status": mailbox_status,
+        "reason": mailbox_reason,
+    }
+    out["verification_complete"] = (
+        domain_complete and mailbox_status in {"accepted", "rejected"}
+    )
+
+
 @app.post("/api/verify-email")
 def verify_email_endpoint(req: VerifyRequest):
     """
     Six-stage email authenticity check (stages 3-6 run in parallel):
       1. RFC 5321 format validation
       2. DNS MX (+ A/AAAA fallback) record lookup
-      3. SMTP RCPT TO mailbox probe   ┐
+      3. Optional SMTP RCPT TO probe  ┐
       4. SPF record & policy          ├─ parallel
       5. DMARC record & policy        │
       6. MX PTR / reverse-DNS         │
       7. Domain age (WHOIS)           ┘
     """
-    if not SETTINGS.enable_email_verification:
+    if not SETTINGS.domain_verification_enabled:
         raise HTTPException(
             status_code=404,
-            detail="Full email verification is disabled on public services. Run it locally to enable outbound checks.",
+            detail=(
+                "Domain verification is disabled in this deployment. "
+                "Enable Lite mode or run full SMTP checks locally."
+            ),
         )
 
     import dns.resolver
@@ -3141,18 +3282,23 @@ def verify_email_endpoint(req: VerifyRequest):
         "verification_complete": False,
     }
 
-    # ── Stage 1: Format ───────────────────────────────────────────────────────
-    _EMAIL_RE = re.compile(
-        r'^[a-zA-Z0-9!#$%&\'*+/=?^_`{|}~.\-]{1,64}'
-        r'@'
-        r'[a-zA-Z0-9.\-]{1,253}'
-        r'\.[a-zA-Z]{2,}$'
-    )
-    if not _EMAIL_RE.match(email) or ".." in email:
-        out["overall"]       = "invalid_format"
-        out["smtp_message"]  = "Email address does not conform to RFC 5321 format."
+    def respond():
+        _summarize_verification(
+            out,
+            smtp_enabled=SETTINGS.smtp_verification_enabled,
+        )
         return JSONResponse(out)
+
+    # ── Stage 1: Format ───────────────────────────────────────────────────────
+    normalized_email = _normalize_sender_address(email)
+    if not normalized_email:
+        out["overall"]       = "invalid_format"
+        out["smtp_message"]  = "Enter a single supported email address with an unquoted ASCII local part and a valid domain."
+        return respond()
     out["format_valid"] = True
+    # Retain the submitted address for display, but use the same canonical
+    # IDNA domain/address as sender analysis for DNS, WHOIS and SMTP checks.
+    email = normalized_email
     domain = email.split("@")[1].lower()
 
     # One deadline covers DNS discovery and every subsequent check.
@@ -3166,21 +3312,24 @@ def verify_email_endpoint(req: VerifyRequest):
         discovery.cancel()
         out['overall'] = 'unverifiable'
         out['smtp_message'] = 'DNS lookup timed out or was unavailable.'
-        return JSONResponse(out)
+        return respond()
     except Exception:
         out['overall'] = 'unverifiable'
         out['smtp_message'] = 'DNS lookup was unavailable.'
-        return JSONResponse(out)
+        return respond()
     if not out['mx_found']:
-        return JSONResponse(out)
+        return respond()
     mx_host = out['mx_records'][0][1]
     if time.monotonic() >= deadline:
         out['overall'] = 'unverifiable'
         out['smtp_message'] = 'Verification deadline reached after DNS lookup.'
-        return JSONResponse(out)
+        return respond()
 
     # No per-request context manager: its shutdown would wait past the deadline.
-    f_smtp = _verification_pool.submit(_smtp_probe, email, mx_host)
+    f_smtp = (
+        _verification_pool.submit(_smtp_probe, email, mx_host)
+        if SETTINGS.smtp_verification_enabled else None
+    )
     f_spf = _verification_pool.submit(_check_spf, domain)
     f_dmarc = _verification_pool.submit(_check_dmarc, domain)
     f_age = _verification_pool.submit(_check_domain_age, domain)
@@ -3200,8 +3349,16 @@ def verify_email_endpoint(req: VerifyRequest):
         except Exception:
             return {**fallback, 'status': 'error', 'message': 'Verification check failed; result unavailable.'}
 
-    probe        = safe_result(f_smtp,  {"connectable": False, "result": "unverifiable",
-                                          "message": "SMTP probe timed out."})
+    if SETTINGS.smtp_verification_enabled:
+        probe = safe_result(f_smtp, {"connectable": False, "result": "unverifiable",
+                                     "message": "SMTP probe timed out."})
+    else:
+        probe = {
+            "connectable": False,
+            "result": "unavailable",
+            "message": "SMTP mailbox probing is unavailable on this deployment.",
+            "status": "skipped",
+        }
     spf_info     = safe_result(f_spf,   {"found": False, "policy": None,
                                           "message": "SPF check timed out."})
     dmarc_info   = safe_result(f_dmarc, {"found": False, "policy": None,
@@ -3219,12 +3376,11 @@ def verify_email_endpoint(req: VerifyRequest):
     out["dmarc"]            = dmarc_info
     out["domain_age"]       = age_info
     out["mx_ptr"]           = ptr_info
-    out['verification_complete'] = all(
-        info.get('status') in {'ok', 'not_found'}
-        for info in (probe, spf_info, dmarc_info, age_info, ptr_info))
 
     # ── Overall verdict ───────────────────────────────────────────────────────
-    if probe["result"] == "exists":
+    if not SETTINGS.smtp_verification_enabled:
+        out["overall"] = "domain_valid"
+    elif probe["result"] == "exists":
         out["overall"] = "verified"
     elif probe["result"] == "does_not_exist":
         out["overall"] = "likely_invalid"
@@ -3243,7 +3399,7 @@ def verify_email_endpoint(req: VerifyRequest):
     if age_days is not None and age_days < 30 and out["overall"] != "likely_invalid":
         out["overall"] = "suspicious"
 
-    return JSONResponse(out)
+    return respond()
 
 
 if __name__ == "__main__":

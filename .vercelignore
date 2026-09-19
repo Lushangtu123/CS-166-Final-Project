@@ -1,0 +1,13 @@
+.cursor/
+.github/
+docs/
+phishing-detection/
+website/tests/
+**/__pycache__/
+*.py[cod]
+.env
+.venv/
+venv/
+CHANGELOG.md
+progress_report.md
+render.yaml

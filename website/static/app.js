@@ -361,15 +361,22 @@ let _publicConfig = {};
 
 function applyPublicConfig(config) {
   _publicConfig = config;
-  const enabled = config.email_verification_enabled === true;
+  const enabled = typeof config.domain_verification_enabled === 'boolean'
+    ? config.domain_verification_enabled
+    : config.email_verification_enabled === true;
+  const smtpEnabled = typeof config.smtp_verification_enabled === 'boolean'
+    ? config.smtp_verification_enabled
+    : enabled;
   _emailVerificationEnabled = enabled;
   const notice = document.getElementById('verification-local-notice');
   document.getElementById('verify-idle').classList.toggle('hidden', !enabled);
   ['verify-loading', 'verify-result'].forEach(id => {
     document.getElementById(id).classList.add('hidden');
   });
-  notice.classList.toggle('hidden', enabled);
-  if (enabled) {
+  notice.classList.toggle('hidden', enabled && smtpEnabled);
+  if (enabled && !smtpEnabled) {
+    notice.textContent = 'Domain checks are enabled. SMTP mailbox probing is unavailable on this deployment, so mailbox existence cannot be confirmed.';
+  } else if (enabled) {
     notice.textContent = '';
   } else if (config.deployment_profile === 'development' || config.deployment_profile === 'test') {
     notice.textContent = 'Network-based mailbox verification is disabled in this local configuration. Enable it in the local server settings and restart the service, then reload this page.';
@@ -488,6 +495,8 @@ function renderVerifyResult(data) {
     setStep('smtp', 'fail', smtpMsg);
   } else if (smtpResult === 'temporarily_unavailable') {
     setStep('smtp', 'warn', smtpMsg);
+  } else if (data.smtp_status === 'skipped' || data.mailbox_verification?.status === 'unavailable') {
+    setStep('smtp', 'info', smtpMsg || 'SMTP mailbox probing is unavailable on this deployment.');
   } else {
     setStep('smtp', 'warn',
       smtpMsg || (!data.smtp_connectable
@@ -543,10 +552,10 @@ function renderVerifyResult(data) {
     setStep('age', 'skip', age.message || 'WHOIS data unavailable.');
   }
 
-  showVerifyVerdict(data.overall, data.verification_complete);
+  showVerifyVerdict(data.overall, data.verification_complete, data);
 }
 
-function showVerifyVerdict(overall, complete) {
+function showVerifyVerdict(overall, complete, data = {}) {
   const VERDICTS = {
     verified:    { cls: 'vv-ok',      icon: 'check',
       text: 'SMTP Accepted — The mail server accepted this address. This does not guarantee mailbox existence, delivery, or sender authenticity.' },
@@ -558,6 +567,8 @@ function showVerifyVerdict(overall, complete) {
       text: 'Unverifiable — Available checks could not confirm mailbox existence. Review the DNS and SMTP details above; an unavailable or timed-out check does not prove the address is invalid.' },
     suspicious:  { cls: 'vv-suspicious', icon: 'bell',
       text: 'Suspicious — Domain was registered very recently (< 30 days). Newly registered domains are a hallmark of phishing campaigns.' },
+    domain_valid: { cls: 'vv-ok', icon: 'check',
+      text: 'Domain Valid — Mail-routing records exist and the available domain checks completed. The mailbox itself is not verified.' },
     invalid_format: { cls: 'vv-fail', icon: 'x',
       text: 'Invalid Format — This is not a valid email address.' },
     temporarily_unavailable: { cls: 'vv-warn', icon: 'alert',
@@ -567,7 +578,10 @@ function showVerifyVerdict(overall, complete) {
   const el  = document.getElementById('verify-verdict');
   const incomplete = complete === false;
   el.className  = 'verify-verdict ' + (incomplete && overall === 'verified' ? 'vv-warn' : cfg.cls);
-  const warning = incomplete ? ' Verification Incomplete — One or more checks failed, timed out, or could not run. See the individual results above.' : '';
+  const domainOnly = overall === 'domain_valid' && data.domain_verification?.complete === true;
+  const warning = incomplete && !domainOnly
+    ? ' Verification Incomplete — One or more checks failed, timed out, or could not run. See the individual results above.'
+    : '';
   el.innerHTML  = `${icon(cfg.icon, 'ico-lead')} <span>${cfg.text}${warning}</span>`;
 
   document.getElementById('verify-result').classList.remove('hidden');

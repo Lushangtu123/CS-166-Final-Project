@@ -8,7 +8,8 @@ screening. It supports three distinct workflows:
 
 - sender/domain risk analysis from an email address;
 - message analysis from subject/body text or a complete RFC 5322 `.eml` file;
-- optional, local-only DNS/SMTP/WHOIS authenticity checks.
+- public-safe DNS/MX/SPF/DMARC/PTR/WHOIS domain checks, with optional local
+  SMTP mailbox probing kept separate from domain evidence.
 
 The UCI Phishing Websites model in this repository is retained as a separate
 course benchmark. Its URL/HTML weights are **not** used as an email-sender
@@ -29,6 +30,9 @@ and the IP-domain detection examples remain supported.
 Sender-only and full-message checks use the same IDNA domain normalization.
 Unicode/Punycode spellings and a trailing root dot share the same scoring rules;
 the submitted address is retained in sender-only responses for display.
+The local verification endpoint uses the same address validation and normalization;
+DNS, SMTP, and WHOIS receive the canonical domain/address while responses retain
+the submitted address for display. Unsupported syntax is rejected before DNS.
 
 `POST /api/analyze-email` returns an explainable `risk_score`, not a trained
 probability. Signals include:
@@ -139,6 +143,9 @@ Unknown marked declarations such as `<![foo]>` explicitly trigger recovery,
 even on Python versions that would silently consume them as comments. Literal
 markers inside comments, quoted attributes, scripts, and styles do not trigger
 this check; supported CDATA and conditional declarations remain accepted.
+Visible-text extraction also handles an omitted `</head>` when body content
+begins, while retaining suppression of title, script/style, and template content.
+This is targeted recovery, not a complete browser DOM or CSS rendering engine.
 
 Encapsulated `message/rfc822` attachments (and parseable `message/global` parts)
 are analyzed as independent messages, including their subject, sender identity,
@@ -173,6 +180,10 @@ destination evidence. No link is fetched to perform these checks. Generic
 login/account words on an unrecognized hostname are weak context, not a standalone
 high-risk verdict; brand impersonation, userinfo deception, and explicit
 credential-collection wording retain stronger signals.
+HTTP(S) authority slash/backslash variants are normalized before resolving an
+HTML base URL, so equivalent destinations keep the same host checks. Unsupported
+or malformed HTTP(S) destinations produce incomplete-analysis warnings rather
+than silently disappearing. This normalization is not a full WHATWG URL engine.
 
 Text rules decode HTML entities, preserve words across inline tags, and normalize
 whitespace independently of destination analysis. Script/style/comment text is
@@ -239,11 +250,15 @@ CS-166-Final-Project/
 ├── website/
 │   ├── app.py                   # API and explainable content rules
 │   ├── content_model.py         # group-isolated optional text model
+│   ├── content_inference.py     # runtime-only verified artifact loader
 │   ├── email_structure.py       # RFC 5322/MIME/header analysis
 │   ├── config.py
 │   ├── prebuild_demo_model.py   # explicit offline artifact builder
 │   ├── static/
 │   └── tests/
+├── app.py                       # Vercel FastAPI entrypoint
+├── requirements.txt             # Vercel inference/runtime dependencies
+├── vercel.json                  # Vercel Lite-verification profile
 ├── render.yaml                  # safe rules/structure-only public demo
 └── CHANGELOG.md
 ```
@@ -255,7 +270,7 @@ CS-166-Final-Project/
 | `POST /api/analyze-email` | Explainable sender/domain risk |
 | `POST /api/analyze-content` | Subject/body or raw-message analysis |
 | `POST /api/analyze-eml` | Original MIME bytes, maximum 60,000 bytes |
-| `POST /api/verify-email` | Local-only network authenticity checks |
+| `POST /api/verify-email` | Lite domain checks or local full mailbox checks, depending on configuration |
 | `GET /api/metrics` | Archived UCI website benchmark and optional live text-model metrics |
 | `GET /api/config` | Public feature flags |
 | `GET /health` | Detector availability and deployment profile |
@@ -285,7 +300,11 @@ does not perform live SPF/DKIM/DMARC verification or expand the trust boundary.
 | Variable | Default | Purpose |
 |---|---:|---|
 | `APP_ENV` | `production` | `development`, `demo`, `production`, or `test` |
-| `ENABLE_EMAIL_VERIFICATION` | `false` | Enables outbound DNS/SMTP/WHOIS checks; rejected in public modes |
+| `VERIFICATION_MODE` | `off` | `off`, public-safe `lite`, or local-only `full` |
+| `ENABLE_EMAIL_VERIFICATION` | `false` | Legacy local full-mode switch; public full mode is rejected |
+| `ENABLE_DOMAIN_VERIFICATION` | `false` | Legacy-compatible switch for Lite domain checks when no explicit mode is set |
+| `ENABLE_SMTP_VERIFICATION` | `false` | Legacy-compatible full-mode switch; rejected in public profiles |
+| `VERIFICATION_WORKERS` | `10` | Bounded per-process verification jobs (`4` in the Vercel profile) |
 | `CONTENT_MODEL_ENABLED` | `false` | Loads a verified offline email-text artifact |
 | `CONTENT_MODEL_ARTIFACT` | empty | Path to the trusted artifact created by `prebuild_demo_model.py` |
 | `CONTENT_MODEL_ARTIFACT_SHA256` | empty | Required SHA-256 digest for the configured artifact |
@@ -301,6 +320,28 @@ The included Render blueprint explicitly sets `CONTENT_MODEL_ENABLED=false`
 and `ENABLE_EMAIL_VERIFICATION=false`. The public
 demo therefore starts reliably with sender, header, structure, and content-rule
 analysis, without presenting a synthetic model as production evidence.
+
+## Vercel Hobby deployment
+
+The repository root is a Vercel-native FastAPI project. Its committed profile
+uses one Fluid-compute Python Function, four bounded verification workers, and
+`VERIFICATION_MODE=lite`. Lite mode performs format, MX/A/AAAA, SPF, DMARC, PTR,
+and best-effort WHOIS checks. It never opens an SMTP connection and returns
+`overall=domain_valid` rather than claiming that the mailbox or sender is
+verified. The response separates `domain_verification` from
+`mailbox_verification`; the latter is `unavailable` on this profile.
+
+The Vercel runtime installs NumPy and scikit-learn for inference but not pandas.
+Training remains local-only. When `website/model/content_model_artifact.pkl` is
+present, `vercel.json` must contain its exact SHA-256 digest and enables the
+model. Startup verifies the digest plus Python/scikit-learn compatibility before
+deserializing. A rejected or missing artifact leaves rule and structure analysis
+available and reports the model error through `/health`.
+
+Deploy from the repository root with Vercel CLI 48.1.8 or newer, or import the
+Git repository in the Vercel dashboard. The deployment is intended for a
+personal/course demonstration; its in-memory limiter is per serverless instance,
+not a global abuse-control quota.
 
 For local research with the text model, train and package it before starting the
 web service:
@@ -369,6 +410,16 @@ describes check execution, not address validity. A fast caught exception therefo
 cannot produce a complete-verification claim. A partial result preserves any
 SMTP evidence and visibly warns “Verification Incomplete”. Early exits such as
 Null MX skip remaining checks and retain `verification_complete=false`.
+
+SPF/DMARC TXT fragments within a DNS record are concatenated without inserting
+spaces or display quotes. SPF summaries use complete mechanisms in order (including
+the implicit `+` in `all`), not substrings inside domain names. DMARC summaries
+read individual tags, not policy-looking text inside reporting addresses. Multiple
+policy records, recognized malformed SPF term shapes, duplicate DMARC tags, and
+invalid DMARC policy/percentage values report an error and incomplete verification.
+These are bounded policy summaries: they do not recursively evaluate SPF
+include/redirect, expand macros, implement full SPF syntax validation, or authenticate
+a particular message. DMARC organizational-domain policy discovery remains unsupported.
 DNS lookups use explicit lifetimes, WHOIS uses a 5-second socket timeout, and SMTP
 uses a per-probe deadline with socket cleanup. Running threads cannot be forcibly
 cancelled; they retain their capacity slot until they actually exit. The response

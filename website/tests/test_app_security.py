@@ -1,6 +1,8 @@
 import asyncio
 from collections import deque
 import json
+import os
+import subprocess
 import tempfile
 import threading
 import time
@@ -14,11 +16,45 @@ from fastapi import HTTPException
 
 
 WEBSITE_DIR = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = WEBSITE_DIR.parent
 sys.path.insert(0, str(WEBSITE_DIR))
 
 import app
 import content_model
 from config import Settings
+
+
+class VercelEntrypointTests(unittest.TestCase):
+    def test_root_entrypoint_starts_lite_profile_without_training_stack(self):
+        environment = os.environ.copy()
+        environment.update({
+            "APP_ENV": "production",
+            "VERIFICATION_MODE": "lite",
+            "CONTENT_MODEL_ENABLED": "false",
+            "VERIFICATION_WORKERS": "4",
+        })
+        code = (
+            "import asyncio,json,sys,app; backend=sys.modules['website.app']; "
+            "config=json.loads(asyncio.run(backend.get_public_config()).body); "
+            "print(json.dumps({'title': app.app.title, 'config': config, "
+            "'heavy': [name for name in ('pandas','numpy','sklearn') if name in sys.modules]}))"
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=PROJECT_ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["title"], "Phishing Email Detector")
+        self.assertEqual(payload["config"]["verification_mode"], "lite")
+        self.assertTrue(payload["config"]["domain_verification_enabled"])
+        self.assertFalse(payload["config"]["smtp_verification_enabled"])
+        self.assertEqual(payload["heavy"], [])
 
 
 class VerificationFeatureGateTests(unittest.TestCase):
@@ -156,6 +192,9 @@ class VerificationFeatureGateTests(unittest.TestCase):
         self.assertEqual(payload, {
             "deployment_profile": app.SETTINGS.app_env,
             "email_verification_enabled": False,
+            "verification_mode": "off",
+            "domain_verification_enabled": False,
+            "smtp_verification_enabled": False,
             "content_model_enabled": False,
             "full_version_local_only": True,
         })
@@ -242,6 +281,24 @@ class RateLimitBoundaryTests(unittest.TestCase):
 
 
 class ContentModelArtifactTests(unittest.TestCase):
+    def test_inference_runtime_does_not_import_pandas(self):
+        code = (
+            "import builtins; original=builtins.__import__; "
+            "builtins.__import__=lambda name,*a,**k: "
+            "(_ for _ in ()).throw(ImportError('pandas unavailable')) "
+            "if name == 'pandas' or name.startswith('pandas.') else original(name,*a,**k); "
+            "import content_inference; print('ok')"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=WEBSITE_DIR,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "ok")
+
     def test_artifact_round_trip_requires_matching_sha256(self):
         pipeline = {
             "vectorizer": "vectorizer-fixture",
@@ -255,10 +312,13 @@ class ContentModelArtifactTests(unittest.TestCase):
             digest = content_model.save_content_pipeline_artifact(pipeline, path)
 
             loaded = content_model.load_content_pipeline_artifact(path, digest)
+            from content_inference import load_content_pipeline_artifact
+            runtime_loaded = load_content_pipeline_artifact(path, digest)
             with self.assertRaises(ValueError) as error:
                 content_model.load_content_pipeline_artifact(path, "0" * 64)
 
         self.assertEqual(loaded, pipeline)
+        self.assertEqual(runtime_loaded, pipeline)
         self.assertIn("sha-256", str(error.exception).lower())
 
     def test_enabled_lifespan_loads_artifact_without_training(self):
