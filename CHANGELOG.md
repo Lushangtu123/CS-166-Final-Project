@@ -40,7 +40,8 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
   `website/tools/build_disposable_registry.py`: validated versioned registry
   loading and deterministic offline maintenance.
 - `.github/workflows/ci.yml` and `website/tests/vercel_runtime_smoke.py`: a
-  production-dependency CI job that loads and predicts with the real artifact.
+  production-dependency CI job that loads and predicts with the real artifact;
+  the general Python 3.13 matrix skips that Python 3.12-specific artifact smoke.
 - Python regressions and README deployment guidance.
 
 ### Effect

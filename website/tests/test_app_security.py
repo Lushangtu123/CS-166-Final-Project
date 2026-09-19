@@ -55,6 +55,12 @@ class AllowedHostConfigurationTests(unittest.TestCase):
 
 class VercelEntrypointTests(unittest.TestCase):
     def test_committed_vercel_profile_has_a_runtime_smoke_test(self):
+        deployment_python = (PROJECT_ROOT / ".python-version").read_text().strip()
+        current_python = f"{sys.version_info.major}.{sys.version_info.minor}"
+        if current_python != deployment_python:
+            self.skipTest(
+                f"Vercel artifact targets Python {deployment_python}, not {current_python}"
+            )
         smoke_test = WEBSITE_DIR / "tests" / "vercel_runtime_smoke.py"
         self.assertTrue(smoke_test.is_file(), "Vercel runtime smoke test is missing")
 
