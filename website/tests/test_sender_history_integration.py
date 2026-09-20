@@ -45,34 +45,34 @@ class SenderHistoryIntegrationTests(unittest.TestCase):
             app.analyze_content_endpoint(app.ContentRequest(raw_email=raw_email))
         ).body)
 
-    def test_sender_only_analysis_is_read_only_and_risk_neutral(self):
+    def test_sender_only_analysis_does_not_expose_the_service_history_or_touch_storage(self):
         store = _FakeHistoryStore()
         baseline = app._analyze_sender_address("alice@gmail.com")
 
         with patch.object(app, "_sender_history_store", store):
             result = self.analyze_sender("alice@gmail.com")
 
-        self.assertEqual(store.lookup_calls, ["alice@gmail.com"])
+        self.assertEqual(store.lookup_calls, [])
         self.assertEqual(store.observe_calls, [])
         self.assertEqual(result["risk_score"], baseline["risk_score"])
         self.assertEqual(
             result["account_observability"],
             "provider_account_unverifiable",
         )
-        self.assertEqual(result["sender_history_status"], "not_seen")
-        self.assertEqual(result["sender_history_scope"], "this_deployment_only")
+        self.assertEqual(result["sender_history_status"], "raw_message_required")
+        self.assertEqual(result["sender_history_scope"], "this_service_history")
+        self.assertNotIn("sender_first_seen_at", result)
+        self.assertNotIn("sender_last_seen_at", result)
+        self.assertNotIn("sender_seen_count", result)
 
-    def test_sender_history_uses_the_accepted_idna_and_root_dot_normalization(self):
+    def test_sender_only_analysis_never_queries_history_for_normalized_variants(self):
         store = _FakeHistoryStore()
 
         with patch.object(app, "_sender_history_store", store):
             self.analyze_sender("user@éxample.com")
             self.analyze_sender("alice@gmail.com.")
 
-        self.assertEqual(store.lookup_calls, [
-            "user@xn--xample-9ua.com",
-            "alice@gmail.com",
-        ])
+        self.assertEqual(store.lookup_calls, [])
 
     def test_raw_email_records_canonical_aliases_once(self):
         store = _FakeHistoryStore()
@@ -93,7 +93,13 @@ Here is the requested update.
         )
         self.assertEqual(store.lookup_calls, [])
         self.assertEqual(result["sender_analysis"]["sender_history_status"], "first_seen")
-        self.assertEqual(result["sender_analysis"]["sender_seen_count"], 1)
+        self.assertEqual(
+            result["sender_analysis"]["sender_history_scope"],
+            "this_service_history",
+        )
+        self.assertNotIn("sender_first_seen_at", result["sender_analysis"])
+        self.assertNotIn("sender_last_seen_at", result["sender_analysis"])
+        self.assertNotIn("sender_seen_count", result["sender_analysis"])
         self.assertEqual(result["total_score"], 0)
 
     def test_ambiguous_from_headers_observe_only_the_selected_riskiest_sender(self):
@@ -180,7 +186,7 @@ Your mailbox will be suspended. Confirm your password now at http://paypa1-secur
             result["sender_analysis"]["sender_history_status"],
             "previously_seen",
         )
-        self.assertEqual(result["sender_analysis"]["sender_seen_count"], 50)
+        self.assertNotIn("sender_seen_count", result["sender_analysis"])
 
     def test_disposable_and_privacy_relay_categories_are_not_account_age_claims(self):
         store = _FakeHistoryStore()

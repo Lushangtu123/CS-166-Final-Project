@@ -597,14 +597,11 @@ test('sender history reports a first observation without claiming provider accou
     ...senderResult('new.account@gmail.com'),
     account_observability: 'provider_account_unverifiable',
     sender_history_status: 'first_seen',
-    sender_first_seen_at: '2026-09-20T00:00:00Z',
-    sender_last_seen_at: '2026-09-20T00:00:00Z',
-    sender_seen_count: 1,
-    sender_history_scope: 'this_deployment_only',
+    sender_history_scope: 'this_service_history',
   });
 
-  assert.equal(elements.get('sender-history-label').textContent, 'First observed by this deployment');
-  assert.match(elements.get('sender-history-detail').textContent, /observed 1 time/i);
+  assert.equal(elements.get('sender-history-label').textContent, 'First observed by this service');
+  assert.doesNotMatch(elements.get('sender-history-detail').textContent, /observed 1 time/i);
   assert.match(elements.get('sender-history-detail').textContent, /Gmail account age cannot be verified/i);
   assert.doesNotMatch(elements.get('sender-history-detail').textContent, /new account|account created/i);
 });
@@ -615,16 +612,27 @@ test('sender history distinguishes a previous observation from sender safety', (
   context.renderResult({
     ...senderResult('billing@outlook.com'),
     sender_history_status: 'previously_seen',
-    sender_first_seen_at: '2026-09-01T12:30:00Z',
-    sender_last_seen_at: '2026-09-20T00:00:00Z',
-    sender_seen_count: 12,
-    sender_history_scope: 'this_deployment_only',
+    sender_history_scope: 'this_service_history',
     account_observability: 'provider_account_unverifiable',
   });
 
-  assert.equal(elements.get('sender-history-label').textContent, 'Observed previously by this deployment');
-  assert.match(elements.get('sender-history-detail').textContent, /observed 12 times/i);
+  assert.equal(elements.get('sender-history-label').textContent, 'Observed previously by this service');
+  assert.doesNotMatch(elements.get('sender-history-detail').textContent, /observed 12 times/i);
   assert.match(elements.get('sender-history-detail').textContent, /does not establish.*safe/i);
+});
+
+test('address-only analysis explains that retained history requires a raw message', () => {
+  const { context, elements } = loadFrontend();
+
+  context.renderResult({
+    ...senderResult('alice@gmail.com'),
+    sender_history_status: 'raw_message_required',
+    sender_history_scope: 'this_service_history',
+    account_observability: 'provider_account_unverifiable',
+  });
+
+  assert.equal(elements.get('sender-history-label').textContent, 'Available with full-message analysis');
+  assert.match(elements.get('sender-history-detail').textContent, /does not query retained sender history/i);
 });
 
 test('unavailable sender history never renders a false zero-count claim', () => {
@@ -633,8 +641,7 @@ test('unavailable sender history never renders a false zero-count claim', () => 
   context.renderResult({
     ...senderResult('user@example.com'),
     sender_history_status: 'unavailable',
-    sender_seen_count: null,
-    sender_history_scope: 'this_deployment_only',
+    sender_history_scope: 'this_service_history',
     account_observability: 'unknown',
   });
 
@@ -654,16 +661,13 @@ test('raw-message results surface the observed sender history', () => {
       email: 'new.account@outlook.com',
       account_observability: 'provider_account_unverifiable',
       sender_history_status: 'first_seen',
-      sender_first_seen_at: '2026-09-20T00:00:00Z',
-      sender_last_seen_at: '2026-09-20T00:00:00Z',
-      sender_seen_count: 1,
-      sender_history_scope: 'this_deployment_only',
+      sender_history_scope: 'this_service_history',
     },
   });
 
   assert.equal(
     elements.get('content-sender-history-label').textContent,
-    'First observed by this deployment',
+    'First observed by this service',
   );
   assert.match(elements.get('content-sender-history-detail').textContent, /Outlook account age cannot be verified/i);
 });

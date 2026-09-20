@@ -13,6 +13,7 @@ sys.path.insert(0, str(WEBSITE_DIR))
 from config import load_settings
 from sender_history import (
     DisabledSenderHistoryStore,
+    SenderHistoryResult,
     UpstashSenderHistoryStore,
     build_sender_history_store,
     canonicalize_sender_address,
@@ -60,6 +61,19 @@ class SenderIdentityTests(unittest.TestCase):
         self.assertTrue(first.startswith("sender-history:v1:"))
         self.assertNotIn("alice", first)
         self.assertNotIn("gmail", first)
+
+    def test_public_history_contract_is_coarse_and_service_scoped(self):
+        payload = SenderHistoryResult(
+            status="previously_seen",
+            first_seen_at="2026-09-01T00:00:00Z",
+            last_seen_at="2026-09-20T00:00:00Z",
+            seen_count=12,
+        ).as_dict()
+
+        self.assertEqual(payload, {
+            "sender_history_status": "previously_seen",
+            "sender_history_scope": "this_service_history",
+        })
 
 
 class SenderHistoryStoreTests(unittest.TestCase):
@@ -187,6 +201,58 @@ class SenderHistoryStoreTests(unittest.TestCase):
                 self.assertIsNone(result.seen_count)
                 self.assertNotIn("token-value", result.error or "")
                 self.assertNotIn("alice", result.error or "")
+
+    def test_distributed_rate_limit_uses_an_opaque_key_and_returns_retry_after(self):
+        captured = []
+        responses = iter((
+            _Response([{"result": [1, 60]}]),
+            _Response([{"result": [11, 37]}]),
+        ))
+
+        def opener(request, timeout):
+            captured.append((json.loads(request.data.decode("utf-8")), timeout))
+            return next(responses)
+
+        store = UpstashSenderHistoryStore(self.settings(), opener=opener)
+        allowed = asyncio.run(store.check_rate_limit(
+            "203.0.113.9:/api/analyze-content", limit=10, window_seconds=60,
+        ))
+        blocked = asyncio.run(store.check_rate_limit(
+            "203.0.113.9:/api/analyze-content", limit=10, window_seconds=60,
+        ))
+
+        self.assertTrue(allowed.allowed)
+        self.assertEqual(allowed.retry_after, 0)
+        self.assertFalse(blocked.allowed)
+        self.assertEqual(blocked.retry_after, 37)
+        body = json.dumps(captured[0][0])
+        self.assertIn('"EVAL"', body)
+        self.assertIn('"10"', body)
+        self.assertIn('"60"', body)
+        self.assertNotIn("203.0.113.9", body)
+        self.assertNotIn("analyze-content", body)
+        self.assertEqual(captured[0][1], 0.5)
+
+    def test_distributed_rate_limit_fails_open_when_upstash_is_unavailable(self):
+        store = UpstashSenderHistoryStore(
+            self.settings(),
+            opener=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                URLError("token-value")
+            ),
+        )
+
+        decision = asyncio.run(store.check_rate_limit(
+            "203.0.113.9:/api/analyze-content", limit=10, window_seconds=60,
+        ))
+
+        self.assertIsNone(decision)
+
+    def test_disabled_store_skips_distributed_rate_limiting(self):
+        decision = asyncio.run(DisabledSenderHistoryStore().check_rate_limit(
+            "203.0.113.9:/api/analyze-content", limit=10, window_seconds=60,
+        ))
+
+        self.assertIsNone(decision)
 
     def test_builder_uses_disabled_store_for_missing_or_invalid_configuration(self):
         disabled = build_sender_history_store(load_settings({"APP_ENV": "test"}))

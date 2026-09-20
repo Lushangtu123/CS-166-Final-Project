@@ -2,8 +2,8 @@
 
 ## Objective
 
-Add deployment-local sender history so the application can distinguish a
-Gmail or Outlook sender that this deployment has never observed from one it
+Add service-retained sender history so the application can distinguish a
+Gmail or Outlook sender that this service has never observed from one it
 has observed repeatedly. The history is context only: it must not claim to
 know an account's provider-side creation date, intended lifetime, ownership,
 or legitimacy.
@@ -22,6 +22,7 @@ This change will:
 - expose bounded history and account-observability fields in raw-email results;
 - distinguish provider-account observability from disposable-provider status;
 - render the new information as neutral context in the web interface;
+- use the same opaque-key Upstash boundary for a distributed public-API limit;
 - add configuration, privacy, unit, integration, and frontend regression tests;
 - document Vercel/Upstash setup and behavior when storage is unavailable.
 
@@ -100,9 +101,9 @@ retention obligations.
 
 ### Sender-only analysis
 
-`POST /api/analyze-email` continues to analyze the address without recording an
-observation. When history is enabled it may perform a read-only lookup. Manual
-address entry must not allow callers to inflate a sender's history.
+`POST /api/analyze-email` continues to analyze the address without recording or
+looking up an observation. It returns `raw_message_required` so an anonymous
+caller cannot use the address form as an arbitrary service-history lookup.
 
 ### Raw-email analysis
 
@@ -129,10 +130,7 @@ Sender analysis gains these fields:
 {
   "account_observability": "provider_account_unverifiable",
   "sender_history_status": "first_seen",
-  "sender_first_seen_at": "2026-09-19T20:30:00Z",
-  "sender_last_seen_at": "2026-09-19T20:30:00Z",
-  "sender_seen_count": 1,
-  "sender_history_scope": "this_deployment_only"
+  "sender_history_scope": "this_service_history"
 }
 ```
 
@@ -146,17 +144,17 @@ Sender analysis gains these fields:
 `sender_history_status` values:
 
 - `first_seen`: the atomic observation created the record;
-- `previously_seen`: the deployment observed the sender before;
-- `not_seen`: a read-only lookup found no record;
+- `previously_seen`: the service observed the sender before;
+- `raw_message_required`: address-only analysis intentionally skipped history;
 - `disabled`: history was intentionally not configured;
 - `unavailable`: configured storage failed or timed out;
 
 When no valid sender mailbox is available, raw-message output omits
 `sender_analysis` and no history request is made.
 
-Timestamps and counts describe only observations submitted to this deployment.
-They do not describe provider-side account activity. Counts are capped in API
-output to prevent unbounded values from affecting clients.
+Exact observation timestamps and counts remain internal to the store and are
+not returned by the public API. The coarse status describes only observations
+submitted to this service, not provider-side account activity.
 
 ## Risk Semantics and User Interface
 
@@ -174,8 +172,9 @@ never reduce an existing score or suppress stronger evidence. In particular:
   phishing evidence.
 
 The frontend shows a separate **Sender history** row. Copy uses phrases such as
-“First observed by this deployment” and “Observed previously by this
-deployment.” Disabled or failed history does not show a misleading zero count.
+“First observed by this service” and “Observed previously by this service.”
+Address-only analysis explains that a complete message is required. Disabled or
+failed history does not show a misleading zero count.
 
 ## Failure and Abuse Handling
 
@@ -189,6 +188,9 @@ deployment.” Disabled or failed history does not show a misleading zero count.
 - HTTP redirects are rejected so the Upstash bearer token cannot leave the
   configured, validated `*.upstash.io` origin.
 - Existing request-size and rate-limit controls remain in force.
+- When Upstash is configured, POST requests also use a one-minute atomic
+  HMAC-keyed distributed limit; only an opaque client/path identifier is stored.
+  Storage failure falls back to the existing bounded in-process limit.
 - History remains informational because a public caller can submit fabricated
   raw messages. It is not an authentication or reputation authority.
 - A single raw message records only the selected highest-risk sender once,
@@ -196,9 +198,10 @@ deployment.” Disabled or failed history does not show a misleading zero count.
 
 ## Upstash Free-Plan Budget
 
-Each raw-message analysis uses at most one sender-history REST request and one
-atomic Redis operation. Sender-only lookups use at most one read operation. The design stores
-only a few integers per active pseudonymous sender and applies a 90-day TTL.
+Each public POST uses one distributed-limit REST request when Upstash is ready.
+A raw-message analysis that reaches the endpoint uses one additional sender-history
+request and atomic Redis operation. The design stores only a few integers per
+active pseudonymous sender or short-lived opaque rate-limit key and applies TTLs.
 
 If the free command quota is exhausted, only sender history becomes unavailable;
 the phishing detector remains operational. The application never upgrades a
@@ -214,7 +217,7 @@ existing implementation and then cover:
 3. distinct keys for distinct canonical addresses and secrets;
 4. configuration validation, including partial configuration and secret length;
 5. atomic first/previous observation behavior and TTL refresh;
-6. read-only sender analysis that does not increment history;
+6. address-only sender analysis that does not query or increment history;
 7. raw-email analysis recording only the selected canonical sender once;
 8. no record for invalid or missing sender headers;
 9. timeout, quota, malformed response, and network-error fail-open behavior;
@@ -224,6 +227,8 @@ existing implementation and then cover:
 12. frontend rendering and escaping for every history status;
 13. health/config output that reports capability without exposing secrets;
 14. Vercel runtime smoke behavior with history disabled by default.
+15. post-deploy smoke behavior against the public alias, including first and
+    repeated observations plus protected/non-JSON deployment responses.
 
 Focused tests run before the full backend and frontend suites. Final validation
 also includes Python compilation, JavaScript syntax, dependency consistency,
@@ -249,9 +254,11 @@ fake adapters. No test contacts a real Upstash database.
 - No raw email address or message data is persisted by the feature.
 - A first raw-email observation returns `first_seen`; the next returns
   `previously_seen` with an incremented count.
-- A sender-only query does not create or increment history.
+- A sender-only query does not query, create, or increment history.
 - Gmail/Outlook account age remains explicitly unverifiable.
 - History never changes the phishing risk score or lowers a stronger verdict.
 - Missing, invalid, slow, or exhausted storage never prevents analysis.
-- Existing API consumers remain compatible through additive nullable fields.
+- Existing clients remain compatible with the retained status and scope fields;
+  exact observation metadata is intentionally removed from the public contract.
+- Public history output omits exact timestamps and counts.
 - All focused and repository-wide checks pass.

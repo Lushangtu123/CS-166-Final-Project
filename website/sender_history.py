@@ -16,8 +16,8 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from config import Settings
 
 
-HISTORY_SCOPE = "this_deployment_only"
-MAX_PUBLIC_SEEN_COUNT = 1_000_000
+HISTORY_SCOPE = "this_service_history"
+MAX_RETAINED_SEEN_COUNT = 1_000_000
 _ALIAS_TAG_RE = re.compile(r"[a-z0-9._%+\-]+", re.IGNORECASE)
 
 
@@ -46,6 +46,15 @@ local values = redis.call('HMGET', KEYS[1], 'first_seen', 'last_seen', 'seen_cou
 return {created, values[1], values[2], values[3]}
 """.strip()
 
+_RATE_LIMIT_SCRIPT = """
+local count = redis.call('INCR', KEYS[1])
+if count == 1 then
+  redis.call('EXPIRE', KEYS[1], ARGV[2])
+end
+local ttl = redis.call('TTL', KEYS[1])
+return {count, ttl}
+""".strip()
+
 
 @dataclass(frozen=True)
 class SenderHistoryResult:
@@ -59,11 +68,14 @@ class SenderHistoryResult:
     def as_dict(self) -> dict:
         return {
             "sender_history_status": self.status,
-            "sender_first_seen_at": self.first_seen_at,
-            "sender_last_seen_at": self.last_seen_at,
-            "sender_seen_count": self.seen_count,
             "sender_history_scope": self.scope,
         }
+
+
+@dataclass(frozen=True)
+class RateLimitDecision:
+    allowed: bool
+    retry_after: int = 0
 
 
 def canonicalize_sender_address(address: str) -> str:
@@ -88,6 +100,13 @@ def sender_history_key(address: str, secret: str) -> str:
     return f"sender-history:v1:{digest}"
 
 
+def _rate_limit_key(identity: str, secret: str) -> str:
+    digest = hmac.new(
+        secret.encode("utf-8"), identity.encode("utf-8"), hashlib.sha256,
+    ).hexdigest()
+    return f"rate-limit:v1:{digest}"
+
+
 def _iso_timestamp(value: object) -> str:
     timestamp = int(value)
     return datetime.fromtimestamp(timestamp, timezone.utc).strftime(
@@ -102,7 +121,7 @@ def _available_result(status: str, values: list[object]) -> SenderHistoryResult:
     raw_count = int(count)
     if first_timestamp > last_timestamp or raw_count < 1:
         raise ValueError("Invalid sender-history record")
-    bounded_count = min(raw_count, MAX_PUBLIC_SEEN_COUNT)
+    bounded_count = min(raw_count, MAX_RETAINED_SEEN_COUNT)
     return SenderHistoryResult(
         status=status,
         first_seen_at=_iso_timestamp(first_timestamp),
@@ -120,6 +139,11 @@ class DisabledSenderHistoryStore:
 
     async def observe(self, _address: str) -> SenderHistoryResult:
         return SenderHistoryResult(status=self._status)
+
+    async def check_rate_limit(
+        self, _identity: str, *, limit: int, window_seconds: int,
+    ) -> RateLimitDecision | None:
+        return None
 
 
 class UpstashSenderHistoryStore:
@@ -200,6 +224,29 @@ class UpstashSenderHistoryStore:
                 status="unavailable",
                 error="Sender history is temporarily unavailable.",
             )
+
+    async def check_rate_limit(
+        self, identity: str, *, limit: int, window_seconds: int,
+    ) -> RateLimitDecision | None:
+        key = _rate_limit_key(identity, self._secret)
+        try:
+            values = await asyncio.to_thread(
+                self._execute,
+                [[
+                    "EVAL", _RATE_LIMIT_SCRIPT, "1", key,
+                    str(limit), str(window_seconds),
+                ]],
+            )
+            if not isinstance(values, list) or len(values) != 2:
+                raise ValueError("Invalid distributed rate-limit response")
+            count, ttl = (int(value) for value in values)
+            if count < 1 or ttl < 0:
+                raise ValueError("Invalid distributed rate-limit values")
+            if count <= limit:
+                return RateLimitDecision(allowed=True)
+            return RateLimitDecision(allowed=False, retry_after=max(1, ttl))
+        except Exception:
+            return None
 
 
 def build_sender_history_store(settings: Settings):

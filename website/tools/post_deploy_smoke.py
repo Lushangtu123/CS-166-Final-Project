@@ -6,6 +6,7 @@ import argparse
 import json
 from pathlib import Path
 from typing import Callable
+import uuid
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
@@ -59,7 +60,27 @@ def _request_json(
     opener: Callable = urlopen,
 ) -> dict:
     with opener(request, timeout=20) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+        final_url = response.geturl() if hasattr(response, "geturl") else request.full_url
+        expected_host = (urlsplit(request.full_url).hostname or "").lower()
+        final_host = (urlsplit(final_url).hostname or "").lower()
+        if final_host != expected_host:
+            raise RuntimeError(
+                f"{request.full_url} redirected away from the deployment host "
+                f"to {final_host or 'an unknown host'}"
+            )
+        content_type = str(response.headers.get("Content-Type", "")).lower()
+        if not content_type.startswith("application/json"):
+            raise RuntimeError(
+                f"{request.full_url} returned non-JSON content ({content_type or 'unknown'}); "
+                "the deployment may be protected or misrouted"
+            )
+        raw = response.read()
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"{request.full_url} did not return valid UTF-8 JSON"
+        ) from exc
     if not isinstance(payload, dict):
         raise RuntimeError(f"{request.full_url} did not return a JSON object")
     return payload
@@ -70,6 +91,8 @@ def validate_deployment(
     *,
     expected_model_sha256: str,
     opener: Callable = urlopen,
+    require_sender_history: bool = False,
+    history_probe_id: str | None = None,
 ) -> dict:
     """Check health, public flags, and positive/negative control predictions."""
     base_url = _validated_base_url(base_url)
@@ -89,6 +112,12 @@ def validate_deployment(
         raise RuntimeError(f"Deployment is not using Lite verification: {config!r}")
     if config.get("content_model_enabled") is not True:
         raise RuntimeError(f"Deployment does not expose content ML: {config!r}")
+    if require_sender_history:
+        for name, payload in (("health", health), ("config", config)):
+            if payload.get("sender_history_enabled") is not True:
+                raise RuntimeError(f"Sender history is not enabled in {name}: {payload!r}")
+            if payload.get("sender_history_available") is not True:
+                raise RuntimeError(f"Sender history is not available in {name}: {payload!r}")
 
     analysis = _request_json(Request(
         base_url + "/api/analyze-content",
@@ -122,6 +151,36 @@ def validate_deployment(
             )
         legitimate_results.append(legitimate)
 
+    sender_history_probe = "not_checked"
+    if require_sender_history:
+        probe_id = history_probe_id or uuid.uuid4().hex
+        sender = f"post-deploy-smoke-{probe_id}@example.com"
+
+        def observe(sequence: int) -> dict:
+            raw_email = (
+                f"From: Deployment Smoke <{sender}>\r\n"
+                "To: recipient@example.net\r\n"
+                "Subject: Sender history deployment check\r\n"
+                f"Message-ID: <{probe_id}-{sequence}@example.com>\r\n\r\n"
+                "This is a benign automated deployment check."
+            )
+            return _request_json(Request(
+                base_url + "/api/analyze-content",
+                data=json.dumps({"raw_email": raw_email}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            ), opener=opener)
+
+        first = observe(1).get("sender_analysis") or {}
+        second = observe(2).get("sender_analysis") or {}
+        if first.get("sender_history_status") != "first_seen":
+            raise RuntimeError(f"Sender-history first observation failed: {first!r}")
+        if second.get("sender_history_status") != "previously_seen":
+            raise RuntimeError(f"Sender-history repeat observation failed: {second!r}")
+        if second.get("sender_history_scope") != "this_service_history":
+            raise RuntimeError(f"Sender-history scope is incorrect: {second!r}")
+        sender_history_probe = second["sender_history_status"]
+
     return {
         "base_url": base_url,
         "model_id": health["content_model_id"],
@@ -129,6 +188,7 @@ def validate_deployment(
         "risk_level": analysis["risk_level"],
         "legitimate_risk_level": legitimate_results[0]["risk_level"],
         "legitimate_control_count": len(legitimate_results),
+        "sender_history_probe": sender_history_probe,
     }
 
 
@@ -140,10 +200,12 @@ def _expected_model_sha256() -> str:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", required=True)
+    parser.add_argument("--require-sender-history", action="store_true")
     args = parser.parse_args()
     result = validate_deployment(
         args.base_url,
         expected_model_sha256=_expected_model_sha256(),
+        require_sender_history=args.require_sender_history,
     )
     print(json.dumps(result, sort_keys=True))
 

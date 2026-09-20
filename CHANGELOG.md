@@ -22,6 +22,36 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-20 09:43 PT] — Harden sender history and production smoke checks
+
+### Why
+- Vercel's immutable deployment URL redirected anonymous GitHub Actions requests
+  to an SSO login page, so the post-deploy smoke parsed HTML as JSON and failed
+  even though the public production alias was healthy.
+- The public address-only endpoint exposed exact retained observation metadata,
+  and the in-process limiter could not enforce one quota across Vercel instances.
+
+### Files changed
+- `.github/workflows/post-deploy-smoke.yml`,
+  `website/tools/post_deploy_smoke.py`, and
+  `website/tests/test_post_deploy_smoke.py`: target the public production alias,
+  reject cross-host redirects and non-JSON responses with actionable errors, and
+  verify a unique sender transitions from `first_seen` to `previously_seen`.
+- `website/sender_history.py`, `website/app.py`, and related backend tests: add
+  an atomic HMAC-keyed Upstash rate-limit operation, retain the bounded local
+  fallback, remove address-only history lookups, and expose only coarse sender
+  history status and service scope.
+- `website/static/app.js`, `website/static/app.test.mjs`, `README.md`, and the
+  sender-history design: update privacy boundaries and replace deployment-local
+  wording with service-retained history semantics.
+
+### Effect
+- Deployment smoke checks no longer fail on Vercel's protected immutable URL and
+  now validate the live Upstash integration rather than configuration alone.
+- Public clients cannot query exact first/last-seen timestamps or observation
+  counts, and configured deployments share one short-lived POST limit across
+  serverless instances without storing raw client addresses.
+
 ## [2026-09-19 21:58 PT] — Add privacy-preserving sender observation history
 
 ### Why

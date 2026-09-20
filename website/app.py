@@ -48,6 +48,7 @@ from disposable_registry import load_disposable_registry, load_privacy_relay_reg
 from request_limits import RequestBodyLimitMiddleware
 from sender_history import (
     DisabledSenderHistoryStore,
+    SenderHistoryResult,
     build_sender_history_store,
     canonicalize_sender_address,
 )
@@ -1182,6 +1183,20 @@ async def security_middleware(request: Request, call_next):
                     headers={"Retry-After": "60"},
                 ))
 
+        distributed_decision = await _sender_history_store.check_rate_limit(
+            bucket_key,
+            limit=RATE_LIMIT_PER_MINUTE,
+            window_seconds=60,
+        )
+        if distributed_decision is not None and not distributed_decision.allowed:
+            return _with_security_headers(JSONResponse(
+                status_code=429,
+                content={"detail": "Too many requests; try again shortly"},
+                headers={
+                    "Retry-After": str(distributed_decision.retry_after),
+                },
+            ))
+
     return _with_security_headers(await call_next(request))
 
 
@@ -1368,21 +1383,22 @@ def _sender_account_observability(analysis: dict) -> str:
     return "unknown"
 
 
-async def _analyze_sender_with_history(
-    address: str,
-    *,
-    observe: bool,
-) -> dict:
+async def _analyze_and_observe_sender(address: str) -> dict:
+    """Analyze one raw-message sender and record one retained observation."""
     analysis = _analyze_sender_address(address)
     normalized_address = _normalize_sender_address(address)
     history_address = canonicalize_sender_address(normalized_address or address)
-    history = (
-        await _sender_history_store.observe(history_address)
-        if observe
-        else await _sender_history_store.lookup(history_address)
-    )
+    history = await _sender_history_store.observe(history_address)
     analysis["account_observability"] = _sender_account_observability(analysis)
     analysis.update(history.as_dict())
+    return analysis
+
+
+def _analyze_sender_without_history_lookup(address: str) -> dict:
+    """Analyze an address without exposing retained service-wide history."""
+    analysis = _analyze_sender_address(address)
+    analysis["account_observability"] = _sender_account_observability(analysis)
+    analysis.update(SenderHistoryResult(status="raw_message_required").as_dict())
     return analysis
 
 
@@ -1432,7 +1448,7 @@ async def analyze_email(request: EmailRequest):
             status_code=400,
             detail="Enter a single email address, such as user@example.com. Use Email Content to analyze a message.",
         )
-    return JSONResponse(await _analyze_sender_with_history(address, observe=False))
+    return JSONResponse(_analyze_sender_without_history_lookup(address))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2610,9 +2626,7 @@ async def _analyze_content(
                 key=lambda analysis: analysis["risk_score"],
             )
             sender_analysis = (
-                await _analyze_sender_with_history(
-                    selected_sender["email"], observe=True,
-                )
+                await _analyze_and_observe_sender(selected_sender["email"])
                 if observe_sender_history
                 else selected_sender
             )

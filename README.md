@@ -69,15 +69,17 @@ Review generated changes before committing them. Gmail and Outlook account age
 or intended lifetime cannot be inferred from an address alone; random-looking
 mailboxes remain heuristic suspicion rather than confirmed disposable accounts.
 
-An optional deployment-local observation history can add a second, independent
+An optional service-retained observation history can add a second, independent
 piece of context. Full raw-message analysis records that a canonical sender was
-observed; address-only analysis performs a read-only lookup. A first observation
-means only “not previously retained by this deployment” — it does **not** mean
+observed. Address-only analysis deliberately does not query retained history,
+preventing the public sender form from becoming an arbitrary history lookup.
+A first observation means only “not previously retained by this service” — it does **not** mean
 the Gmail, Outlook, or other provider account was newly created. Previous
 observation is also not a safety signal and never reduces phishing risk.
 
 The history store receives only an HMAC-SHA-256 identifier, timestamps, and a
-bounded count. Raw addresses and message content are not stored. Gmail dot
+bounded count. Public API responses expose only the coarse first/previous status,
+not exact observation timestamps or counts. Raw addresses and message content are not stored. Gmail dot
 aliases and valid plus tags share one history identity, records expire after 90
 days by default, and unavailable storage fails open without changing the detector
 verdict. Rotating `SENDER_HISTORY_HMAC_KEY` starts a new observation namespace;
@@ -370,7 +372,7 @@ does not perform live SPF/DKIM/DMARC verification or expand the trust boundary.
 | `CONTENT_MODEL_ARTIFACT` | empty | Path to the trusted artifact created by `prebuild_demo_model.py` |
 | `CONTENT_MODEL_ARTIFACT_SHA256` | empty | Required SHA-256 digest for the configured artifact |
 | `TRUSTED_AUTHSERV_IDS` | empty | Comma-separated authentication service IDs allowed to affect raw-message risk |
-| `SENDER_HISTORY_ENABLED` | `false` | Enables optional deployment-local sender observation history when all secrets are valid |
+| `SENDER_HISTORY_ENABLED` | `false` | Enables optional service-retained sender history and distributed API limiting when all secrets are valid |
 | `UPSTASH_REDIS_REST_URL` | empty | HTTPS REST endpoint for an Upstash Redis database (`*.upstash.io`) |
 | `UPSTASH_REDIS_REST_TOKEN` | empty | Server-side Upstash REST token; never expose or commit it |
 | `SENDER_HISTORY_HMAC_KEY` | empty | Private random key of at least 32 bytes used to derive opaque sender identifiers |
@@ -421,8 +423,10 @@ scheme or path. The default `*.vercel.app` allow-list remains active.
 
 Deploy from the repository root with Vercel CLI 48.1.8 or newer, or import the
 Git repository in the Vercel dashboard. The deployment is intended for a
-personal/course demonstration; its in-memory limiter is per serverless instance,
-not a global abuse-control quota.
+personal/course demonstration. It always keeps a bounded in-memory limiter; when
+the optional Upstash configuration is ready, POST requests also use an atomic,
+HMAC-keyed distributed limit shared by Vercel instances. Upstash failure fails
+open to the existing local limiter so detection remains available.
 
 ### Optional free sender-history store
 
@@ -449,9 +453,10 @@ than treating an absent result as “never seen.”
 
 Vercel production `deployment_status` events run
 `.github/workflows/post-deploy-smoke.yml`. The workflow checks out the deployed
-revision and validates `/health`, `/api/config`, the exact model ID, a phishing
-positive control, and a legitimate negative control against the HTTPS
-`*.vercel.app` deployment URL.
+revision and validates `/health`, `/api/config`, the exact model ID, phishing and
+legitimate controls, and a unique first/previous sender-history probe against the
+public production alias. It rejects cross-host redirects and non-JSON responses,
+so Vercel SSO pages cannot be mistaken for application health output.
 
 For local research with the text model, train and package it before starting the
 web service:

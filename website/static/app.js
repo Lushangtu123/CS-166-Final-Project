@@ -672,14 +672,9 @@ function renderSenderHistory(data, prefix = '') {
   const label = document.getElementById(id('sender-history-label'));
   const detail = document.getElementById(id('sender-history-detail'));
   const status = data.sender_history_status || 'disabled';
-  const count = Number.isInteger(data.sender_seen_count) ? data.sender_seen_count : null;
-  const countText = count == null ? '' : `Observed ${count} ${count === 1 ? 'time' : 'times'} by this deployment. `;
   const providerCaveat = data.account_observability === 'provider_account_unverifiable'
-    ? `${senderProviderName(data.email)} account age cannot be verified from the address or this deployment's history. `
+    ? `${senderProviderName(data.email)} account age cannot be verified from the address or this service's retained history. `
     : '';
-  const firstSeen = typeof data.sender_first_seen_at === 'string'
-    ? data.sender_first_seen_at.slice(0, 10)
-    : null;
 
   card.classList.remove('hidden');
   row.className = 'sender-history-row';
@@ -687,16 +682,20 @@ function renderSenderHistory(data, prefix = '') {
 
   if (status === 'first_seen') {
     row.className += ' history-first';
-    label.textContent = 'First observed by this deployment';
-    detail.textContent = `${countText}${providerCaveat}This is deployment-local evidence, not an account-creation date.`;
+    label.textContent = 'First observed by this service';
+    detail.textContent = `${providerCaveat}This is retained service history, not an account-creation date.`;
   } else if (status === 'previously_seen') {
     row.className += ' history-seen';
-    label.textContent = 'Observed previously by this deployment';
-    detail.textContent = `${countText}${firstSeen ? `First retained observation: ${firstSeen}. ` : ''}${providerCaveat}Prior observation does not establish that this sender or message is safe.`;
+    label.textContent = 'Observed previously by this service';
+    detail.textContent = `${providerCaveat}Prior observation does not establish that this sender or message is safe.`;
   } else if (status === 'not_seen') {
     row.className += ' history-first';
-    label.textContent = 'No prior observation in this deployment';
+    label.textContent = 'No prior observation in this service history';
     detail.textContent = `${providerCaveat}Absence from retained history does not prove that the provider account is new or unsafe.`;
+  } else if (status === 'raw_message_required') {
+    row.className += ' history-unavailable';
+    label.textContent = 'Available with full-message analysis';
+    detail.textContent = `${providerCaveat}Address-only analysis does not query retained sender history. Upload a complete email to add and compare an observation.`;
   } else if (status === 'unavailable') {
     row.className += ' history-unavailable';
     label.textContent = 'Observation history unavailable';
@@ -704,7 +703,7 @@ function renderSenderHistory(data, prefix = '') {
   } else {
     row.className += ' history-unavailable';
     label.textContent = 'Observation history not enabled';
-    detail.textContent = 'This deployment is not recording privacy-preserving sender observations. No account-age claim is available.';
+    detail.textContent = 'This service is not recording privacy-preserving sender observations. No account-age claim is available.';
   }
 }
 

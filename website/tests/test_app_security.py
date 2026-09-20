@@ -340,6 +340,63 @@ class RateLimitBoundaryTests(unittest.TestCase):
         self.assertNotIn("old:/api/a", buckets)
         self.assertIn("third:/api/a", buckets)
 
+    def test_upstash_distributed_limit_blocks_across_serverless_instances(self):
+        class _BlockedStore:
+            def __init__(self):
+                self.calls = []
+
+            async def check_rate_limit(self, identity, *, limit, window_seconds):
+                self.calls.append((identity, limit, window_seconds))
+                return SimpleNamespace(allowed=False, retry_after=23)
+
+        async def request():
+            payload = json.dumps({"subject": "Hello", "body": "World"}).encode()
+            delivered = False
+            output = []
+            scope = {
+                "type": "http", "asgi": {"version": "3.0"},
+                "http_version": "1.1", "method": "POST", "scheme": "http",
+                "path": "/api/analyze-content",
+                "raw_path": b"/api/analyze-content", "root_path": "",
+                "query_string": b"",
+                "headers": [
+                    (b"host", b"localhost"),
+                    (b"content-type", b"application/json"),
+                ],
+                "client": ("203.0.113.9", 12345),
+                "server": ("localhost", 8000),
+            }
+
+            async def receive():
+                nonlocal delivered
+                if not delivered:
+                    delivered = True
+                    return {
+                        "type": "http.request", "body": payload,
+                        "more_body": False,
+                    }
+                return {"type": "http.disconnect"}
+
+            async def send(message):
+                output.append(message)
+
+            await app.app(scope, receive, send)
+            return next(
+                message for message in output
+                if message["type"] == "http.response.start"
+            )
+
+        store = _BlockedStore()
+        with patch.object(app, "_sender_history_store", store):
+            response = asyncio.run(request())
+
+        self.assertEqual(response["status"], 429)
+        headers = dict(response["headers"])
+        self.assertEqual(headers[b"retry-after"], b"23")
+        self.assertEqual(store.calls, [
+            ("203.0.113.9:/api/analyze-content", app.RATE_LIMIT_PER_MINUTE, 60),
+        ])
+
 
 class ContentModelArtifactTests(unittest.TestCase):
     def test_committed_model_abstains_on_unsupported_text_and_passes_hard_negatives(self):
