@@ -14,6 +14,7 @@ import numpy as np
 import sklearn
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.naive_bayes import ComplementNB
+from language_coverage import has_substantial_han_text
 
 
 ARTIFACT_SCHEMA = "phishguard-content-model-v1"
@@ -122,8 +123,19 @@ def predict_content(pipeline: dict, subject: str, body: str, *, canonical_text: 
             "ml_decision_threshold": round(threshold * 100, 1),
             "ml_top_contributors": [],
         }
-    features = pipeline["vectorizer"].transform([text])
-    if features.nnz == 0:
+    vectorizer = pipeline["vectorizer"]
+    features = vectorizer.transform([text])
+    # Subject features do not establish that a substantial, differently
+    # scripted body was represented by the fitted English-oriented model.
+    context_body = (
+        (body or "") if canonical_text
+        else re.sub(r"<[^>]*>", " ", unescape(body or ""))
+    )
+    uncovered_han_body = (
+        has_substantial_han_text(context_body)
+        and vectorizer.transform([context_body]).nnz == 0
+    )
+    if features.nnz == 0 or uncovered_han_body:
         return {
             "ml_status": "insufficient_feature_coverage",
             "ml_phishing_probability": None,

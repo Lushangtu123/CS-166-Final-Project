@@ -238,6 +238,79 @@ class HTMLInputCoverageTests(unittest.TestCase):
         self.assertEqual(result['remote_image_coverage']['count'], 20)
         self.assertEqual(result['inline_image_coverage']['count'], 0)
 
+    def test_vml_and_svg_image_references_are_disclosed(self):
+        text = ('<p>Hello team, the project meeting is Thursday morning. '
+                'Please bring your current progress notes and use the normal calendar invitation.</p>')
+        images = (
+            '<v:imagedata src="https://images.example.org/notice.png">',
+            '<v:fill src="https://images.example.org/background.png">',
+            '<svg><image href="https://images.example.org/notice.png"></image></svg>',
+            '<svg><image xlink:href="https://images.example.org/notice.png"></image></svg>',
+        )
+        with patch.object(app, '_content_pipeline', None):
+            for image in images:
+                with self.subTest(image=image):
+                    result = self.analyze(body=text + image)
+                    self.assertEqual(result['remote_image_coverage']['count'], 1)
+                    self.assertFalse(result['analysis_complete'])
+                    self.assertTrue(any('remote image content was not inspected' in warning.lower()
+                                        for warning in result['analysis_warnings']))
+
+    def test_vml_and_svg_image_references_in_raw_email_are_disclosed(self):
+        message = EmailMessage()
+        message['Subject'] = 'Project update'
+        message.set_content('<p>Please see the image below.</p>'
+                            '<v:imagedata src="https://images.example.org/notice.png">'
+                            '<svg><image href="data:image/png;base64,eA=="></image></svg>',
+                            subtype='html')
+        with patch.object(app, '_content_pipeline', None):
+            result = self.analyze(raw_email=message.as_string())
+        self.assertEqual(result['remote_image_coverage']['count'], 1)
+        self.assertEqual(result['inline_image_coverage']['count'], 1)
+        self.assertEqual(result['risk_level'], 'unknown')
+        self.assertFalse(result['analysis_complete'])
+
+    def test_outlook_conditional_vml_image_is_disclosed(self):
+        body = ('<p>Please see the image below.</p>'
+                '<!--[if mso]><v:rect><v:imagedata src="https://images.example.org/notice.png">'
+                '</v:rect><![endif]-->')
+        with patch.object(app, '_content_pipeline', None):
+            result = self.analyze(body=body)
+        self.assertEqual(result['remote_image_coverage']['count'], 1)
+        self.assertEqual(result['risk_level'], 'unknown')
+        self.assertFalse(result['analysis_complete'])
+
+    def test_negated_outlook_conditional_does_not_claim_image_coverage(self):
+        with patch.object(app, '_content_pipeline', None):
+            for condition in ('!mso', '!(mso)', '! (mso)', 'not mso', 'not (mso)'):
+                with self.subTest(condition=condition):
+                    body = ('<p>Hello team, please review the detailed project notes for our next meeting.</p>'
+                            f'<!--[if {condition}]><v:imagedata '
+                            'src="https://images.example.org/hidden.png"><![endif]-->')
+                    result = self.analyze(body=body)
+                    self.assertEqual(result['remote_image_coverage']['count'], 0)
+                    self.assertTrue(result['analysis_complete'])
+
+    def test_compound_mso_conditional_still_discloses_image(self):
+        body = ('<p>Please see the image below.</p>'
+                '<!--[if (mso)|(!mso)]><v:imagedata '
+                'src="https://images.example.org/notice.png"><![endif]-->')
+        with patch.object(app, '_content_pipeline', None):
+            result = self.analyze(body=body)
+        self.assertEqual(result['remote_image_coverage']['count'], 1)
+        self.assertFalse(result['analysis_complete'])
+
+    def test_svg_icon_and_unrelated_vml_element_are_not_images(self):
+        body = ('<p>Hello team, please review the detailed project notes for our next meeting.</p>'
+                '<svg><use href="https://images.example.org/icon.svg#check"></use></svg>'
+                '<v:shape src="https://images.example.org/shape.png"></v:shape>'
+                '<!-- <v:imagedata src="https://images.example.org/comment.png"> -->')
+        with patch.object(app, '_content_pipeline', None):
+            result = self.analyze(body=body)
+        self.assertEqual(result['remote_image_coverage']['count'], 0)
+        self.assertEqual(result['inline_image_coverage']['count'], 0)
+        self.assertTrue(result['analysis_complete'])
+
     def test_data_srcset_payload_does_not_create_a_remote_image(self):
         body = ('<p>Hello team, please review the detailed project notes for our next meeting.</p>'
                 '<source srcset="data:image/png;base64,//8= 1x, '
@@ -308,6 +381,71 @@ class HTMLInputCoverageTests(unittest.TestCase):
         self.assertFalse(result['analysis_complete'])
         self.assertTrue(any('han-script' in warning.lower() and 'limited' in warning.lower()
                             for warning in result['analysis_warnings']))
+
+    def test_english_subject_cannot_supply_all_model_features_for_chinese_body(self):
+        pipeline = self.deployment_pipeline()
+        bodies = (
+            '本月发票的收款银行账户已经变更，请将未结款项汇入附件所列的新账户。旧账户已停用，请今天完成转账并回复确认。',
+            '本月发票已经按原来的银行账户完成付款，无需更改收款信息。我们会在下周的例会上核对记录，谢谢大家。',
+        )
+        with patch.object(app, '_content_pipeline', pipeline):
+            for body in bodies:
+                with self.subTest(body=body):
+                    result = self.analyze(subject='Invoice notice', body=body)
+                    self.assertEqual(result['total_score'], 0)
+                    self.assertEqual(result['ml_status'], 'insufficient_feature_coverage')
+                    self.assertIsNone(result['ml_phishing_probability'])
+                    self.assertEqual(result['risk_level'], 'unknown')
+                    self.assertFalse(result['analysis_complete'])
+
+    def test_extension_b_han_body_cannot_be_scored_from_english_subject(self):
+        pipeline = self.deployment_pipeline()
+        body = ' '.join(''.join(chr(0x20000 + offset) for offset in range(10))
+                        for _ in range(5))
+        with patch.object(app, '_content_pipeline', pipeline):
+            result = self.analyze(subject='Invoice notice', body=body)
+        self.assertEqual(result['ml_status'], 'insufficient_feature_coverage')
+        self.assertIsNone(result['ml_phishing_probability'])
+        self.assertTrue(any('han-script' in warning.lower()
+                            for warning in result['analysis_warnings']))
+        self.assertEqual(result['risk_level'], 'unknown')
+
+    def test_newer_han_extensions_are_not_missed_by_deployment_unicode_database(self):
+        pipeline = self.deployment_pipeline()
+        with patch.object(app, '_content_pipeline', pipeline):
+            for codepoint in (0x2EBF0, 0x323B0):  # Unicode Extensions I and J
+                with self.subTest(codepoint=codepoint):
+                    result = self.analyze(
+                        subject='Routine project invoice notice for reference',
+                        body=chr(codepoint) * 50,
+                    )
+                    self.assertEqual(result['ml_status'], 'insufficient_feature_coverage')
+                    self.assertTrue(any('han-script' in warning.lower()
+                                        for warning in result['analysis_warnings']))
+                    self.assertEqual(result['risk_level'], 'unknown')
+
+    def test_english_body_features_remain_usable_with_han_footer(self):
+        pipeline = self.deployment_pipeline()
+        body = ('Please review the project notes before our regular meeting tomorrow. '
+                'Bring the agenda and the latest release schedule. '
+                '本月发票已经按原来的银行账户完成付款，无需更改收款信息。')
+        with patch.object(app, '_content_pipeline', pipeline):
+            result = self.analyze(subject='Project update', body=body)
+        self.assertEqual(result['ml_status'], 'available')
+        self.assertTrue(any('han-script' in warning.lower()
+                            for warning in result['analysis_warnings']))
+
+    def test_chinese_body_model_abstention_preserves_link_risk(self):
+        pipeline = self.deployment_pipeline()
+        body = ('<p>本月发票的收款银行账户已经变更，请今天登录新网站完成付款。'
+                '旧账户已停用，请立即核对付款记录并回复确认。</p>'
+                '<a href="https://paypal.com.login.example">继续</a>')
+        with patch.object(app, '_content_pipeline', pipeline):
+            result = self.analyze(subject='Invoice notice', body=body)
+        self.assertEqual(result['ml_status'], 'insufficient_feature_coverage')
+        self.assertIsNone(result['ml_phishing_probability'])
+        self.assertGreater(result['url_count'], 0)
+        self.assertIn(result['risk_level'], {'high', 'critical'})
 
     def test_english_padding_cannot_hide_substantial_han_text(self):
         body = ('Hello team, these are routine project meeting notes for everyone. '

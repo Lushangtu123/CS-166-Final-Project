@@ -46,6 +46,7 @@ from config import load_settings
 from disposable_registry import REGISTRY_DOMAIN_RE as _REGISTRY_DOMAIN_RE
 from disposable_registry import load_disposable_registry, load_privacy_relay_registry
 from request_limits import RequestBodyLimitMiddleware
+from language_coverage import has_substantial_han_text as _has_substantial_han_text
 from sender_history import (
     DisabledSenderHistoryStore,
     SenderHistoryResult,
@@ -2272,7 +2273,6 @@ _REMOTE_IMAGE_WARNING = 'Remote image content was not inspected; analysis is inc
 _HAN_TEXT_WARNING = ('Substantial Han-script text detected; language-specific phishing checks '
                      'are limited and this content may not be fully evaluated.')
 _REMOTE_IMAGE_MIN_VISIBLE_CHARS = 80
-_MIN_HAN_CHARS_FOR_LIMITED_COVERAGE = 12
 
 
 def _unescape_css(value: str) -> str:
@@ -2333,13 +2333,14 @@ def _image_reference_counts(text: str, parse_warnings=None) -> tuple[int, int]:
                         break
 
     class ImageCollector(_AnalysisHTMLParser):
-        def __init__(self):
+        def __init__(self, conditional_depth=0):
             super().__init__(convert_charrefs=True)
             self.data_count = 0
             self.remote_count = 0
             self.in_style = False
             self.in_script = False
             self.remote_base = None
+            self.conditional_depth = conditional_depth
 
         def is_remote(self, value):
             if remote_image.match(value):
@@ -2378,11 +2379,16 @@ def _image_reference_counts(text: str, parse_warnings=None) -> tuple[int, int]:
             for name, value in attrs:
                 if not value:
                     continue
-                if tag in {'img', 'source'}:
+                if tag in {'img', 'source', 'v:imagedata', 'v:fill', 'image'}:
                     if name == 'src':
                         if data_image.match(value):
                             self.data_count = min(20, self.data_count + 1)
-                        elif tag == 'img' and self.is_remote(value):
+                        elif tag != 'source' and self.is_remote(value):
+                            self.remote_count = min(20, self.remote_count + 1)
+                    elif tag == 'image' and name in {'href', 'xlink:href'}:
+                        if data_image.match(value):
+                            self.data_count = min(20, self.data_count + 1)
+                        elif self.is_remote(value):
                             self.remote_count = min(20, self.remote_count + 1)
                     elif name == 'srcset':
                         for url in srcset_urls(value):
@@ -2404,18 +2410,37 @@ def _image_reference_counts(text: str, parse_warnings=None) -> tuple[int, int]:
             elif tag == 'script':
                 self.in_script = False
 
+        def handle_comment(self, data):
+            # Outlook can render VML inside an MSO conditional comment. Ordinary
+            # comments are inert and must not claim image coverage.
+            if self.conditional_depth or self.in_script:
+                return
+            conditional = re.fullmatch(r'\[if\s+([^\]]+)\]>(.*?)<!\[endif\]',
+                                       data.strip(), flags=re.IGNORECASE | re.DOTALL)
+            if not conditional:
+                return
+            condition = conditional.group(1)
+            normalized_condition = re.sub(r'\s+', '', condition.casefold())
+            solely_negated_mso = (
+                normalized_condition.count('(') == normalized_condition.count(')')
+                and re.fullmatch(r'\(*(?:!|not)\(*mso\)*', normalized_condition)
+            )
+            if (not re.search(r'\bmso\b', condition, re.IGNORECASE)
+                    or solely_negated_mso):
+                return
+            nested = ImageCollector(conditional_depth=1)
+            nested.remote_base = self.remote_base
+            nested.feed(conditional.group(2))
+            nested.close()
+            self.data_count = min(20, self.data_count + nested.data_count)
+            self.remote_count = min(20, self.remote_count + nested.remote_count)
+
         def handle_data(self, data):
             if self.in_style and not self.in_script:
                 self.add_css(data)
 
     collector = _collect_html(ImageCollector, text, parse_warnings)
     return collector.data_count, collector.remote_count
-
-
-def _has_substantial_han_text(text: str) -> bool:
-    """Flag text for which English-oriented checks have unvalidated coverage."""
-    han_count = sum('\u3400' <= char <= '\u9fff' for char in text)
-    return han_count >= _MIN_HAN_CHARS_FOR_LIMITED_COVERAGE
 
 
 def _has_password_form(text: str, parse_warnings=None) -> bool:

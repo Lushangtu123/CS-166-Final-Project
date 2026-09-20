@@ -189,7 +189,10 @@ not inspected. These references add no phishing points, but add one analysis
 warning and prevent a complete Safe verdict. An otherwise Safe result becomes
 Unknown with a null combined score; independent high-risk evidence stays
 visible. MIME image attachments remain in `message_structure.attachments`.
-Remote `img`, `srcset`, CSS, and HTML table/background image references,
+Remote `img`, `srcset`, VML `v:imagedata`/`v:fill` (including MSO conditional
+comments except solely negated `!mso` blocks; compound conditions are counted
+conservatively), SVG `image`, CSS, and
+HTML table/background image references,
 including relative references under a remote `<base>`, have a separate top-level
 `remote_image_coverage` count (also capped at 20) and a distinct warning: the
 image bytes were not inspected. A short visible HTML part (under 80
@@ -295,12 +298,20 @@ dated Spanish holdout, but that single corpus is not representative of Gmail,
 Outlook, Chinese-language mail, or organization-specific traffic. Pure-text
 credential lures can still be missed. Do not interpret passing regression tests
 or a zero score as universal measured phishing recall.
-Substantial visible Han-script text now adds a language-coverage warning and
-prevents an unqualified complete Safe result. It does not add phishing points or
+Substantial visible Han-script text, including supplementary-plane ideographs,
+now adds a language-coverage warning and prevents an unqualified complete Safe
+result. It does not add phishing points or
 pretend that an English-oriented model has learned Chinese phishing patterns.
+When a substantial Han-script body produces no fitted vectorizer features, the
+model abstains even if an English subject has features. A model score must not
+be presented as evidence about an unrepresented Chinese body; independent
+sender, link, rule, and structure findings still apply. If the body also has
+English model features, only the existing language-coverage warning applies;
+this does not establish Chinese-language detection accuracy.
 
-If the fitted vectorizer produces no usable feature for a message, the model
-abstains with `ml_status=insufficient_feature_coverage` and nullable model
+If the fitted vectorizer produces no usable feature for a message or for a
+substantial Han-script body, the model abstains with
+`ml_status=insufficient_feature_coverage` and nullable model
 scores instead of inventing a prediction. Rules, sender, link, and structure
 checks still run. The model also abstains with `ml_status=insufficient_context`
 before vectorization when the combined subject and body contain fewer than five

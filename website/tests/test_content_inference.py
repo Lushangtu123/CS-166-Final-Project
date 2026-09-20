@@ -9,6 +9,7 @@ WEBSITE_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WEBSITE_DIR))
 
 from content_inference import predict_content
+from language_coverage import has_substantial_han_text
 
 
 class _SparseFeatures:
@@ -75,6 +76,14 @@ class _UnexpectedVectorizer(_CountingVectorizer):
 
 
 class ContentInferenceTests(unittest.TestCase):
+    def test_han_extensions_are_bounded_to_unicode_blocks(self):
+        for codepoint in (0x20000, 0x2EBF0, 0x323B0):
+            with self.subTest(codepoint=codepoint):
+                self.assertTrue(has_substantial_han_text(chr(codepoint) * 12))
+        for codepoint in (0x2EE60, 0x33480):
+            with self.subTest(codepoint=codepoint):
+                self.assertFalse(has_substantial_han_text(chr(codepoint) * 12))
+
     def test_explanation_metadata_is_cached_and_sparse(self):
         vectorizer = _CountingVectorizer()
         pipeline = {

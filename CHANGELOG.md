@@ -22,6 +22,26 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-20 15:27 PT] — Abstain on uncovered Chinese bodies and disclose alternate image references
+
+### Why
+- An English subject could give the fitted text model features even when a substantial Chinese body gave it none, producing a confident result that did not reflect the body.
+- VML and SVG image references, including VML inside Outlook conditional comments, were omitted from image-coverage reporting.
+
+### Files changed
+- `website/language_coverage.py` — share Han ideograph detection between API and model paths, with explicit Unicode 17 Extension I/J block fallbacks for Python 3.12's older character-name database.
+- `website/content_inference.py` — abstain with the existing `insufficient_feature_coverage` status when a substantial Han-script body has zero fitted features, even if its subject has features.
+- `website/app.py` — count VML and SVG image references as uninspected image content, without fetching or decoding them; inspect MSO conditional comments conservatively while leaving ordinary and solely negated `!mso` comments inert.
+- `website/tests/test_content_inference.py` — verify Unicode extension boundaries in the shared coverage check.
+- `website/tests/test_html_input_coverage.py` — add committed-model, link-risk, manual HTML, raw-email, conditional-comment, and negative-control regressions.
+- `README.md` — document the added coverage and the remaining language limitation.
+- `CHANGELOG.md` — record the behavior change and its unmeasured real-world limits.
+
+### Effect
+- The tested English-subject/Chinese-body controls now yield nullable model scores and an incomplete, undetermined verdict when no independent risk exists; a suspicious link still raises risk independently.
+- The tested VML/SVG image-only messages now disclose uninspected pixels and cannot appear fully analyzed. The image bytes are still not OCR-scanned or fetched.
+- The committed model artifact and decision threshold are unchanged. Real, consented and time-separated Gmail/Outlook samples remain necessary to quantify false positives and phishing recall.
+
 ## [2026-09-20 14:57 PT] — Disclose image and language gaps and qualify model-only risk
 
 ### Why
