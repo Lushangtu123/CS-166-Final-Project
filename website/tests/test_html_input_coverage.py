@@ -541,6 +541,213 @@ class HTMLInputCoverageTests(unittest.TestCase):
                     self.assertTrue(any('hidden html text' in warning.lower()
                                         for warning in result['analysis_warnings']))
 
+    def test_inline_zero_opacity_cannot_pad_the_model_or_rules(self):
+        pipeline = self.deployment_pipeline()
+        subject = 'Invoice problem - call support'
+        visible = ('Your subscription renewal of $499 is complete. If you did not authorize '
+                   'this charge, call 1-888-555-0199 immediately.')
+        padding = 'Please review the project notes before our meeting tomorrow. ' * 30
+        with patch.object(app, '_content_pipeline', pipeline):
+            control = self.analyze(subject=subject, body=visible)
+            result = self.analyze(subject=subject, body=(
+                f'<p>{visible}</p><div style="opacity:0">{padding}</div>'
+            ))
+        self.assertEqual(result['ml_phishing_probability'], control['ml_phishing_probability'])
+        self.assertEqual(result['total_score'], control['total_score'])
+        self.assertIn(result['risk_level'], {'high', 'critical'})
+        self.assertFalse(result['analysis_complete'])
+        self.assertTrue(any('hidden html text' in warning.lower()
+                            for warning in result['analysis_warnings']))
+
+    def test_zero_percent_and_clamped_negative_opacity_are_hidden(self):
+        for style in ('opacity:0%', 'opacity:0.0', 'opacity:-1',
+                      'opacity:0 !important; opacity:1'):
+            with self.subTest(style=style):
+                warnings = []
+                self.assertEqual(app._visible_content_text(
+                    f'<div style="{style}">Hidden benign padding</div>', warnings,
+                ), '')
+                self.assertTrue(any('hidden html text' in warning.lower()
+                                    for warning in warnings))
+
+    def test_stylesheet_hide_rule_cannot_produce_complete_low_risk(self):
+        pipeline = self.deployment_pipeline()
+        subject = 'Invoice problem - call support'
+        visible = ('Your subscription renewal of $499 is complete. If you did not authorize '
+                   'this charge, call 1-888-555-0199 immediately.')
+        padding = 'Please review the project notes before our meeting tomorrow. ' * 30
+        html = f'<style>.pad {{ display:none }}</style><p>{visible}</p><div class="pad">{padding}</div>'
+        with patch.object(app, '_content_pipeline', pipeline):
+            result = self.analyze(subject=subject, body=html)
+        self.assertFalse(result['analysis_complete'])
+        self.assertNotEqual(result['risk_level'], 'low')
+        self.assertIsNone(result['ml_phishing_probability'])
+        self.assertEqual(result['ml_status'], 'unverified_rendering')
+        self.assertTrue(any('stylesheet' in warning.lower()
+                            for warning in result['analysis_warnings']))
+
+    def test_quoted_css_brace_cannot_bypass_stylesheet_warning(self):
+        pipeline = self.deployment_pipeline()
+        visible = ('Your subscription renewal of $499 is complete. If you did not '
+                   'authorize this charge, call 1-888-555-0199 immediately.')
+        padding = 'Please review the project notes before our meeting tomorrow. ' * 30
+        with patch.object(app, '_content_pipeline', pipeline):
+            result = self.analyze(subject='Invoice problem - call support', body=(
+                '<style>.pad { content:"}"; display:none }</style>'
+                f'<p>{visible}</p><div class="pad">{padding}</div>'
+            ))
+        self.assertFalse(result['analysis_complete'])
+        self.assertEqual(result['ml_status'], 'unverified_rendering')
+        self.assertIsNone(result['ml_phishing_probability'])
+
+    def test_inert_template_stylesheet_does_not_abstain(self):
+        warnings = []
+        text = app._visible_content_text(
+            '<template><style>.pad { display:none }</style></template>'
+            '<p>Visible project meeting agenda.</p>', warnings,
+        )
+        self.assertEqual(text, 'Visible project meeting agenda.')
+        self.assertEqual(warnings, [])
+
+    def test_stylesheet_warning_does_not_hide_independent_link_risk(self):
+        with patch.object(app, '_content_pipeline', None):
+            result = self.analyze(body=(
+                '<style>.pad{display:none}</style><div class="pad">Routine project notes.</div>'
+                '<a href="https://paypal.com.login.example">Continue</a>'
+            ))
+        self.assertIn(result['risk_level'], {'high', 'critical'})
+        self.assertFalse(result['analysis_complete'])
+
+    def test_stylesheet_hidden_phishing_padding_does_not_create_false_high_risk(self):
+        pipeline = self.deployment_pipeline()
+        padding = ('Urgent security alert: your account will be suspended immediately unless '
+                   'you enter your password now. Final warning: verify your password or lose '
+                   'access to your account permanently. ') * 10
+        with patch.object(app, '_content_pipeline', pipeline):
+            result = self.analyze(subject='Project notes for tomorrow', body=(
+                '<style>.pad{display:none}</style>'
+                '<p>Hello everyone, please review the normal project agenda.</p>'
+                f'<div class="pad">{padding}</div>'
+            ))
+        self.assertEqual(result['ml_status'], 'unverified_rendering')
+        self.assertEqual(result['risk_level'], 'unknown')
+        self.assertEqual(result['total_score'], 0)
+        self.assertFalse(result['analysis_complete'])
+
+    def test_uncertain_html_part_does_not_suppress_plain_mime_evidence(self):
+        plain = ('Urgent security alert: your account will be suspended immediately '
+                 'unless you enter your password now. Final warning: verify your '
+                 'password or lose access permanently.')
+        plain_part = {'content': plain, 'content_type': 'text/plain'}
+        control = app.analyze_email_content('Project update', '', content_parts=[plain_part])
+        result = app.analyze_email_content('Project update', '', content_parts=[
+            plain_part,
+            {'content': '<style>.pad{display:none}</style><p>Routine agenda.</p>',
+             'content_type': 'text/html'},
+        ])
+        self.assertGreater(control['total_score'], 0)
+        self.assertEqual(result['total_score'], control['total_score'])
+        self.assertEqual(result['risk_level'], control['risk_level'])
+        self.assertTrue(any('stylesheet' in warning.lower()
+                            for warning in result['analysis_warnings']))
+
+    def test_broken_image_alt_is_scored_as_fallback_text(self):
+        pipeline = self.deployment_pipeline()
+        alt = ('Your account is suspended. Act now and verify your password immediately. '
+               'Enter your password to restore access.')
+        with patch.object(app, '_content_pipeline', pipeline):
+            result = self.analyze(subject='Project notes for tomorrow', body=(
+                '<p>Hello everyone, please review the agenda before our scheduled meeting.</p>'
+                f'<img alt="{alt}">'
+            ))
+        self.assertIn('password', app._visible_content_text(f'<img alt="{alt}">').lower())
+        self.assertGreater(result['total_score'], 0)
+        self.assertNotEqual(result['risk_level'], 'safe')
+
+    def test_sourced_image_alt_cannot_leave_complete_safe_verdict(self):
+        pipeline = self.deployment_pipeline()
+        alt = 'Your account is suspended. Act now and verify your password immediately.'
+        with patch.object(app, '_content_pipeline', pipeline):
+            result = self.analyze(subject='Project notes for tomorrow', body=(
+                '<p>Hello everyone, please review the agenda before our scheduled meeting.</p>'
+                f'<img src="https://images.example.org/notice.png" alt="{alt}">'
+            ))
+        self.assertFalse(result['analysis_complete'])
+        self.assertNotEqual(result['risk_level'], 'safe')
+        self.assertEqual(result['ml_status'], 'unverified_rendering')
+        self.assertTrue(any('alternative text' in warning.lower()
+                            for warning in result['analysis_warnings']))
+
+    def test_no_space_han_alt_cannot_leave_complete_safe_verdict(self):
+        with patch.object(app, '_content_pipeline', None):
+            result = self.analyze(subject='Project meeting', body=(
+                '<p>Please review the ordinary project planning agenda and meeting notes '
+                'before our scheduled discussion tomorrow morning.</p>'
+                '<img src="cid:notice" alt="您的账户已暂停请立即输入密码完成验证">'
+            ))
+        self.assertEqual(result['risk_level'], 'unknown')
+        self.assertFalse(result['analysis_complete'])
+        self.assertTrue(any('alternative text' in warning.lower()
+                            for warning in result['analysis_warnings']))
+
+    def test_hidden_image_alt_does_not_become_visible_text(self):
+        warnings = []
+        text = app._visible_content_text(
+            '<div hidden><img alt="Enter your password immediately"></div>'
+            '<p>Visible project meeting notes.</p>', warnings,
+        )
+        self.assertEqual(text, 'Visible project meeting notes.')
+        self.assertTrue(any('hidden html text' in warning.lower() for warning in warnings))
+
+    def test_picture_source_keeps_alt_conditional(self):
+        warnings = []
+        text = app._visible_content_text(
+            '<picture><source srcset="https://images.example.org/notice.png">'
+            '<img alt="Your account is suspended. Verify your password immediately."></picture>',
+            warnings,
+        )
+        self.assertEqual(text, '')
+        self.assertTrue(any('alternative text' in warning.lower() for warning in warnings))
+
+    def test_picture_without_source_scores_missing_img_fallback(self):
+        warnings = []
+        text = app._visible_content_text(
+            '<picture><img alt="Enter your password immediately"></picture>', warnings,
+        )
+        self.assertEqual(text, 'Enter your password immediately')
+        self.assertEqual(warnings, [])
+
+    def test_short_decorative_alt_does_not_disable_text_model(self):
+        pipeline = self.deployment_pipeline()
+        with patch.object(app, '_content_pipeline', pipeline):
+            result = self.analyze(subject='Project notes for tomorrow', body=(
+                '<p>Hello everyone, please review the agenda before our scheduled meeting. '
+                'We will discuss the regular project plan and calendar.</p>'
+                '<img src="https://images.example.org/logo.png" alt="Company logo">'
+            ))
+        self.assertEqual(result['ml_status'], 'available')
+        self.assertFalse(any('alternative text' in warning.lower()
+                             for warning in result['analysis_warnings']))
+
+    def test_css_comments_and_overrides_do_not_claim_hidden_text(self):
+        for style in ('opacity:0; opacity:1',
+                      'opacity:0 !important; opacity:1 !important',
+                      'content:"; opacity:0"; color:red'):
+            with self.subTest(style=style):
+                warnings = []
+                visible = app._visible_content_text(
+                    f'<p style=\'{style}\'>Visible meeting agenda.</p>', warnings,
+                )
+                self.assertEqual(visible, 'Visible meeting agenda.')
+                self.assertEqual(warnings, [])
+        warnings = []
+        visible = app._visible_content_text(
+            '<style>/* .pad { display:none } */</style><p>Visible meeting agenda.</p>',
+            warnings,
+        )
+        self.assertEqual(visible, 'Visible meeting agenda.')
+        self.assertEqual(warnings, [])
+
     def test_hidden_phishing_text_is_not_scored_and_visible_sibling_survives(self):
         pipeline = self.deployment_pipeline()
         subject = 'Project notes for tomorrow'

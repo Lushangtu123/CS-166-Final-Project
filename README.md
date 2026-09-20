@@ -275,13 +275,22 @@ Text rules decode HTML entities, preserve words across inline tags, and normaliz
 whitespace independently of destination analysis. Script/style/comment text is
 not treated as visible prose. The content model now receives this same
 MIME-aware visible text rather than raw HTML. Text under the HTML `hidden`
-attribute or inline `display:none` / `visibility:hidden` is also excluded from
+attribute or inline `display:none` / `visibility:hidden` / `opacity:0` is also excluded from
 text rules and model input; a warning marks the result incomplete when such
 text is present. Inline `visibility:visible` can restore a child of a
-`visibility:hidden` element, but not a child of `display:none`. This is not a
-browser renderer: stylesheet selectors, media queries, external CSS, and
-other visual-hiding methods are not fully resolved, so a complete result does
-not establish pixel-level visibility. MIME `text/plain` remains literal. HTML
+`visibility:hidden` element, but not a child of `display:none` or `opacity:0`.
+Stylesheet rules containing `display:none`, `visibility:hidden`/`collapse`, or
+`opacity:0` are detected conservatively, including inside media-rule blocks.
+Because selector matching and CSS cascade are not fully rendered, the API sets
+`ml_status=unverified_rendering`, leaves model scores null, and marks analysis
+incomplete instead of allowing hidden CSS padding to produce a complete Low or
+Safe verdict. Prose from only the CSS-uncertain HTML part is withheld from text
+rules, including bare URLs and displayed link labels; unambiguous MIME parts
+still contribute text rules. Explicit link destinations, forms, sender, and
+message-structure checks still run.
+This is not a browser renderer: external CSS and other visual-hiding methods
+are not fully resolved, so even a complete result does not establish pixel-level
+visibility. MIME `text/plain` remains literal. HTML
 anchor labels and free-text URL scans use this visible text; a hidden naked URL
 is not treated as a link. Raw HTML is still used for actual `href`, `action`,
 and `formaction` destinations even inside hidden subtrees; opaque image data-URI
@@ -294,6 +303,18 @@ Relative HTML link and form targets are resolved against the document's first
 inferred from the sender, and no external resource is fetched. Without a usable
 base, relative targets cannot identify a destination host. Medium and high
 destination-risk floors are both preserved when results are combined.
+
+An HTML `<img>` with nonempty `alt` and no usable `src` or `srcset` contributes
+its replacement text to rule and model input, unless the image is hidden. For
+images that may load, a substantive `alt` (at least three words and 12
+non-whitespace characters, or a substantial no-space non-Latin passage) is
+conditional fallback content: its presence
+produces `ml_status=unverified_rendering` and an incomplete-analysis warning,
+without assuming the image fails or treating that alternative as always visible.
+Short decorative labels such as “Company logo” do not disable the text model;
+this is a coverage heuristic, not a guarantee that shorter `alt` text is safe.
+Usable `<picture>` sources also keep `alt` conditional. Image pixels are still not
+decoded or OCR-scanned.
 
 Any positive rule score retains at least a low-risk verdict instead of claiming
 no indicators. A narrow English combination of urgency, threats, and a direct
@@ -720,6 +741,29 @@ evaluation. The committed artifact is identified by SHA-256
 `a0a503a0cd6122e722933add91f49cc72e3fa74abaf1129c4df3fe0450401746`.
 Its metrics include the build seed, cache-policy version, training options, and
 SHA-256 digest of every local source corpus used for reproducibility checks.
+
+To measure the **current serving pipeline** on consented, labeled inbox mail,
+use `website/tools/evaluate_serving_pipeline.py` with a local JSONL file kept
+outside version control. Each line must provide `provider` (`gmail` or
+`outlook`), `received_at` (`YYYY-MM-DD`), `label` (`phishing` or `legitimate`),
+and either `raw_email` or `subject`/`body`. Run from the repository root with
+the pinned Python 3.12 environment:
+
+```bash
+.venv/bin/python website/tools/evaluate_serving_pipeline.py --input /absolute/path/to/consented-mail.jsonl
+```
+
+The command loads the digest-verified committed artifact and uses the same
+local analysis path as the API, with external sender-history observation
+disabled. It prints only aggregate counts and rates overall, by provider, by
+received month, and by provider×month; message bodies and sender addresses are
+not included in the report. Medium, High, and Critical are counted as alerts,
+while Unknown is undetermined and remains in the phishing-recall denominator.
+Keep the output local: a provider×month cell with only one or two messages can
+still disclose sensitive cohort information if published. The report marks
+temporal isolation `not_verified`: dates alone do not prove training-family
+separation. No real Gmail/Outlook cohort is committed or measured here, so the
+offline table above must not be presented as provider-specific serving recall.
 
 The included public Render profile still keeps the optional text model disabled
 until a representative, versioned artifact is supplied through a trusted build

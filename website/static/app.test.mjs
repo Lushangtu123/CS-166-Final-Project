@@ -279,6 +279,26 @@ test('short-message abstention explains that the text is insufficient', () => {
   assert.equal(elements.get('content-legit-pct').textContent, '—');
 });
 
+test('unverified rendering abstention is explicit and has no stale score bars', () => {
+  const { context, elements } = loadFrontend();
+  context.renderContentResult({
+    risk_level: 'unknown', risk_label: 'Analysis Incomplete — Risk Undetermined',
+    analysis_complete: false, combined_phishing_score: null, total_score: 0,
+    category_results: [], extra_indicators: [], safety_signals: [],
+    analysis_warnings: ['A stylesheet may hide or reveal text.'],
+    ml_status: 'unverified_rendering', ml_label: null,
+    ml_phishing_probability: null, ml_legitimate_probability: null,
+    ml_prediction: null, ml_top_contributors: [],
+  });
+
+  assert.equal(elements.get('content-ml-prob-bars').style.display, 'none');
+  assert.match(elements.get('content-ml-sub').textContent, /CSS visibility or image fallback.*not applied/i);
+  assert.match(elements.get('crb-sub').textContent, /text model could not score/i);
+  assert.match(elements.get('content-ml-contribs').innerHTML, /Uncertain HTML text was withheld/i);
+  assert.equal(elements.get('content-phish-pct').textContent, '—');
+  assert.equal(elements.get('content-legit-pct').textContent, '—');
+});
+
 test('available content model output is labelled a risk score not confidence', () => {
   const { context, elements } = loadFrontend();
   context.renderContentResult({

@@ -1103,7 +1103,7 @@ function renderContentResult(data) {
     if (inlineImageCoverage) subParts.push('Embedded image content was not inspected.');
     if (remoteImageCoverage) subParts.push('Remote image content was not inspected.');
     if (parseIssues) subParts.push('Some message content could not be reliably parsed.');
-    if (data.ml_status === 'insufficient_context' || data.ml_status === 'insufficient_feature_coverage') {
+    if (['insufficient_context', 'insufficient_feature_coverage', 'unverified_rendering'].includes(data.ml_status)) {
       subParts.push('The text model could not score this message.');
     }
   }
@@ -1152,7 +1152,7 @@ function renderContentResult(data) {
   // ── ML Classifier Card ───────────────────────────────────────────────────
   const mlCard = document.getElementById('content-ml-card');
   const mlProbabilityBars = document.getElementById('content-ml-prob-bars');
-  if (data.ml_status === 'insufficient_context' || data.ml_status === 'insufficient_feature_coverage') {
+  if (['insufficient_context', 'insufficient_feature_coverage', 'unverified_rendering'].includes(data.ml_status)) {
     mlCard.style.display = '';
     mlProbabilityBars.style.display = 'none';
     document.getElementById('content-phish-bar').style.width = '0%';
@@ -1161,10 +1161,13 @@ function renderContentResult(data) {
     document.getElementById('content-legit-pct').textContent = '—';
     document.getElementById('content-ml-sub').textContent = data.ml_status === 'insufficient_context'
       ? 'The message contains too little text, so ML classification was not applied.'
-      : 'Text-model coverage was insufficient, so ML classification was not applied.';
+      : data.ml_status === 'unverified_rendering'
+        ? 'CSS visibility or image fallback text could not be verified, so ML classification was not applied.'
+        : 'Text-model coverage was insufficient, so ML classification was not applied.';
     document.getElementById('content-ml-metrics').innerHTML = '';
-    document.getElementById('content-ml-contribs').innerHTML =
-      '<div class="ml-contribs-title">Rule, sender, link, and message-structure checks still ran.</div>';
+    document.getElementById('content-ml-contribs').innerHTML = data.ml_status === 'unverified_rendering'
+      ? '<div class="ml-contribs-title">Uncertain HTML text was withheld; independent destinations, sender, and message-structure checks still ran.</div>'
+      : '<div class="ml-contribs-title">Rule, sender, link, and message-structure checks still ran.</div>';
   } else if (data.ml_label != null) {
     mlCard.style.display = '';
     mlProbabilityBars.style.display = '';

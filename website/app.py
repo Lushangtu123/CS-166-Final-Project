@@ -46,7 +46,8 @@ from config import load_settings
 from disposable_registry import REGISTRY_DOMAIN_RE as _REGISTRY_DOMAIN_RE
 from disposable_registry import load_disposable_registry, load_privacy_relay_registry
 from request_limits import RequestBodyLimitMiddleware
-from language_coverage import has_substantial_han_text as _has_substantial_han_text
+from language_coverage import (has_substantial_han_text as _has_substantial_han_text,
+                               non_latin_script_segments)
 from sender_history import (
     DisabledSenderHistoryStore,
     SenderHistoryResult,
@@ -2250,6 +2251,14 @@ _HIDDEN_HTML_TEXT_WARNING = (
     'Hidden HTML text was excluded from text scoring; visual rendering was not '
     'fully verified, so analysis is incomplete.'
 )
+_STYLESHEET_VISIBILITY_WARNING = (
+    'A stylesheet may hide or reveal text; CSS rendering was not verified, '
+    'so text-model classification was not applied.'
+)
+_IMAGE_ALT_FALLBACK_WARNING = (
+    'Image alternative text may be shown when an image is unavailable; '
+    'that rendering was not verified, so text-model classification was not applied.'
+)
 _HTML_VOID_ELEMENTS = {
     'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta',
     'param', 'source', 'track', 'wbr',
@@ -2262,8 +2271,8 @@ _P_IMPLIED_END_START_TAGS = {
 }
 
 
-def _inline_visibility(style: str) -> tuple[bool, bool | None]:
-    """Read only inline display/visibility declarations, respecting !important."""
+def _inline_visibility(style: str) -> tuple[bool, bool | None, bool]:
+    """Read bounded visibility declarations, respecting !important."""
     # A semicolon inside quoted content, url(), or a CSS escape is not a
     # declaration boundary. Splitting it blindly can hide genuinely visible
     # text when an unrelated property contains the string "; display:none".
@@ -2310,7 +2319,7 @@ def _inline_visibility(style: str) -> tuple[bool, bool | None]:
     for declaration in declarations:
         name, separator, value = declaration.partition(':')
         name = _unescape_css(name).strip().lower()
-        if not separator or name not in {'display', 'visibility'}:
+        if not separator or name not in {'display', 'visibility', 'opacity'}:
             continue
         value = _unescape_css(value).strip().lower()
         important = bool(re.search(r'!\s*important\s*$', value))
@@ -2326,7 +2335,69 @@ def _inline_visibility(style: str) -> tuple[bool, bool | None]:
     else:
         # inherit/unset/invalid values cannot clear a hidden parent.
         visibility_hidden = None
-    return display_hidden, visibility_hidden
+    opacity = values.get('opacity', ('', False))[0]
+    # Zero opacity applies to the entire rendered subtree; children cannot
+    # restore it with their own opacity declaration.
+    opacity_number = opacity.removesuffix('%')
+    opacity_hidden = bool(
+        re.fullmatch(r'[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?', opacity_number)
+        and float(opacity_number) <= 0
+    )
+    return display_hidden, visibility_hidden, opacity_hidden
+
+
+def _stylesheet_may_hide_text(css: str) -> bool:
+    """Flag hiding declarations without claiming to implement CSS cascade."""
+    # Remove real comments while preserving comment-like text in CSS strings.
+    without_comments = []
+    quote = None
+    index = 0
+    while index < len(css):
+        character = css[index]
+        following = css[index + 1] if index + 1 < len(css) else ''
+        if quote:
+            without_comments.append(character)
+            if character == '\\' and following:
+                without_comments.append(following)
+                index += 1
+            elif character == quote:
+                quote = None
+        elif character == '/' and following == '*':
+            ending = css.find('*/', index + 2)
+            if ending < 0:
+                break
+            index = ending + 1
+        elif character in {'"', "'"}:
+            quote = character
+            without_comments.append(character)
+        else:
+            without_comments.append(character)
+        index += 1
+    # Find balanced rule bodies outside quoted CSS strings. A brace in
+    # content:"}" must not end the rule before its hiding declaration.
+    cleaned = ''.join(without_comments)
+    starts = []
+    quote = None
+    index = 0
+    while index < len(cleaned):
+        character = cleaned[index]
+        if character == '\\' and index + 1 < len(cleaned):
+            index += 2
+            continue
+        if quote:
+            if character == quote:
+                quote = None
+        elif character in {'"', "'"}:
+            quote = character
+        elif character == '{':
+            starts.append(index + 1)
+        elif character == '}' and starts:
+            declaration = cleaned[starts.pop():index]
+            display, visibility, opacity = _inline_visibility(declaration)
+            if display or visibility is True or opacity:
+                return True
+        index += 1
+    return False
 
 
 def _visible_content_text(text: str, parse_warnings=None) -> str:
@@ -2341,6 +2412,8 @@ def _visible_content_text(text: str, parse_warnings=None) -> str:
             self.hidden = []
             self.elements = []
             self.excluded_hidden_text = False
+            self.stylesheet_parts = []
+            self.conditional_image_alt = False
             self.open_paragraph = False
 
         def _visually_hidden(self):
@@ -2404,13 +2477,43 @@ def _visible_content_text(text: str, parse_warnings=None) -> str:
             self._implicitly_close(tag)
             # Browsers retain the first duplicate attribute, not the last.
             style = next((value for name, value in attrs if name == 'style'), '')
-            display_hidden, visibility_hidden = _inline_visibility(style or '')
+            display_hidden, visibility_hidden, opacity_hidden = _inline_visibility(style or '')
             parent_display = self.elements[-1][1] if self.elements else False
             parent_visibility = self.elements[-1][2] if self.elements else False
-            element_display = parent_display or any(name == 'hidden' for name, _ in attrs) or display_hidden
+            element_display = (parent_display or any(name == 'hidden' for name, _ in attrs)
+                               or display_hidden or opacity_hidden)
             element_visibility = parent_visibility if visibility_hidden is None else visibility_hidden
+            if tag == 'source' and any(name == 'srcset' and value and value.strip()
+                                       for name, value in attrs):
+                for index in range(len(self.elements) - 1, -1, -1):
+                    if self.elements[index][0] == 'picture':
+                        picture = self.elements[index]
+                        self.elements[index] = (*picture[:3], True)
+                        break
+            if tag == 'img':
+                alt = next((value for name, value in attrs if name == 'alt'), '') or ''
+                if alt.strip():
+                    if element_display or element_visibility:
+                        self.excluded_hidden_text = True
+                    elif (not any(name in {'src', 'srcset'} and value and value.strip()
+                                  for name, value in attrs)
+                          and not any(element[0] == 'picture' and element[3]
+                                      for element in self.elements)):
+                        # With no image resource, HTML's replacement text is
+                        # the text the reader can see or hear.
+                        self.parts.extend((' ', alt, ' '))
+                    else:
+                        # A two-word decorative label such as "Company logo"
+                        # should not disable scoring of an otherwise text-rich
+                        # email. Longer fallback instructions may change what a
+                        # reader sees when images fail or are blocked.
+                        self.conditional_image_alt |= (
+                            sum(not char.isspace() for char in alt) >= 12
+                            and (len(re.findall(r'\w+', alt, flags=re.UNICODE)) >= 3
+                                 or bool(non_latin_script_segments(alt, 12)))
+                        )
             if tag not in _HTML_VOID_ELEMENTS:
-                self.elements.append((tag, element_display, element_visibility))
+                self.elements.append((tag, element_display, element_visibility, False))
                 if tag == 'p':
                     self.open_paragraph = True
             if not element_display and not element_visibility and tag in {'p', 'div', 'br', 'li', 'tr', 'td', 'hr', 'section'}:
@@ -2433,6 +2536,8 @@ def _visible_content_text(text: str, parse_warnings=None) -> str:
             if self.hidden == ['head'] and data.strip():
                 self.hidden.pop()
             if self.hidden:
+                if self.hidden[-1] == 'style' and 'template' not in self.hidden[:-1]:
+                    self.stylesheet_parts.append(data)
                 return
             if self._visually_hidden():
                 if data.strip():
@@ -2443,6 +2548,10 @@ def _visible_content_text(text: str, parse_warnings=None) -> str:
     collector = _collect_html(TextCollector, text, parse_warnings)
     if collector.excluded_hidden_text and parse_warnings is not None:
         parse_warnings.append(_HIDDEN_HTML_TEXT_WARNING)
+    if parse_warnings is not None and _stylesheet_may_hide_text(''.join(collector.stylesheet_parts)):
+        parse_warnings.append(_STYLESHEET_VISIBILITY_WARNING)
+    if collector.conditional_image_alt and parse_warnings is not None:
+        parse_warnings.append(_IMAGE_ALT_FALLBACK_WARNING)
     return re.sub(r'\s+', ' ', ''.join(collector.parts)).strip()
 
 
@@ -2665,19 +2774,28 @@ def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] 
                           _model_view: dict | None = None) -> dict:
     """Rule-based heuristic phishing analysis of email subject + body text."""
     analysis_warnings = []
+
+    def visible_html(part):
+        part_warnings = []
+        visible = _visible_content_text(part, part_warnings)
+        analysis_warnings.extend(part_warnings)
+        return visible, _STYLESHEET_VISIBILITY_WARNING in part_warnings
+
     if content_parts is None:
         raw_parts = [subject, body]
         html_parts = [True, True]
-        visible_parts = [_visible_content_text(part, analysis_warnings) for part in raw_parts]
+        parsed_parts = [visible_html(part) for part in raw_parts]
+        visible_parts = [visible for visible, _uncertain in parsed_parts]
+        stylesheet_uncertain_parts = [uncertain for _visible, uncertain in parsed_parts]
     else:
         # Each MIME part is its own document. Plain text must not be interpreted
         # as markup, nor may an unclosed tag in one part hide another part.
         raw_parts = [subject] + [part['content'] for part in content_parts]
         html_parts = [False] + [part['content_type'] == 'text/html' for part in content_parts]
-        visible_parts = [subject] + [
-            _visible_content_text(part['content'], analysis_warnings) if part['content_type'] == 'text/html' else part['content']
-            for part in content_parts
-        ]
+        parsed_parts = [visible_html(part['content']) if part['content_type'] == 'text/html'
+                        else (part['content'], False) for part in content_parts]
+        visible_parts = [subject] + [visible for visible, _uncertain in parsed_parts]
+        stylesheet_uncertain_parts = [False] + [uncertain for _visible, uncertain in parsed_parts]
     raw_parts = [_strip_invisible_format_controls(part) for part in raw_parts]
     if _model_view is not None:
         # The model and rule checks consume the same MIME-aware visible text.
@@ -2704,10 +2822,24 @@ def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] 
     url_parts = [_mask_inline_data_payloads(part) if is_html else part
                  for part, is_html in zip(raw_parts, html_parts)]
     raw_text = '\n'.join(url_parts)
-    links = [link for part, visible, is_html in zip(url_parts, visible_parts, html_parts)
-             for link in _extract_links(part, parse_html=is_html, parse_warnings=analysis_warnings,
-                                        visible_text=_strip_invisible_format_controls(visible) if is_html else None)]
-    full_orig = re.sub(r'\s+', ' ', '\n'.join(visible_parts)).strip()
+    links = []
+    for part, visible, is_html, stylesheet_uncertain in zip(
+        url_parts, visible_parts, html_parts, stylesheet_uncertain_parts,
+    ):
+        part_links = _extract_links(
+            part, parse_html=is_html, parse_warnings=analysis_warnings,
+            visible_text=('' if stylesheet_uncertain else _strip_invisible_format_controls(visible))
+            if is_html else None,
+        )
+        # Explicit destinations remain actionable. Without a CSS renderer,
+        # neither naked HTML URLs nor displayed anchor labels are reliable.
+        links.extend((('', destination) for _label, destination in part_links)
+                     if is_html and stylesheet_uncertain else part_links)
+    # CSS may hide arbitrary body text. Do not derive high phishing scores from
+    # prose that might be hidden; independent destination/form checks still run.
+    scored_parts = [visible if not uncertain else '' for visible, uncertain
+                    in zip(visible_parts, stylesheet_uncertain_parts)]
+    full_orig = re.sub(r'\s+', ' ', '\n'.join(scored_parts)).strip()
     analysis_text = _strip_invisible_format_controls(full_orig)
     full_lower = analysis_text.lower()
     if _has_substantial_han_text(analysis_text):
@@ -2792,7 +2924,7 @@ def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] 
         })
 
     # 6. Excessive question marks in subject
-    subj_q = visible_parts[0].count("?")
+    subj_q = scored_parts[0].count("?")
     if subj_q >= 2:
         total_score += 1
         extra_indicators.append({
@@ -3127,9 +3259,25 @@ async def _analyze_content(
         result['extra_indicators'].append({'level': 'info', 'msg': _REMOTE_IMAGE_WARNING})
 
     # 2. Optional ML text classifier (TF-IDF + selected linear model)
+    rendering_uncertain = any(warning in result['analysis_warnings'] for warning in (
+        _STYLESHEET_VISIBILITY_WARNING, _IMAGE_ALT_FALLBACK_WARNING,
+    ))
     if _content_pipeline is not None:
-        ml = predict_content(_content_pipeline, model_view['subject'], model_view['body'],
-                             canonical_text=True)
+        if rendering_uncertain:
+            ml = {
+                'ml_status': 'unverified_rendering',
+                'ml_phishing_probability': None,
+                'ml_legitimate_probability': None,
+                'ml_label': None,
+                'ml_prediction': None,
+                'ml_decision_threshold': round(
+                    float(_content_pipeline.get('decision_threshold', 0.5)) * 100, 1
+                ),
+                'ml_top_contributors': [],
+            }
+        else:
+            ml = predict_content(_content_pipeline, model_view['subject'], model_view['body'],
+                                 canonical_text=True)
         result.update(ml)
         result["ml_metrics"] = _content_pipeline["metrics"]
 
@@ -3171,7 +3319,8 @@ async def _analyze_content(
     result['analysis_warnings'] = list(dict.fromkeys(result['analysis_warnings']
         + (structure['parse_warnings'] if structure else [])))
     result['analysis_complete'] = not bool(result['analysis_warnings'])
-    if not result['analysis_complete'] and result['risk_level'] == 'safe':
+    if not result['analysis_complete'] and (result['risk_level'] == 'safe'
+                                            or rendering_uncertain and result['risk_level'] == 'low'):
         if result['analysis_warnings'] == [_REMOTE_IMAGE_WARNING] and not remote_image_dominant:
             result['risk_label'] = 'No Indicators in Inspected Text — Remote Image Unchecked'
         else:

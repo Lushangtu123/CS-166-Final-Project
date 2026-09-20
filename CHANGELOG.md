@@ -22,6 +22,28 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-20 16:16 PT] — Guard uncertain CSS and image fallback text
+
+### Why
+- A constructed phishing message fell from a 52.1% High model score to 7.4% complete Low when benign padding used `opacity:0` or a CSS class with `display:none`.
+- An image without a source could show phishing text through `alt`, yet the detector treated that text as absent; sourced images can expose different text when loading fails.
+- The archived corpus metrics do not measure the current serving path or real Gmail/Outlook traffic.
+
+### Files changed
+- `website/app.py` — exclude zero-opacity inline text; conservatively abstain from CSS-uncertain and substantive conditional-alt model scoring, suppress only uncertain HTML-part prose while preserving clear MIME text and explicit destinations, and score source-less image `alt` as fallback text.
+- `website/static/app.js` — explain rendering-based model abstention without showing stale score bars.
+- `website/static/app.test.mjs` — cover the new abstention presentation.
+- `website/tests/test_html_input_coverage.py` — add CSS padding, opacity, image-alt, picture, independent-link, and decorative-image regressions.
+- `website/tools/evaluate_serving_pipeline.py` — add a local, digest-pinned serving-path evaluator that reports aggregate alert and coverage rates by provider, month, and provider×month without observing sender history.
+- `website/tests/test_serving_evaluation.py` — test input validation, aggregate denominators, privacy of output, and a real CLI run against the committed artifact.
+- `README.md` — document rendering limits and how to evaluate consented, labeled inbox samples without claiming provider-specific accuracy.
+- `CHANGELOG.md` — record the behavior and measurement scope.
+
+### Effect
+- The `opacity:0` padding control now retains the visible-text 52.1% High model score and marks analysis incomplete. A CSS class hiding the same padding now yields `ml_status=unverified_rendering` and an incomplete Unknown result instead of complete Low; hidden phishing padding likewise cannot create an unsupported High verdict. A CSS-uncertain HTML part does not erase clear phishing text in a separate plain-text MIME part.
+- Missing-source `alt` text enters text scoring, including inside source-less `<picture>`; substantive sourced-image `alt`, including no-space Han text, yields an incomplete, nullable model result while short decorative labels retain ordinary text scoring.
+- The committed model artifact and threshold are unchanged. No real Gmail/Outlook serving-path recall or false-positive rate is claimed without consented, time-separated data.
+
 ## [2026-09-20 15:51 PT] — Exclude hidden HTML text and abstain on uncovered body segments
 
 ### Why
