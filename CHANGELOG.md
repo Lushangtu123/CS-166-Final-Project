@@ -22,6 +22,32 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-20 12:57 PT] — Abstain on low-context email text
+
+### Why
+- The character n-gram model could produce critical-risk scores for very short,
+  routine subjects such as `Hello` or `File shared with you`, despite having too
+  little context for a reliable content classification.
+- Raising the global model threshold would also reduce phishing recall on
+  sufficiently detailed messages.
+
+### Files changed
+- `website/content_inference.py`: add a deterministic pre-vectorization context
+  gate requiring at least five Unicode word tokens and 40 non-whitespace
+  characters, returning `insufficient_context` with nullable model scores.
+- `website/app.py`, `website/static/app.js`, and frontend/backend tests: preserve
+  independent rule and structure evidence, render an honest incomplete result,
+  and explain the new abstention without probability bars.
+- `README.md` and committed-model regressions: document the additive status and
+  cover short legitimate subjects without changing the model artifact or global
+  decision threshold.
+
+### Effect
+- Short, low-context messages no longer receive an ML phishing verdict solely
+  from sparse character patterns. With no independent evidence they return
+  `unknown`; suspicious links, credential pressure, sender evidence, and
+  dangerous attachment metadata continue to determine risk normally.
+
 ## [2026-09-20 10:03 PT] — Clarify provider aliases and deployment readiness
 
 ### Why

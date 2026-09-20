@@ -482,8 +482,22 @@ class ContentModelArtifactTests(unittest.TestCase):
                 unsupported = predict_content(pipeline, subject, body)
                 self.assertEqual(
                     unsupported["ml_status"],
-                    "insufficient_feature_coverage",
+                    "insufficient_context",
                 )
+
+        short_legitimate_subjects = (
+            "Hello",
+            "Meeting notes",
+            "File shared with you",
+            "Your receipt",
+            "Document available",
+        )
+        for subject in short_legitimate_subjects:
+            with self.subTest(short_legitimate_subject=subject):
+                result = predict_content(pipeline, subject, "")
+                self.assertEqual(result["ml_status"], "insufficient_context")
+                self.assertIsNone(result["ml_prediction"])
+                self.assertIsNone(result["ml_phishing_probability"])
 
         hard_negatives = (
             (

@@ -1129,15 +1129,16 @@ function renderContentResult(data) {
   // ── ML Classifier Card ───────────────────────────────────────────────────
   const mlCard = document.getElementById('content-ml-card');
   const mlProbabilityBars = document.getElementById('content-ml-prob-bars');
-  if (data.ml_status === 'insufficient_feature_coverage') {
+  if (data.ml_status === 'insufficient_context' || data.ml_status === 'insufficient_feature_coverage') {
     mlCard.style.display = '';
     mlProbabilityBars.style.display = 'none';
     document.getElementById('content-phish-bar').style.width = '0%';
     document.getElementById('content-phish-pct').textContent = '—';
     document.getElementById('content-legit-bar').style.width = '0%';
     document.getElementById('content-legit-pct').textContent = '—';
-    document.getElementById('content-ml-sub').textContent =
-      'Text-model coverage was insufficient, so ML classification was not applied.';
+    document.getElementById('content-ml-sub').textContent = data.ml_status === 'insufficient_context'
+      ? 'The message contains too little text, so ML classification was not applied.'
+      : 'Text-model coverage was insufficient, so ML classification was not applied.';
     document.getElementById('content-ml-metrics').innerHTML = '';
     document.getElementById('content-ml-contribs').innerHTML =
       '<div class="ml-contribs-title">Rule, sender, link, and message-structure checks still ran.</div>';

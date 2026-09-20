@@ -63,6 +63,11 @@ class _UnexpectedClassifier(_Classifier):
         raise AssertionError("classifier must not score a zero-feature message")
 
 
+class _UnexpectedVectorizer(_CountingVectorizer):
+    def transform(self, _texts):
+        raise AssertionError("short input must not reach the vectorizer")
+
+
 class ContentInferenceTests(unittest.TestCase):
     def test_explanation_metadata_is_cached_and_sparse(self):
         vectorizer = _CountingVectorizer()
@@ -72,8 +77,10 @@ class ContentInferenceTests(unittest.TestCase):
             "decision_threshold": 0.5,
         }
 
-        first = predict_content(pipeline, "Urgent", "Account review")
-        second = predict_content(pipeline, "Urgent", "Account review")
+        subject = "Urgent account review required today"
+        body = "Please review the complete account information before continuing."
+        first = predict_content(pipeline, subject, body)
+        second = predict_content(pipeline, subject, body)
 
         self.assertEqual(vectorizer.feature_name_calls, 1)
         self.assertEqual(first["ml_top_contributors"], second["ml_top_contributors"])
@@ -86,6 +93,37 @@ class ContentInferenceTests(unittest.TestCase):
         )
         self.assertEqual(first["ml_status"], "available")
 
+    def test_short_input_abstains_before_vectorization(self):
+        pipeline = {
+            "vectorizer": _UnexpectedVectorizer(),
+            "clf": _UnexpectedClassifier(),
+            "decision_threshold": 0.5,
+        }
+
+        result = predict_content(pipeline, "File shared with you", "")
+
+        self.assertEqual(result["ml_status"], "insufficient_context")
+        self.assertIsNone(result["ml_phishing_probability"])
+        self.assertIsNone(result["ml_legitimate_probability"])
+        self.assertIsNone(result["ml_prediction"])
+        self.assertEqual(result["ml_top_contributors"], [])
+
+    def test_html_markup_does_not_count_as_model_context(self):
+        pipeline = {
+            "vectorizer": _UnexpectedVectorizer(),
+            "clf": _UnexpectedClassifier(),
+            "decision_threshold": 0.5,
+        }
+
+        result = predict_content(
+            pipeline,
+            "",
+            '<div class="message"><span data-kind="content">Hello</span></div>',
+        )
+
+        self.assertEqual(result["ml_status"], "insufficient_context")
+        self.assertIsNone(result["ml_prediction"])
+
     def test_zero_feature_message_abstains_without_calling_classifier(self):
         pipeline = {
             "vectorizer": _EmptyVectorizer(),
@@ -93,7 +131,11 @@ class ContentInferenceTests(unittest.TestCase):
             "decision_threshold": 0.5,
         }
 
-        result = predict_content(pipeline, "会议提醒", "明天下午三点开会。")
+        result = predict_content(
+            pipeline,
+            "Detailed project planning notes",
+            "Please review this complete coordination summary before tomorrow's meeting.",
+        )
 
         self.assertEqual(result["ml_status"], "insufficient_feature_coverage")
         self.assertIsNone(result["ml_phishing_probability"])

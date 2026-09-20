@@ -265,8 +265,14 @@ or a zero score as universal measured phishing recall.
 If the fitted vectorizer produces no usable feature for a message, the model
 abstains with `ml_status=insufficient_feature_coverage` and nullable model
 scores instead of inventing a prediction. Rules, sender, link, and structure
-checks still run. The UI labels supported outputs as a **model risk score**, not
-a calibrated probability or confidence claim.
+checks still run. The model also abstains with `ml_status=insufficient_context`
+before vectorization when the combined subject and body contain fewer than five
+Unicode word tokens or fewer than 40 non-whitespace characters; HTML tags and
+attributes do not count toward this context measure. This prevents short routine
+subjects from producing unsupported high-confidence verdicts.
+With no independent evidence, either abstention produces an incomplete
+`unknown` result rather than claiming the email is safe. The UI labels supported
+outputs as a **model risk score**, not a calibrated probability or confidence claim.
 
 Safety-footer phrases such as “unsubscribe” and “privacy policy” are reported
 as context but never subtract risk: an attacker can copy them. Regional English

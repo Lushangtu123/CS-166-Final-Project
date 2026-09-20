@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+from html import unescape
 from pathlib import Path
 import pickle
 import platform
@@ -17,6 +18,8 @@ from sklearn.naive_bayes import ComplementNB
 
 ARTIFACT_SCHEMA = "phishguard-content-model-v1"
 PIPELINE_KEYS = {"vectorizer", "clf", "decision_threshold", "metrics", "top_terms"}
+MIN_MODEL_CONTEXT_TOKENS = 5
+MIN_MODEL_CONTEXT_NONSPACE_CHARS = 40
 
 
 def _major_minor(version: str) -> str:
@@ -100,8 +103,24 @@ def _explanation_metadata(pipeline: dict) -> tuple[np.ndarray, np.ndarray | None
 def predict_content(pipeline: dict, subject: str, body: str) -> dict:
     """Score one subject/body pair and return bounded explainability details."""
     text = (subject or "") + "\n" + (body or "")
-    features = pipeline["vectorizer"].transform([text])
     threshold = float(pipeline.get("decision_threshold", 0.5))
+    context_text = re.sub(r"<[^>]*>", " ", unescape(text))
+    token_count = len(re.findall(r"\w+", context_text, flags=re.UNICODE))
+    nonspace_char_count = sum(not character.isspace() for character in context_text)
+    if (
+        token_count < MIN_MODEL_CONTEXT_TOKENS
+        or nonspace_char_count < MIN_MODEL_CONTEXT_NONSPACE_CHARS
+    ):
+        return {
+            "ml_status": "insufficient_context",
+            "ml_phishing_probability": None,
+            "ml_legitimate_probability": None,
+            "ml_label": None,
+            "ml_prediction": None,
+            "ml_decision_threshold": round(threshold * 100, 1),
+            "ml_top_contributors": [],
+        }
+    features = pipeline["vectorizer"].transform([text])
     if features.nnz == 0:
         return {
             "ml_status": "insufficient_feature_coverage",

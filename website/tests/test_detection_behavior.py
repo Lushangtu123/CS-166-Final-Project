@@ -308,6 +308,59 @@ class DisposableEmailClassificationTests(unittest.TestCase):
 
 
 class ContentRuleRobustnessTests(unittest.TestCase):
+    def test_insufficient_context_keeps_rules_and_marks_clean_result_incomplete(self):
+        abstention = {
+            "ml_status": "insufficient_context",
+            "ml_phishing_probability": None,
+            "ml_legitimate_probability": None,
+            "ml_label": None,
+            "ml_prediction": None,
+            "ml_decision_threshold": 35.1,
+            "ml_top_contributors": [],
+        }
+        with patch.object(app, "_content_pipeline", {
+            "decision_threshold": 0.351,
+            "metrics": {},
+        }), patch.object(app, "predict_content", return_value=abstention):
+            result = json.loads(asyncio.run(app.analyze_content_endpoint(
+                app.ContentRequest(subject="Meeting notes", body="")
+            )).body)
+
+        self.assertEqual(result["ml_status"], "insufficient_context")
+        self.assertFalse(result["analysis_complete"])
+        self.assertEqual(result["risk_level"], "unknown")
+        self.assertIsNone(result["combined_phishing_score"])
+        self.assertTrue(any(
+            "too little text" in warning.lower()
+            for warning in result["analysis_warnings"]
+        ))
+
+    def test_insufficient_context_does_not_erase_independent_link_risk(self):
+        abstention = {
+            "ml_status": "insufficient_context",
+            "ml_phishing_probability": None,
+            "ml_legitimate_probability": None,
+            "ml_label": None,
+            "ml_prediction": None,
+            "ml_decision_threshold": 35.1,
+            "ml_top_contributors": [],
+        }
+        with patch.object(app, "_content_pipeline", {
+            "decision_threshold": 0.351,
+            "metrics": {},
+        }), patch.object(app, "predict_content", return_value=abstention):
+            result = json.loads(asyncio.run(app.analyze_content_endpoint(
+                app.ContentRequest(
+                    subject="Review",
+                    body='<a href="https://paypal.com.login.example">Continue</a>',
+                )
+            )).body)
+
+        self.assertEqual(result["ml_status"], "insufficient_context")
+        self.assertIn(result["risk_level"], {"high", "critical"})
+        self.assertIsNotNone(result["combined_phishing_score"])
+        self.assertFalse(result["analysis_complete"])
+
     def test_ml_abstention_keeps_rules_and_marks_clean_result_incomplete(self):
         abstention = {
             "ml_status": "insufficient_feature_coverage",

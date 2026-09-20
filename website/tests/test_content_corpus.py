@@ -31,8 +31,8 @@ class SpaPhishCorpusTests(unittest.TestCase):
                 "clf": classifier,
                 "decision_threshold": 0.4,
             },
-            "会议提醒",
-            "明天下午三点开会。",
+            "Detailed project planning notes",
+            "Please review this complete coordination summary before tomorrow's meeting.",
         )
 
         self.assertEqual(result["ml_status"], "insufficient_feature_coverage")

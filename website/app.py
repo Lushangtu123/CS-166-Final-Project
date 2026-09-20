@@ -2712,7 +2712,12 @@ async def _analyze_content(
         result["ml_metrics"] = _content_pipeline["metrics"]
 
         ml_probability = ml["ml_phishing_probability"]
-        if ml.get("ml_status") == "insufficient_feature_coverage":
+        if ml.get("ml_status") == "insufficient_context":
+            result["analysis_warnings"].append(
+                "The message contains too little text for reliable model scoring; "
+                "ML classification was not applied."
+            )
+        elif ml.get("ml_status") == "insufficient_feature_coverage":
             result["analysis_warnings"].append(
                 "Text model feature coverage is insufficient; ML classification "
                 "was not applied."
