@@ -857,13 +857,18 @@ Here is the requested update.
         result = self.upload([deep.as_bytes()])
         self.assertFalse(result['analysis_complete'])
         self.assertTrue(any('limit' in s for s in result['message_structure']['parse_warnings']))
+        self.assertEqual(result['message_structure']['attachments'][0]['inspection_status'], 'metadata_only')
         many = EmailMessage()
         many.set_content('Hello')
-        for _ in range(22):
-            many.add_attachment(clean, filename='forwarded.eml')
+        for index in range(22):
+            many.add_attachment(clean, filename=f'forwarded-{index}.eml')
         result = self.upload([many.as_bytes()])
         self.assertFalse(result['analysis_complete'])
         self.assertEqual(len(result['message_structure']['nested_messages']), 20)
+        self.assertEqual(
+            [item['inspection_status'] for item in result['message_structure']['attachments']],
+            ['message_analyzed'] * 20 + ['metadata_only'] * 2,
+        )
 
     def test_attached_email_retains_identity_evidence_without_trusting_inner_auth(self):
         from email.message import EmailMessage
@@ -1010,7 +1015,7 @@ Here is the requested update.
 
     def test_attachment_only_email_can_return_a_verdict(self):
         for filename, expected in (('invoice.exe', 'high'), ('invoice.zip', 'medium'),
-                                   ('notes.txt', 'safe')):
+                                   ('notes.txt', 'unknown')):
             with self.subTest(filename=filename):
                 raw = ('Content-Type: application/octet-stream\n'
                        f'Content-Disposition: attachment; filename="{filename}"\n\npayload')
@@ -1019,10 +1024,100 @@ Here is the requested update.
                 )).body)
                 self.assertEqual(result['risk_level'], expected)
                 self.assertEqual(result['message_structure']['attachments'][0]['filename'], filename)
+                self.assertEqual(result['message_structure']['attachments'][0]['inspection_status'], 'metadata_only')
+                self.assertFalse(result['analysis_complete'])
+                self.assertTrue(any('attachment content' in warning.lower()
+                                    for warning in result['analysis_warnings']))
         for request in (app.ContentRequest(), app.ContentRequest(raw_email='\n\n')):
             with self.assertRaises(app.HTTPException) as error:
                 asyncio.run(app.analyze_content_endpoint(request))
             self.assertEqual(error.exception.status_code, 400)
+
+    def test_benign_image_attachment_is_incomplete_not_safe(self):
+        from email.message import EmailMessage
+        message = EmailMessage()
+        message.set_content('Hello team. ' * 30)
+        message.add_attachment(b'opaque image bytes', maintype='image', subtype='png', filename='chart.png')
+        with patch.object(app, '_content_pipeline', None):
+            result = self.upload([message.as_bytes()])
+        self.assertEqual(result['risk_level'], 'unknown')
+        self.assertIsNone(result['combined_phishing_score'])
+        self.assertFalse(result['analysis_complete'])
+        self.assertEqual(result['message_structure']['attachments'], [
+            {'filename': 'chart.png', 'content_type': 'image/png', 'inspection_status': 'metadata_only'}
+        ])
+        self.assertEqual(result['message_structure']['parse_warnings'], [])
+        self.assertEqual(sum('attachment content' in warning.lower()
+                             for warning in result['analysis_warnings']), 1)
+
+    def test_inline_non_text_part_without_filename_has_coverage_status(self):
+        raw = (b'Content-Type: multipart/mixed; boundary=x\n\n'
+               b'--x\nContent-Type: text/plain\n\nHello team.\n'
+               b'--x\nContent-Type: image/png\nContent-Disposition: inline\n\nopaque\n--x--\n')
+        with patch.object(app, '_content_pipeline', None):
+            result = self.upload([raw])
+        self.assertEqual(result['risk_level'], 'unknown')
+        self.assertFalse(result['analysis_complete'])
+        self.assertEqual(result['message_structure']['attachments'], [
+            {'filename': 'unnamed', 'content_type': 'image/png', 'inspection_status': 'metadata_only'}
+        ])
+
+    def test_nested_message_inspection_status_reflects_success_and_ambiguity(self):
+        from email.message import EmailMessage
+        inner = EmailMessage()
+        inner.set_content('Hello team.')
+        outer = EmailMessage()
+        outer.set_content('Hello team.')
+        outer.add_attachment(inner, filename='forwarded.eml')
+        with patch.object(app, '_content_pipeline', None):
+            clean = self.upload([outer.as_bytes()])
+        self.assertEqual(clean['message_structure']['attachments'][0]['inspection_status'], 'message_analyzed')
+        self.assertTrue(clean['analysis_complete'])
+        self.assertFalse(any('attachment content' in warning.lower()
+                             for warning in clean['analysis_warnings']))
+
+        outer.add_attachment(inner, filename='forwarded.eml')
+        with patch.object(app, '_content_pipeline', None):
+            ambiguous = self.upload([outer.as_bytes()])
+        self.assertEqual(ambiguous['message_structure']['attachments'][0]['inspection_status'], 'metadata_only')
+        self.assertFalse(ambiguous['analysis_complete'])
+        self.assertEqual(ambiguous['risk_level'], 'unknown')
+
+    def test_unparsed_attached_message_keeps_metadata_only_status(self):
+        raw = (b'Content-Type: message/rfc822\nContent-Disposition: attachment; filename=forwarded.eml\n'
+               b'Content-Transfer-Encoding: base64\n\nRm9ybTogYWxpY2VAZXhhbXBsZS5jb20K')
+        with patch.object(app, '_content_pipeline', None):
+            result = self.upload([raw])
+        self.assertEqual(result['message_structure']['attachments'][0]['inspection_status'], 'metadata_only')
+        self.assertFalse(result['analysis_complete'])
+        self.assertTrue(result['message_structure']['parse_warnings'])
+
+    def test_ambiguous_mime_interpretation_cannot_claim_attached_message_was_analyzed(self):
+        raw = (b'Content-Type: message/rfc822\nContent-Type: text/plain\n'
+               b'Content-Disposition: attachment; filename=forwarded.eml\n\n'
+               b'From: alice@gmail.com\n\nHello')
+        with patch.object(app, '_content_pipeline', None):
+            result = self.upload([raw])
+        self.assertFalse(result['analysis_complete'])
+        self.assertTrue(result['message_structure']['parse_warnings'])
+        self.assertTrue(all(item['inspection_status'] == 'metadata_only'
+                            for item in result['message_structure']['attachments']))
+
+    def test_opaque_child_of_parsed_attached_message_keeps_outer_result_incomplete(self):
+        from email.message import EmailMessage
+        inner = EmailMessage()
+        inner.set_content('Hello team.')
+        inner.add_attachment(b'opaque', maintype='image', subtype='png', filename='chart.png')
+        outer = EmailMessage()
+        outer.set_content('Hello team.')
+        outer.add_attachment(inner, filename='forwarded.eml')
+        with patch.object(app, '_content_pipeline', None):
+            result = self.upload([outer.as_bytes()])
+        self.assertEqual(result['message_structure']['attachments'][0]['inspection_status'], 'message_analyzed')
+        self.assertFalse(result['analysis_complete'])
+        self.assertEqual(result['risk_level'], 'unknown')
+        self.assertTrue(any('attached message: attachment content' in warning.lower()
+                            for warning in result['analysis_warnings']))
 
     def test_unknown_charset_keeps_evidence_and_reports_fallback(self):
         for charset in ('utf-8', 'x-unknown-charset'):

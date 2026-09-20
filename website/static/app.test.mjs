@@ -168,6 +168,38 @@ test('incomplete analysis is not displayed as zero risk and cancels old animatio
   assert.match(elements.get('crb-sub').textContent, /incomplete/i);
 });
 
+test('attachment coverage is distinguished from parser and model limitations', () => {
+  const { context, elements } = loadFrontend();
+  const data = { total_score: 0, category_results: [], extra_indicators: [], safety_signals: [],
+    analysis_complete: false, risk_level: 'unknown', risk_label: 'Analysis Incomplete — Risk Undetermined',
+    combined_phishing_score: null };
+  context.renderContentResult({ ...data, message_structure: { attachments: [
+    { filename: 'chart.png', content_type: 'image/png', inspection_status: 'metadata_only' }
+  ], parse_warnings: [] } });
+  assert.match(elements.get('crb-sub').textContent, /attachment contents were not inspected/i);
+  assert.doesNotMatch(elements.get('crb-sub').textContent, /could not be reliably parsed/i);
+  assert.equal(elements.get('crb-score').textContent, '—');
+
+  context.renderContentResult({ ...data, message_structure: {
+    attachments: [], parse_warnings: ['MIME structure is malformed.']
+  } });
+  assert.match(elements.get('crb-sub').textContent, /could not be reliably parsed/i);
+  assert.doesNotMatch(elements.get('crb-sub').textContent, /attachment contents/i);
+
+  context.renderContentResult({ ...data, ml_status: 'insufficient_context', message_structure: {
+    attachments: [], parse_warnings: []
+  } });
+  assert.match(elements.get('crb-sub').textContent, /text model/i);
+  assert.doesNotMatch(elements.get('crb-sub').textContent, /could not be reliably parsed/i);
+
+  context.renderContentResult({ ...data,
+    analysis_warnings: ['Attached message: Attachment content was not inspected; only filenames and MIME types were checked.'],
+    message_structure: { attachments: [
+      { filename: 'forwarded.eml', content_type: 'message/rfc822', inspection_status: 'message_analyzed' }
+    ], parse_warnings: [] } });
+  assert.match(elements.get('crb-sub').textContent, /attachment contents were not inspected/i);
+});
+
 test('content model abstention is shown without probability bars', () => {
   const { context, elements } = loadFrontend();
   context.renderContentResult({

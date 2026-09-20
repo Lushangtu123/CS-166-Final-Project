@@ -206,7 +206,8 @@ def _message_text(message, *, unicode_source: bool = False) -> tuple[str, str, l
     for part in _mime_candidates(message, parse_warnings):
         content_type = part.get_content_type()
         if content_type in {'message/rfc822', 'message/global'}:
-            attachments.append({'filename': part.get_filename() or 'attached.eml', 'content_type': content_type})
+            attachments.append({'filename': part.get_filename() or 'attached.eml',
+                                'content_type': content_type, 'inspection_status': 'metadata_only'})
             continue
         filename = part.get_filename()
         disposition = part.get_content_disposition()
@@ -215,10 +216,12 @@ def _message_text(message, *, unicode_source: bool = False) -> tuple[str, str, l
             or disposition == "attachment"
             or content_type in _DANGEROUS_MIME_TYPES
             or content_type in _ARCHIVE_MIME_TYPES
+            or (not part.is_multipart() and content_type not in {'text/plain', 'text/html'})
         ):
             attachments.append({
                 "filename": filename or "unnamed",
                 "content_type": content_type,
+                "inspection_status": "metadata_only",
             })
             if PurePath(filename or '').suffix.lower() == '.eml':
                 warning = 'Opaque .eml attachment was not parsed as an encapsulated message; analysis is incomplete.'
@@ -255,8 +258,18 @@ def _message_text(message, *, unicode_source: bool = False) -> tuple[str, str, l
         else:
             plain_parts.append(str(content))
 
-    attachments = [dict(filename=name, content_type=kind) for name, kind in dict.fromkeys(
-        (item['filename'], item['content_type']) for item in attachments)]
+    # Preserve the prior de-duplicated response shape while retaining enough
+    # internal evidence to avoid claiming one of several identical parts was
+    # fully inspected when another was not.
+    distinct_attachments = {}
+    for attachment in attachments:
+        key = (attachment['filename'], attachment['content_type'])
+        if key in distinct_attachments:
+            distinct_attachments[key]['_occurrences'] += 1
+        else:
+            attachment['_occurrences'] = 1
+            distinct_attachments[key] = attachment
+    attachments = list(distinct_attachments.values())
     return "\n".join(plain_parts), "\n".join(html_parts), attachments, parse_warnings, content_parts
 
 
@@ -377,9 +390,11 @@ def _analyze_message(message, *, unicode_source, trusted_authserv_ids, depth, bu
         parse_warnings.append('MIME structure is incomplete or malformed ('
                               + ', '.join(sorted(defect_names)) + '); analysis may be incomplete.')
     nested_messages = []
+    attachments_by_key = {(item['filename'], item['content_type']): item for item in attachments}
     for part in _walk_message_parts(message):
         if part.get_content_type() not in {'message/rfc822', 'message/global'}:
             continue
+        attachment = attachments_by_key.get((part.get_filename() or 'attached.eml', part.get_content_type()))
         encoding = str(part.get('Content-Transfer-Encoding', '')).strip().lower()
         if encoding not in {'', '7bit', '8bit', 'binary'}:
             warning = 'Transfer-encoded attached message was not inspected; analysis is incomplete.'
@@ -390,20 +405,36 @@ def _analyze_message(message, *, unicode_source, trusted_authserv_ids, depth, bu
         if not isinstance(children, list) or not children:
             parse_warnings.append('Attached message could not be parsed; analysis is incomplete.')
             continue
+        fully_analyzed = True
         for child in children:
             if depth >= 3 or budget[0] <= 0:
                 warning = 'Attached-message depth/count limit reached; analysis is incomplete.'
                 if warning not in parse_warnings:
                     parse_warnings.append(warning)
+                fully_analyzed = False
                 break
             budget[0] -= 1
             nested = _analyze_message(child, unicode_source=unicode_source,
                                       trusted_authserv_ids=set(), depth=depth + 1, budget=budget)
             nested_messages.append(nested)
+            if nested['parse_warnings']:
+                fully_analyzed = False
             for warning in nested['parse_warnings']:
                 prefixed = 'Attached message: ' + warning
                 if prefixed not in parse_warnings:
                     parse_warnings.append(prefixed)
+        ambiguous_headers = any(
+            sum(name.lower() == field for name, _ in part.raw_items()) > 1
+            for field in ('content-type', 'content-transfer-encoding', 'content-disposition')
+        )
+        filename_is_unique = attachment and sum(
+            item['filename'] == attachment['filename'] for item in attachments
+        ) == 1
+        if (fully_analyzed and attachment and attachment['_occurrences'] == 1
+                and filename_is_unique and not ambiguous_headers):
+            attachment['inspection_status'] = 'message_analyzed'
+    for attachment in attachments:
+        del attachment['_occurrences']
     # Analyze both alternatives. Phishers commonly put harmless text in the
     # plain part and the credential link only in the HTML part.
     body = "\n".join(part for part in (plain, html) if part)

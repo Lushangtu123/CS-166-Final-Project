@@ -2739,6 +2739,13 @@ async def _analyze_content(
             minimum_level=result["risk_floor"],
         ))
 
+    if structure and any(item['inspection_status'] == 'metadata_only'
+                         for item in structure['attachments']):
+        warning = ('Attachment content was not inspected; only filenames and MIME types '
+                   'were checked. Analysis is incomplete.')
+        result['analysis_warnings'].append(warning)
+        result['extra_indicators'].append({'level': 'info', 'msg': warning})
+
     result['analysis_warnings'] = list(dict.fromkeys(result['analysis_warnings']
         + (structure['parse_warnings'] if structure else [])))
     result['analysis_complete'] = not bool(result['analysis_warnings'])

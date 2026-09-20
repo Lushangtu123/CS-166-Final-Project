@@ -169,8 +169,15 @@ text and attachment metadata. Candidate exhaustion is reported. Alternate MIME
 trees and encapsulated messages are not reparsed; this is bounded evidence
 recovery, not a claim that every possible interpretation was checked.
 The content response includes `analysis_complete`; `false` means some content
-could not be reliably analyzed, not evidence of phishing by itself. If there is
-no detected risk and parsing is incomplete, `risk_level` is `unknown` and
+could not be reliably analyzed, not evidence of phishing by itself. Attachment
+items include `inspection_status`: `metadata_only` means the filename and MIME
+type were checked but attachment bytes were not inspected;
+`message_analyzed` means an encapsulated email was successfully traversed under
+the existing detector limits. Non-text inline parts without filenames are also
+reported as `metadata_only`. Opaque attachment content adds one bounded
+top-level `analysis_warnings` entry, separate from MIME `parse_warnings`, but no
+phishing points. If there is no detected risk and analysis is incomplete,
+`risk_level` is `unknown` and
 `combined_phishing_score` is `null`. The UI shows “Analysis Incomplete” and a dash
 instead of a green zero. Detected risks remain visible alongside the warning.
 API consumers must accept this additional risk level and nullable score.
@@ -211,7 +218,10 @@ preserved rather than adding the same content repeatedly. Opaque `.eml` files
 declared as generic binary attachments are reported as uninspected, not silently
 treated as fully checked. Encapsulated messages using base64, quoted-printable,
 or other unsupported transfer encodings also produce an incomplete-analysis
-warning rather than a complete verdict. This does not unpack archives or execute attachments.
+warning rather than a complete verdict. Ambiguous duplicate MIME interpretations
+or indistinguishable attachment names never claim `message_analyzed`. A parsed
+attached email can still contain its own `metadata_only` attachment, making the
+outer result incomplete. This does not unpack archives or execute attachments.
 
 Raw input enables these checks:
 
