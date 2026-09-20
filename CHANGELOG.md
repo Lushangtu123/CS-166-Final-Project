@@ -22,6 +22,24 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-20 16:47 PT] — Score MIME alternatives separately and disclose unverified image/CSS views
+
+### Why
+- A constructed `multipart/alternative` email with one phishing view and one long routine view fell from 52.1% High to 7.4% complete Low when the views were concatenated for model inference.
+- Zero-sized or transparent CSS text and computed zero opacity could similarly dilute a visible phishing message; short credential instructions in image fallback text and unresolved `cid:`/relative images were not fully disclosed.
+- Deeply nested CSS made the stylesheet check take about 4.5 seconds on a 32 KB input.
+
+### Files changed
+- `website/email_structure.py` — retain alternative-branch paths for decoded MIME text while preserving duplicate-header candidate inspection.
+- `website/app.py` — score up to 16 branch-covering MIME views, retain the strongest model signal, disclose unscored views; conservatively handle additional CSS hiding patterns and short credential `alt`; report unresolved image references; scan nested stylesheets linearly.
+- `website/static/app.js` and `website/static/app.test.mjs` — display the unresolved-image coverage warning.
+- `website/tests/test_html_input_coverage.py` — add phishing/benign MIME controls, CSS and image regressions, branch-budget coverage, and a stylesheet performance guard.
+- `README.md` and `CHANGELOG.md` — document the behavior and remaining limits.
+
+### Effect
+- Both tested plain/HTML phishing variants now produce 52.1% High rather than 7.4% complete Low. CSS zero-font and transparent-text padding now abstains; `opacity:calc(0)` restores the visible-text 52.1% High signal. The short `cid:` credential-alt control is incomplete/Unknown rather than complete/Safe.
+- The 32 KB nested stylesheet control fell from about 4.5 seconds to about 0.02 seconds locally. The committed model artifact and threshold are unchanged; real Gmail/Outlook recall and false-positive rates remain unmeasured without consented, time-separated samples.
+
 ## [2026-09-20 16:16 PT] — Guard uncertain CSS and image fallback text
 
 ### Why

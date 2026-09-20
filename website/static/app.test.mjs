@@ -220,6 +220,14 @@ test('remote image coverage explains that image content was not inspected', () =
   assert.doesNotMatch(elements.get('crb-sub').textContent, /embedded image content was not inspected/i);
 });
 
+test('unresolved image coverage explains that referenced image content was not inspected', () => {
+  const { context, elements } = loadFrontend();
+  context.renderContentResult({ total_score: 0, category_results: [], extra_indicators: [], safety_signals: [],
+    analysis_complete: false, risk_level: 'unknown', risk_label: 'Analysis Incomplete — Risk Undetermined',
+    combined_phishing_score: null, unresolved_image_coverage: { count: 1, inspection_status: 'metadata_only' } });
+  assert.match(elements.get('crb-sub').textContent, /unresolved image references were not inspected/i);
+});
+
 test('model-only high result explains that independent evidence is absent', () => {
   const { context, elements } = loadFrontend();
   context.renderContentResult({ total_score: 0, category_results: [], extra_indicators: [], safety_signals: [],

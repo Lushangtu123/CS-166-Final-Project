@@ -168,6 +168,12 @@ original interpretation and up to **8 alternate combinations per part**, with
 text and attachment metadata. Candidate exhaustion is reported. Alternate MIME
 trees and encapsulated messages are not reparsed; this is bounded evidence
 recovery, not a claim that every possible interpretation was checked.
+For `multipart/alternative`, the text model scores rendered plain/HTML choices
+separately and retains the highest-risk scored view instead of concatenating
+mutually exclusive versions into one model input. Mixed parts remain together
+in each view. At most **16 MIME view combinations** are attempted; candidate
+exhaustion or a view the model cannot score marks the analysis incomplete.
+Heuristic and destination checks still inspect every part.
 The content response includes `analysis_complete`; `false` means some content
 could not be reliably analyzed, not evidence of phishing by itself. Attachment
 items include `inspection_status`: `metadata_only` means the filename and MIME
@@ -204,6 +210,10 @@ incomplete; a Safe label then says it applies only to inspected text. This
 exception avoids treating every decorative logo as an undetermined message.
 The detector does not decode embedded images, scan QR codes, perform OCR, or
 fetch remote images; remote destinations still receive the existing URL checks.
+`cid:` and image references without a usable remote base are reported in
+`unresolved_image_coverage` (capped at 20), with their own incomplete-analysis
+warning. The detector does not assume these image bytes are available merely
+because the HTML names them.
 
 MIME tree construction is limited to **200 message/part nodes per upload**,
 including the root. This bounds deeply nested and very wide messages before
@@ -277,10 +287,14 @@ not treated as visible prose. The content model now receives this same
 MIME-aware visible text rather than raw HTML. Text under the HTML `hidden`
 attribute or inline `display:none` / `visibility:hidden` / `opacity:0` is also excluded from
 text rules and model input; a warning marks the result incomplete when such
-text is present. Inline `visibility:visible` can restore a child of a
+text is present. Literal `opacity:calc(0)` is handled the same way. Inline
+`visibility:visible` can restore a child of a
 `visibility:hidden` element, but not a child of `display:none` or `opacity:0`.
 Stylesheet rules containing `display:none`, `visibility:hidden`/`collapse`, or
-`opacity:0` are detected conservatively, including inside media-rule blocks.
+`opacity:0`, zero `font-size`, or transparent text color are detected
+conservatively, including inside media-rule blocks. Inline zero `font-size` and
+transparent text color also mark rendering uncertain. Other `calc(...)` opacity
+expressions are left unscored when their visible result cannot be established.
 Because selector matching and CSS cascade are not fully rendered, the API sets
 `ml_status=unverified_rendering`, leaves model scores null, and marks analysis
 incomplete instead of allowing hidden CSS padding to produce a complete Low or
@@ -311,6 +325,8 @@ non-whitespace characters, or a substantial no-space non-Latin passage) is
 conditional fallback content: its presence
 produces `ml_status=unverified_rendering` and an incomplete-analysis warning,
 without assuming the image fails or treating that alternative as always visible.
+Short instructions requesting credentials, such as “Enter password,” are also
+treated as conditional fallback content.
 Short decorative labels such as “Company logo” do not disable the text model;
 this is a coverage heuristic, not a guarantee that shorter `alt` text is safe.
 Usable `<picture>` sources also keep `alt` conditional. Image pixels are still not

@@ -1095,6 +1095,8 @@ function renderContentResult(data) {
       (data.analysis_warnings || []).some(warning => warning.includes('Embedded image content was not inspected;'));
     const remoteImageCoverage = data.remote_image_coverage?.inspection_status === 'metadata_only' ||
       (data.analysis_warnings || []).some(warning => warning.includes('Remote image content was not inspected;'));
+    const unresolvedImageCoverage = data.unresolved_image_coverage?.inspection_status === 'metadata_only' ||
+      (data.analysis_warnings || []).some(warning => warning.includes('Unresolved image references were not inspected;'));
     const parseIssues = (data.message_structure?.parse_warnings || []).length > 0;
     subParts.push('Analysis incomplete. Review the warnings below.');
     if (attachmentCoverage) {
@@ -1102,6 +1104,7 @@ function renderContentResult(data) {
     }
     if (inlineImageCoverage) subParts.push('Embedded image content was not inspected.');
     if (remoteImageCoverage) subParts.push('Remote image content was not inspected.');
+    if (unresolvedImageCoverage) subParts.push('Unresolved image references were not inspected.');
     if (parseIssues) subParts.push('Some message content could not be reliably parsed.');
     if (['insufficient_context', 'insufficient_feature_coverage', 'unverified_rendering'].includes(data.ml_status)) {
       subParts.push('The text model could not score this message.');

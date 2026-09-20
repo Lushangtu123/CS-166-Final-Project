@@ -3,6 +3,7 @@ from email.message import EmailMessage
 import json
 from pathlib import Path
 import sys
+import time
 import unittest
 from unittest.mock import patch
 
@@ -85,10 +86,76 @@ class HTMLInputCoverageTests(unittest.TestCase):
                 'ml_prediction': None, 'ml_top_contributors': [],
             }
             self.analyze(raw_email=message.as_string())
-        body = predict.call_args.args[2]
-        self.assertIn('<style>literal plain text</style>', body)
-        self.assertIn('Visible meeting note.', body)
-        self.assertNotIn('hidden words', body)
+        bodies = [call.args[2] for call in predict.call_args_list]
+        self.assertEqual(len(bodies), 2)
+        self.assertTrue(any('<style>literal plain text</style>' in body for body in bodies))
+        self.assertTrue(any('Visible meeting note.' in body for body in bodies))
+        self.assertTrue(all('hidden words' not in body for body in bodies))
+
+    def test_mime_alternatives_cannot_dilute_phishing_model_signal(self):
+        pipeline = self.deployment_pipeline()
+        phishing = ('Your subscription renewal of $499 is complete. If you did not '
+                    'authorize this charge, call 1-888-555-0199 immediately.')
+        routine = 'Please review the project notes before our meeting tomorrow. ' * 30
+        subject = 'Invoice problem - call support'
+        with patch.object(app, '_content_pipeline', pipeline):
+            control = self.analyze(subject=subject, body=f'<p>{phishing}</p>')
+            self.assertEqual(control['risk_level'], 'high')
+            for plain, html in ((routine, f'<p>{phishing}</p>'),
+                                (phishing, f'<p>{routine}</p>')):
+                with self.subTest(plain=plain[:20]):
+                    message = EmailMessage()
+                    message['Subject'] = subject
+                    message.set_content(plain)
+                    message.add_alternative(html, subtype='html')
+                    result = self.analyze(raw_email=message.as_string())
+                    self.assertEqual(result['risk_level'], 'high')
+                    self.assertGreaterEqual(result['ml_phishing_probability'],
+                                            control['ml_phishing_probability'])
+                    self.assertTrue(result['analysis_complete'])
+
+    def test_nested_mime_choices_cannot_starve_later_phishing_alternative(self):
+        pipeline = self.deployment_pipeline()
+        phishing = ('Your subscription renewal of $499 is complete. If you did not '
+                    'authorize this charge, call 1-888-555-0199 immediately.')
+        message = EmailMessage()
+        message['Subject'] = 'Invoice problem - call support'
+        message.make_alternative()
+        routine_branch = EmailMessage()
+        routine_branch.make_mixed()
+        for index in range(5):
+            choice = EmailMessage()
+            choice.set_content(f'Please review the project notes for meeting {index} tomorrow.')
+            choice.add_alternative(
+                f'<p>Please review the project notes for meeting {index} tomorrow.</p>',
+                subtype='html',
+            )
+            routine_branch.attach(choice)
+        message.attach(routine_branch)
+        phishing_branch = EmailMessage()
+        phishing_branch.set_content(f'<p>{phishing}</p>', subtype='html')
+        message.attach(phishing_branch)
+        with patch.object(app, '_content_pipeline', pipeline):
+            result = self.analyze(raw_email=message.as_string())
+        self.assertEqual(result['risk_level'], 'high')
+        self.assertGreaterEqual(result['ml_phishing_probability'], 50)
+        self.assertFalse(result['analysis_complete'])
+        self.assertTrue(any('alternative view limit' in warning.lower()
+                            for warning in result['analysis_warnings']))
+
+    def test_routine_mime_alternatives_do_not_become_high_risk(self):
+        pipeline = self.deployment_pipeline()
+        message = EmailMessage()
+        message['Subject'] = 'Project update'
+        message.set_content('Please review the project notes before our meeting tomorrow.')
+        message.add_alternative(
+            '<p>The meeting moved to Tuesday. Please review the regular project agenda.</p>',
+            subtype='html',
+        )
+        with patch.object(app, '_content_pipeline', pipeline):
+            result = self.analyze(raw_email=message.as_string())
+        self.assertNotIn(result['risk_level'], {'high', 'critical'})
+        self.assertTrue(result['analysis_complete'])
 
     def test_inline_data_images_mark_incomplete_without_risk_points(self):
         clean_text = 'Please review the project notes before our meeting tomorrow.'
@@ -337,6 +404,21 @@ class HTMLInputCoverageTests(unittest.TestCase):
         self.assertEqual(result['remote_image_coverage']['count'], 1)
         self.assertEqual(result['risk_level'], 'unknown')
 
+    def test_cid_and_unbased_relative_images_are_disclosed_as_unresolved(self):
+        for source in ('cid:notice', 'images/notice.png'):
+            with self.subTest(source=source), patch.object(app, '_content_pipeline', None):
+                result = self.analyze(subject='Project notes', body=(
+                    '<p>Please review the detailed project notes before our meeting tomorrow.</p>'
+                    f'<img src="{source}">'
+                ))
+                self.assertEqual(result.get('unresolved_image_coverage'), {
+                    'count': 1, 'inspection_status': 'metadata_only',
+                })
+                self.assertFalse(result['analysis_complete'])
+                self.assertEqual(result['risk_level'], 'unknown')
+                self.assertTrue(any('unresolved image' in warning.lower()
+                                    for warning in result['analysis_warnings']))
+
     def test_video_source_is_not_counted_as_an_image(self):
         body = ('<p>Hello team, please review the detailed project notes for our next meeting.</p>'
                 '<video><source src="https://media.example.org/demo.mp4" type="video/mp4"></video>')
@@ -570,6 +652,35 @@ class HTMLInputCoverageTests(unittest.TestCase):
                 self.assertTrue(any('hidden html text' in warning.lower()
                                     for warning in warnings))
 
+    def test_calculated_zero_opacity_cannot_pad_visible_phishing_text(self):
+        pipeline = self.deployment_pipeline()
+        phishing = ('Your subscription renewal of $499 is complete. If you did not '
+                    'authorize this charge, call 1-888-555-0199 immediately.')
+        routine = 'Please review the project notes before our meeting tomorrow. ' * 30
+        with patch.object(app, '_content_pipeline', pipeline):
+            control = self.analyze(subject='Invoice problem - call support', body=f'<p>{phishing}</p>')
+            result = self.analyze(subject='Invoice problem - call support', body=(
+                f'<p>{phishing}</p><div style="opacity:calc(0)">{routine}</div>'
+            ))
+        self.assertEqual(result['ml_phishing_probability'], control['ml_phishing_probability'])
+        self.assertEqual(result['risk_level'], 'high')
+        self.assertFalse(result['analysis_complete'])
+        self.assertTrue(any('hidden html text' in warning.lower()
+                            for warning in result['analysis_warnings']))
+
+    def test_unevaluated_opacity_math_cannot_leave_complete_low_risk(self):
+        pipeline = self.deployment_pipeline()
+        phishing = ('Your subscription renewal of $499 is complete. If you did not '
+                    'authorize this charge, call 1-888-555-0199 immediately.')
+        routine = 'Please review the project notes before our meeting tomorrow. ' * 30
+        with patch.object(app, '_content_pipeline', pipeline):
+            result = self.analyze(subject='Invoice problem - call support', body=(
+                f'<p>{phishing}</p><div style="opacity:calc(1 - 1)">{routine}</div>'
+            ))
+        self.assertFalse(result['analysis_complete'])
+        self.assertEqual(result['ml_status'], 'unverified_rendering')
+        self.assertNotEqual(result['risk_level'], 'low')
+
     def test_stylesheet_hide_rule_cannot_produce_complete_low_risk(self):
         pipeline = self.deployment_pipeline()
         subject = 'Invoice problem - call support'
@@ -586,6 +697,22 @@ class HTMLInputCoverageTests(unittest.TestCase):
         self.assertTrue(any('stylesheet' in warning.lower()
                             for warning in result['analysis_warnings']))
 
+    def test_stylesheet_zero_font_or_transparent_text_cannot_dilute_model(self):
+        pipeline = self.deployment_pipeline()
+        phishing = ('Your subscription renewal of $499 is complete. If you did not '
+                    'authorize this charge, call 1-888-555-0199 immediately.')
+        routine = 'Please review the project notes before our meeting tomorrow. ' * 30
+        with patch.object(app, '_content_pipeline', pipeline):
+            for rule in ('font-size:0', 'color:transparent'):
+                with self.subTest(rule=rule):
+                    result = self.analyze(subject='Invoice problem - call support', body=(
+                        f'<style>.pad{{{rule}}}</style><p>{phishing}</p>'
+                        f'<div class="pad">{routine}</div>'
+                    ))
+                    self.assertFalse(result['analysis_complete'])
+                    self.assertEqual(result['ml_status'], 'unverified_rendering')
+                    self.assertNotEqual(result['risk_level'], 'low')
+
     def test_quoted_css_brace_cannot_bypass_stylesheet_warning(self):
         pipeline = self.deployment_pipeline()
         visible = ('Your subscription renewal of $499 is complete. If you did not '
@@ -599,6 +726,12 @@ class HTMLInputCoverageTests(unittest.TestCase):
         self.assertFalse(result['analysis_complete'])
         self.assertEqual(result['ml_status'], 'unverified_rendering')
         self.assertIsNone(result['ml_phishing_probability'])
+
+    def test_nested_stylesheet_scan_stays_bounded_near_body_limit(self):
+        css = '@media screen {' * 2000 + 'p{color:red}' + '}' * 2000
+        start = time.perf_counter()
+        self.assertFalse(app._stylesheet_may_hide_text(css))
+        self.assertLess(time.perf_counter() - start, 1.0)
 
     def test_inert_template_stylesheet_does_not_abstain(self):
         warnings = []
@@ -677,6 +810,20 @@ class HTMLInputCoverageTests(unittest.TestCase):
         self.assertEqual(result['ml_status'], 'unverified_rendering')
         self.assertTrue(any('alternative text' in warning.lower()
                             for warning in result['analysis_warnings']))
+
+    def test_short_credential_image_alt_cannot_leave_complete_safe_verdict(self):
+        pipeline = self.deployment_pipeline()
+        for source in ('https://images.example.org/notice.png', 'cid:notice'):
+            with self.subTest(source=source), patch.object(app, '_content_pipeline', pipeline):
+                result = self.analyze(subject='Project notes', body=(
+                    '<p>Please review the project notes before our meeting tomorrow.</p>'
+                    f'<img src="{source}" alt="Enter password">'
+                ))
+                self.assertFalse(result['analysis_complete'])
+                self.assertNotEqual(result['risk_level'], 'safe')
+                self.assertEqual(result['ml_status'], 'unverified_rendering')
+                self.assertTrue(any('alternative text' in warning.lower()
+                                    for warning in result['analysis_warnings']))
 
     def test_no_space_han_alt_cannot_leave_complete_safe_verdict(self):
         with patch.object(app, '_content_pipeline', None):

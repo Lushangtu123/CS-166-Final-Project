@@ -33,6 +33,7 @@ from collections import deque
 from email.utils import getaddresses
 from html.parser import HTMLParser
 from html import escape as escape_html
+from itertools import product
 from urllib.parse import unquote, urlparse, urljoin
 
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
@@ -2255,10 +2256,22 @@ _STYLESHEET_VISIBILITY_WARNING = (
     'A stylesheet may hide or reveal text; CSS rendering was not verified, '
     'so text-model classification was not applied.'
 )
+_INLINE_CSS_VISIBILITY_WARNING = (
+    'Inline CSS may conceal text; its rendering was not verified, '
+    'so text-model classification was not applied.'
+)
 _IMAGE_ALT_FALLBACK_WARNING = (
     'Image alternative text may be shown when an image is unavailable; '
     'that rendering was not verified, so text-model classification was not applied.'
 )
+_MIME_ALTERNATIVE_LIMIT_WARNING = (
+    'MIME alternative view limit reached; not every rendered version was model-scored. '
+    'Analysis is incomplete.'
+)
+_MIME_ALTERNATIVE_MODEL_WARNING = (
+    'At least one MIME alternative had insufficient text-model coverage; analysis is incomplete.'
+)
+_MAX_MIME_MODEL_VIEWS = 16
 _HTML_VOID_ELEMENTS = {
     'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta',
     'param', 'source', 'track', 'wbr',
@@ -2271,7 +2284,7 @@ _P_IMPLIED_END_START_TAGS = {
 }
 
 
-def _inline_visibility(style: str) -> tuple[bool, bool | None, bool]:
+def _inline_visibility(style: str) -> tuple[bool, bool | None, bool, bool]:
     """Read bounded visibility declarations, respecting !important."""
     # A semicolon inside quoted content, url(), or a CSS escape is not a
     # declaration boundary. Splitting it blindly can hide genuinely visible
@@ -2319,7 +2332,7 @@ def _inline_visibility(style: str) -> tuple[bool, bool | None, bool]:
     for declaration in declarations:
         name, separator, value = declaration.partition(':')
         name = _unescape_css(name).strip().lower()
-        if not separator or name not in {'display', 'visibility', 'opacity'}:
+        if not separator or name not in {'display', 'visibility', 'opacity', 'font-size', 'color'}:
             continue
         value = _unescape_css(value).strip().lower()
         important = bool(re.search(r'!\s*important\s*$', value))
@@ -2342,8 +2355,16 @@ def _inline_visibility(style: str) -> tuple[bool, bool | None, bool]:
     opacity_hidden = bool(
         re.fullmatch(r'[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?', opacity_number)
         and float(opacity_number) <= 0
+    ) or bool(re.fullmatch(r'calc\(\s*[+-]?0+(?:\.0+)?%?\s*\)', opacity))
+    font_size = values.get('font-size', ('', False))[0]
+    color = values.get('color', ('', False))[0]
+    uncertain = bool(
+        re.fullmatch(r'[+]?0+(?:\.0+)?(?:[a-z]+|%)?', font_size)
+        or color == 'transparent'
+        or re.fullmatch(r'(?:rgba|hsla)\([^)]*,\s*0+(?:\.0+)?\s*\)', color)
+        or (opacity.startswith('calc(') and not opacity_hidden)
     )
-    return display_hidden, visibility_hidden, opacity_hidden
+    return display_hidden, visibility_hidden, opacity_hidden, uncertain
 
 
 def _stylesheet_may_hide_text(css: str) -> bool:
@@ -2376,7 +2397,8 @@ def _stylesheet_may_hide_text(css: str) -> bool:
     # Find balanced rule bodies outside quoted CSS strings. A brace in
     # content:"}" must not end the rule before its hiding declaration.
     cleaned = ''.join(without_comments)
-    starts = []
+    depth = 0
+    segment_start = 0
     quote = None
     index = 0
     while index < len(cleaned):
@@ -2390,12 +2412,22 @@ def _stylesheet_may_hide_text(css: str) -> bool:
         elif character in {'"', "'"}:
             quote = character
         elif character == '{':
-            starts.append(index + 1)
-        elif character == '}' and starts:
-            declaration = cleaned[starts.pop():index]
-            display, visibility, opacity = _inline_visibility(declaration)
-            if display or visibility is True or opacity:
+            if depth:
+                display, visibility, opacity, uncertain = _inline_visibility(
+                    cleaned[segment_start:index]
+                )
+                if display or visibility is True or opacity or uncertain:
+                    return True
+            depth += 1
+            segment_start = index + 1
+        elif character == '}' and depth:
+            display, visibility, opacity, uncertain = _inline_visibility(
+                cleaned[segment_start:index]
+            )
+            if display or visibility is True or opacity or uncertain:
                 return True
+            depth -= 1
+            segment_start = index + 1
         index += 1
     return False
 
@@ -2414,6 +2446,7 @@ def _visible_content_text(text: str, parse_warnings=None) -> str:
             self.excluded_hidden_text = False
             self.stylesheet_parts = []
             self.conditional_image_alt = False
+            self.uncertain_inline_style = False
             self.open_paragraph = False
 
         def _visually_hidden(self):
@@ -2477,12 +2510,14 @@ def _visible_content_text(text: str, parse_warnings=None) -> str:
             self._implicitly_close(tag)
             # Browsers retain the first duplicate attribute, not the last.
             style = next((value for name, value in attrs if name == 'style'), '')
-            display_hidden, visibility_hidden, opacity_hidden = _inline_visibility(style or '')
+            display_hidden, visibility_hidden, opacity_hidden, uncertain_style = _inline_visibility(style or '')
             parent_display = self.elements[-1][1] if self.elements else False
             parent_visibility = self.elements[-1][2] if self.elements else False
             element_display = (parent_display or any(name == 'hidden' for name, _ in attrs)
                                or display_hidden or opacity_hidden)
             element_visibility = parent_visibility if visibility_hidden is None else visibility_hidden
+            if uncertain_style and not (element_display or element_visibility):
+                self.uncertain_inline_style = True
             if tag == 'source' and any(name == 'srcset' and value and value.strip()
                                        for name, value in attrs):
                 for index in range(len(self.elements) - 1, -1, -1):
@@ -2508,9 +2543,14 @@ def _visible_content_text(text: str, parse_warnings=None) -> str:
                         # email. Longer fallback instructions may change what a
                         # reader sees when images fail or are blocked.
                         self.conditional_image_alt |= (
-                            sum(not char.isspace() for char in alt) >= 12
-                            and (len(re.findall(r'\w+', alt, flags=re.UNICODE)) >= 3
-                                 or bool(non_latin_script_segments(alt, 12)))
+                            bool(re.search(
+                                r'\b(?:enter|provide|send|share|submit|type|verify|confirm|reset|update)\s+'
+                                r'(?:(?:your|the|a)\s+)?(?:password|passcode|otp|one-time password|'
+                                r'credit card number|account)\b', alt, re.IGNORECASE,
+                            ))
+                            or (sum(not char.isspace() for char in alt) >= 12
+                                and (len(re.findall(r'\w+', alt, flags=re.UNICODE)) >= 3
+                                     or bool(non_latin_script_segments(alt, 12))))
                         )
             if tag not in _HTML_VOID_ELEMENTS:
                 self.elements.append((tag, element_display, element_visibility, False))
@@ -2550,6 +2590,8 @@ def _visible_content_text(text: str, parse_warnings=None) -> str:
         parse_warnings.append(_HIDDEN_HTML_TEXT_WARNING)
     if parse_warnings is not None and _stylesheet_may_hide_text(''.join(collector.stylesheet_parts)):
         parse_warnings.append(_STYLESHEET_VISIBILITY_WARNING)
+    if collector.uncertain_inline_style and parse_warnings is not None:
+        parse_warnings.append(_INLINE_CSS_VISIBILITY_WARNING)
     if collector.conditional_image_alt and parse_warnings is not None:
         parse_warnings.append(_IMAGE_ALT_FALLBACK_WARNING)
     return re.sub(r'\s+', ' ', ''.join(collector.parts)).strip()
@@ -2557,6 +2599,7 @@ def _visible_content_text(text: str, parse_warnings=None) -> str:
 
 _INLINE_IMAGE_WARNING = 'Embedded image content was not inspected; analysis is incomplete.'
 _REMOTE_IMAGE_WARNING = 'Remote image content was not inspected; analysis is incomplete.'
+_UNRESOLVED_IMAGE_WARNING = 'Unresolved image references were not inspected; analysis is incomplete.'
 _HAN_TEXT_WARNING = ('Substantial Han-script text detected; language-specific phishing checks '
                      'are limited and this content may not be fully evaluated.')
 _REMOTE_IMAGE_MIN_VISIBLE_CHARS = 80
@@ -2587,8 +2630,8 @@ def _mask_inline_data_payloads(text: str) -> str:
     return re.sub(r'data:image/[^\s\'"<>)]*', 'data:image/opaque', text, flags=re.IGNORECASE)
 
 
-def _image_reference_counts(text: str, parse_warnings=None) -> tuple[int, int]:
-    """Count embedded and remote HTML image references without inspecting pixels."""
+def _image_reference_counts(text: str, parse_warnings=None) -> tuple[int, int, int]:
+    """Count embedded, remote, and unresolved image references without inspecting pixels."""
     data_image = re.compile(r'^\s*data:image/[a-z0-9.+-]+', re.IGNORECASE)
     data_css = re.compile(r'url\(\s*[\'\"]?\s*data:image/[a-z0-9.+-]+', re.IGNORECASE)
     remote_image = re.compile(r'^\s*(?:https?:)?//', re.IGNORECASE)
@@ -2624,6 +2667,7 @@ def _image_reference_counts(text: str, parse_warnings=None) -> tuple[int, int]:
             super().__init__(convert_charrefs=True)
             self.data_count = 0
             self.remote_count = 0
+            self.unresolved_count = 0
             self.in_style = False
             self.in_script = False
             self.remote_base = None
@@ -2639,17 +2683,23 @@ def _image_reference_counts(text: str, parse_warnings=None) -> tuple[int, int]:
             except ValueError:
                 return False
 
+        def add_reference(self, value):
+            if data_image.match(value):
+                self.data_count = min(20, self.data_count + 1)
+            elif self.is_remote(value):
+                self.remote_count = min(20, self.remote_count + 1)
+            elif value.strip() and not value.lstrip().lower().startswith(('data:', '#')):
+                self.unresolved_count = min(20, self.unresolved_count + 1)
+
         def add_css(self, value):
             without_comments = re.sub(r'/\*.*?\*/', '', value, flags=re.DOTALL)
             normalized = _unescape_css(without_comments)
             self.data_count = min(20, self.data_count + len(data_css.findall(normalized)))
             self.remote_count = min(20, self.remote_count + len(remote_css.findall(normalized)))
-            if self.remote_base:
-                self.remote_count = min(20, self.remote_count + sum(
-                    self.is_remote(match.group(1))
-                    for match in css_url.finditer(normalized)
-                    if not remote_image.match(match.group(1))
-                ))
+            for match in css_url.finditer(normalized):
+                value = match.group(1)
+                if not (data_image.match(value) or remote_image.match(value)):
+                    self.add_reference(value)
 
         def handle_starttag(self, tag, attrs):
             if tag == 'script':
@@ -2668,26 +2718,15 @@ def _image_reference_counts(text: str, parse_warnings=None) -> tuple[int, int]:
                     continue
                 if tag in {'img', 'source', 'v:imagedata', 'v:fill', 'image'}:
                     if name == 'src':
-                        if data_image.match(value):
-                            self.data_count = min(20, self.data_count + 1)
-                        elif tag != 'source' and self.is_remote(value):
-                            self.remote_count = min(20, self.remote_count + 1)
+                        if tag != 'source' or data_image.match(value):
+                            self.add_reference(value)
                     elif tag == 'image' and name in {'href', 'xlink:href'}:
-                        if data_image.match(value):
-                            self.data_count = min(20, self.data_count + 1)
-                        elif self.is_remote(value):
-                            self.remote_count = min(20, self.remote_count + 1)
+                        self.add_reference(value)
                     elif name == 'srcset':
                         for url in srcset_urls(value):
-                            if data_image.match(url):
-                                self.data_count = min(20, self.data_count + 1)
-                            elif self.is_remote(url):
-                                self.remote_count = min(20, self.remote_count + 1)
+                            self.add_reference(url)
                 if name == 'background' and tag in {'body', 'table', 'td', 'th'}:
-                    if data_image.match(value):
-                        self.data_count = min(20, self.data_count + 1)
-                    elif self.is_remote(value):
-                        self.remote_count = min(20, self.remote_count + 1)
+                    self.add_reference(value)
                 if name == 'style':
                     self.add_css(value)
 
@@ -2721,13 +2760,14 @@ def _image_reference_counts(text: str, parse_warnings=None) -> tuple[int, int]:
             nested.close()
             self.data_count = min(20, self.data_count + nested.data_count)
             self.remote_count = min(20, self.remote_count + nested.remote_count)
+            self.unresolved_count = min(20, self.unresolved_count + nested.unresolved_count)
 
         def handle_data(self, data):
             if self.in_style and not self.in_script:
                 self.add_css(data)
 
     collector = _collect_html(ImageCollector, text, parse_warnings)
-    return collector.data_count, collector.remote_count
+    return collector.data_count, collector.remote_count, collector.unresolved_count
 
 
 def _has_password_form(text: str, parse_warnings=None) -> bool:
@@ -2779,7 +2819,9 @@ def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] 
         part_warnings = []
         visible = _visible_content_text(part, part_warnings)
         analysis_warnings.extend(part_warnings)
-        return visible, _STYLESHEET_VISIBILITY_WARNING in part_warnings
+        return visible, any(warning in part_warnings for warning in (
+            _STYLESHEET_VISIBILITY_WARNING, _INLINE_CSS_VISIBILITY_WARNING,
+        ))
 
     if content_parts is None:
         raw_parts = [subject, body]
@@ -2803,12 +2845,61 @@ def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] 
                        for part in visible_parts]
         _model_view['subject'] = model_parts[0]
         _model_view['body'] = '\n'.join(model_parts[1:]).strip()
+        if content_parts is not None:
+            choices = {}
+            for part in content_parts:
+                for path in part.get('alternative_paths', [()]):
+                    for group, branch in path:
+                        choices.setdefault(group, set()).add(branch)
+            if choices:
+                groups = sorted(choices)
+                bodies = []
+                seen = set()
+                defaults = tuple(min(choices[group]) for group in groups)
+                combinations = 1
+                for group in groups:
+                    combinations *= len(choices[group])
+                    if combinations > _MAX_MIME_MODEL_VIEWS:
+                        _model_view['mime_alternatives_truncated'] = True
+                        break
+                # Cover a leaf from each branch before spending the remaining
+                # budget on Cartesian combinations. Nested decoys must not
+                # starve a later, shallower phishing alternative.
+                paths = {tuple(path) for part in content_parts
+                         for path in part.get('alternative_paths', [()])}
+                assignments = [defaults]
+                for path in sorted(paths, key=lambda item: (len(item), item)):
+                    selected = dict(zip(groups, defaults))
+                    selected.update(path)
+                    branches = tuple(selected[group] for group in groups)
+                    if branches not in assignments:
+                        assignments.append(branches)
+                    if len(assignments) == _MAX_MIME_MODEL_VIEWS:
+                        break
+                if len(assignments) < _MAX_MIME_MODEL_VIEWS:
+                    for branches in product(*(sorted(choices[group]) for group in groups)):
+                        if branches not in assignments:
+                            assignments.append(branches)
+                        if len(assignments) == _MAX_MIME_MODEL_VIEWS:
+                            break
+                for branches in assignments:
+                    selected = dict(zip(groups, branches))
+                    body_view = '\n'.join(
+                        text for text, part in zip(model_parts[1:], content_parts)
+                        if any(all(selected[group] == branch for group, branch in path)
+                               for path in part.get('alternative_paths', [()]))
+                    ).strip()
+                    if body_view not in seen:
+                        seen.add(body_view)
+                        bodies.append(body_view)
+                _model_view['mime_bodies'] = bodies
     html_image_parts = [(part, visible) for part, visible, is_html
                         in zip(raw_parts[1:], visible_parts[1:], html_parts[1:]) if is_html]
     image_counts = [_image_reference_counts(part, analysis_warnings)
                     for part, _visible in html_image_parts]
     image_count = min(20, sum(counts[0] for counts in image_counts))
     remote_image_count = min(20, sum(counts[1] for counts in image_counts))
+    unresolved_image_count = min(20, sum(counts[2] for counts in image_counts))
     if _model_view is not None:
         _model_view['remote_image_dominant'] = any(
             counts[1] > 0 and sum(not char.isspace() for char in _strip_invisible_format_controls(visible))
@@ -2819,6 +2910,8 @@ def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] 
         analysis_warnings.append(_INLINE_IMAGE_WARNING)
     if remote_image_count:
         analysis_warnings.append(_REMOTE_IMAGE_WARNING)
+    if unresolved_image_count:
+        analysis_warnings.append(_UNRESOLVED_IMAGE_WARNING)
     url_parts = [_mask_inline_data_payloads(part) if is_html else part
                  for part, is_html in zip(raw_parts, html_parts)]
     raw_text = '\n'.join(url_parts)
@@ -3017,6 +3110,10 @@ def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] 
             "count": remote_image_count,
             "inspection_status": "metadata_only" if remote_image_count else "not_applicable",
         },
+        "unresolved_image_coverage": {
+            "count": unresolved_image_count,
+            "inspection_status": "metadata_only" if unresolved_image_count else "not_applicable",
+        },
         "risk_level":        risk_level,
         "risk_label":        risk_label,
         "total_score":       total_score,
@@ -3136,6 +3233,8 @@ async def _analyze_content(
     model_view = {}
     result = analyze_email_content(subject, body, content_parts=structure['content_parts'] if structure else None,
                                    _model_view=model_view)
+    if model_view.get('mime_alternatives_truncated'):
+        result['analysis_warnings'].append(_MIME_ALTERNATIVE_LIMIT_WARNING)
     remote_image_dominant = model_view['remote_image_dominant']
     result["input_mode"] = "raw-email" if structure else "subject-body"
     result["structure_score"] = structure["structure_score"] if structure else 0
@@ -3218,7 +3317,8 @@ async def _analyze_content(
             )).body)
             result['analysis_warnings'].extend('Attached message: ' + warning
                                                 for warning in nested_result['analysis_warnings']
-                                                if warning not in {_INLINE_IMAGE_WARNING, _REMOTE_IMAGE_WARNING})
+                                                if warning not in {_INLINE_IMAGE_WARNING, _REMOTE_IMAGE_WARNING,
+                                                                   _UNRESOLVED_IMAGE_WARNING})
             coverage = result['inline_image_coverage']
             coverage['count'] = min(20, coverage['count'] + nested_result['inline_image_coverage']['count'])
             if coverage['count']:
@@ -3228,6 +3328,11 @@ async def _analyze_content(
                                           + nested_result['remote_image_coverage']['count'])
             if remote_coverage['count']:
                 remote_coverage['inspection_status'] = 'metadata_only'
+            unresolved_coverage = result['unresolved_image_coverage']
+            unresolved_coverage['count'] = min(20, unresolved_coverage['count']
+                                               + nested_result['unresolved_image_coverage']['count'])
+            if unresolved_coverage['count']:
+                unresolved_coverage['inspection_status'] = 'metadata_only'
             if (nested_result['remote_image_coverage']['count']
                     and nested_result['risk_level'] == 'unknown'):
                 remote_image_dominant = True
@@ -3237,7 +3342,8 @@ async def _analyze_content(
             result['extra_indicators'].extend(
                 {'level': item['level'], 'msg': 'Attached message: ' + item['msg']}
                 for item in nested_result['extra_indicators']
-                if item['msg'] not in {_INLINE_IMAGE_WARNING, _REMOTE_IMAGE_WARNING})
+                if item['msg'] not in {_INLINE_IMAGE_WARNING, _REMOTE_IMAGE_WARNING,
+                                      _UNRESOLVED_IMAGE_WARNING})
             # Categories are not parent-body matches; expose their provenance.
             result['extra_indicators'].extend(
                 {'level': cat['level'], 'msg': 'Attached message: ' + cat['label'] + ' — ' + ', '.join(cat['matched'])}
@@ -3257,10 +3363,15 @@ async def _analyze_content(
     if result['remote_image_coverage']['count'] and _REMOTE_IMAGE_WARNING not in result['analysis_warnings']:
         result['analysis_warnings'].append(_REMOTE_IMAGE_WARNING)
         result['extra_indicators'].append({'level': 'info', 'msg': _REMOTE_IMAGE_WARNING})
+    if (result['unresolved_image_coverage']['count']
+            and _UNRESOLVED_IMAGE_WARNING not in result['analysis_warnings']):
+        result['analysis_warnings'].append(_UNRESOLVED_IMAGE_WARNING)
+        result['extra_indicators'].append({'level': 'info', 'msg': _UNRESOLVED_IMAGE_WARNING})
 
     # 2. Optional ML text classifier (TF-IDF + selected linear model)
     rendering_uncertain = any(warning in result['analysis_warnings'] for warning in (
-        _STYLESHEET_VISIBILITY_WARNING, _IMAGE_ALT_FALLBACK_WARNING,
+        _STYLESHEET_VISIBILITY_WARNING, _INLINE_CSS_VISIBILITY_WARNING,
+        _IMAGE_ALT_FALLBACK_WARNING,
     ))
     if _content_pipeline is not None:
         if rendering_uncertain:
@@ -3276,8 +3387,15 @@ async def _analyze_content(
                 'ml_top_contributors': [],
             }
         else:
-            ml = predict_content(_content_pipeline, model_view['subject'], model_view['body'],
-                                 canonical_text=True)
+            bodies = model_view.get('mime_bodies', [model_view['body']])
+            predictions = [predict_content(_content_pipeline, model_view['subject'], body,
+                                           canonical_text=True) for body in bodies]
+            scored = [prediction for prediction in predictions
+                      if prediction['ml_phishing_probability'] is not None]
+            ml = (max(scored, key=lambda prediction: prediction['ml_phishing_probability'])
+                  if scored else predictions[0])
+            if len(bodies) > 1 and len(scored) != len(predictions):
+                result['analysis_warnings'].append(_MIME_ALTERNATIVE_MODEL_WARNING)
         result.update(ml)
         result["ml_metrics"] = _content_pipeline["metrics"]
 

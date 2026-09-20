@@ -173,7 +173,7 @@ def _mime_candidates(message, warnings):
         if duplicate_names:
             warnings.append('Duplicate MIME headers (' + ', '.join(duplicate_names)
                             + ') are ambiguous; bounded alternate inspection, analysis is incomplete.')
-        yield part
+        yield part, part
         if not duplicate_names:
             continue
         choices = [list(dict.fromkeys(values)) or [None] for values in choices]
@@ -193,7 +193,7 @@ def _mime_candidates(message, warnings):
                 if value is not None:
                     alternate.set_raw(name, value)
             alternate.set_payload(part.get_payload())
-            yield alternate
+            yield alternate, part
 
 
 def _message_text(message, *, unicode_source: bool = False) -> tuple[str, str, list[dict], list[str], list[dict]]:
@@ -203,7 +203,26 @@ def _message_text(message, *, unicode_source: bool = False) -> tuple[str, str, l
     parse_warnings: list[str] = []
     content_parts: list[dict] = []
 
-    for part in _mime_candidates(message, parse_warnings):
+    # A multipart/alternative contributes one rendered branch, not the text
+    # from every branch. Keep each leaf's choices for bounded model views.
+    alternative_paths = {}
+    pending = [(message, ())]
+    next_group = 0
+    while pending:
+        current, path = pending.pop()
+        alternative_paths[id(current)] = path
+        if not current.is_multipart() or current.get_content_type() in {'message/rfc822', 'message/global'}:
+            continue
+        children = current.get_payload()
+        if current.get_content_type() == 'multipart/alternative':
+            group = next_group
+            next_group += 1
+            pending.extend((child, path + ((group, index),))
+                           for index, child in reversed(list(enumerate(children))))
+        else:
+            pending.extend((child, path) for child in reversed(children))
+
+    for part, original in _mime_candidates(message, parse_warnings):
         content_type = part.get_content_type()
         if content_type in {'message/rfc822', 'message/global'}:
             attachments.append({'filename': part.get_filename() or 'attached.eml',
@@ -249,9 +268,14 @@ def _message_text(message, *, unicode_source: bool = False) -> tuple[str, str, l
             warning = "MIME text decoding required a fallback or replacement; analysis may be incomplete."
             if warning not in parse_warnings:
                 parse_warnings.append(warning)
-        record = {'content_type': content_type, 'content': str(content)}
-        if record in content_parts:
+        path = alternative_paths[id(original)]
+        existing = next((record for record in content_parts
+                         if record['content_type'] == content_type and record['content'] == str(content)), None)
+        if existing is not None:
+            if path not in existing['alternative_paths']:
+                existing['alternative_paths'].append(path)
             continue
+        record = {'content_type': content_type, 'content': str(content), 'alternative_paths': [path]}
         content_parts.append(record)
         if content_type == "text/html":
             html_parts.append(str(content))
