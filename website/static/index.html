@@ -17,7 +17,7 @@
       document.documentElement.dataset.themeMode = stored || 'auto';
     })();
   </script>
-  <link rel="stylesheet" href="/static/style.css?v=23" />
+  <link rel="stylesheet" href="/static/style.css?v=24" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -235,6 +235,18 @@
               </div>
             </div>
             <a href="#disposable-info" class="disp-learn-sm">Learn about disposable emails →</a>
+          </div>
+
+          <!-- Deployment-local sender observation history -->
+          <div class="col-card sender-history-card" id="sender-history-card">
+            <h4 class="col-title">Sender Observation History</h4>
+            <div class="sender-history-row" id="sender-history-row">
+              <div class="sender-history-icon" id="sender-history-icon"></div>
+              <div class="sender-history-body">
+                <div class="sender-history-label" id="sender-history-label"></div>
+                <div class="sender-history-detail" id="sender-history-detail"></div>
+              </div>
+            </div>
           </div>
 
           <!-- Email Authenticity Verification Card -->
@@ -514,6 +526,16 @@
 
         <!-- Extra Indicators + Safety Signals row -->
         <div class="content-bottom-row">
+          <div class="col-card sender-history-card hidden" id="content-sender-history-card">
+            <h4 class="col-title">Sender Observation History</h4>
+            <div class="sender-history-row" id="content-sender-history-row">
+              <div class="sender-history-icon" id="content-sender-history-icon"></div>
+              <div class="sender-history-body">
+                <div class="sender-history-label" id="content-sender-history-label"></div>
+                <div class="sender-history-detail" id="content-sender-history-detail"></div>
+              </div>
+            </div>
+          </div>
           <div class="col-card" id="content-extra-card" style="display:none">
             <h4 class="col-title">Technical Indicators</h4>
             <div id="content-extra-list" class="risk-list"></div>
@@ -774,6 +796,6 @@
   </div>
 </footer>
 
-<script src="/static/app.js?v=25"></script>
+<script src="/static/app.js?v=26"></script>
 </body>
 </html>

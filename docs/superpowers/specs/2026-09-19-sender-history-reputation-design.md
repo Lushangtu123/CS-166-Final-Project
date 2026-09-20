@@ -42,7 +42,7 @@ This change will not:
 Create a focused `website/sender_history.py` module with a small interface and
 two implementations:
 
-- `DisabledSenderHistoryStore` returns an unavailable result without network
+- `DisabledSenderHistoryStore` returns a disabled result without network
   access. It is selected when required configuration is absent.
 - `UpstashSenderHistoryStore` uses the Upstash Redis REST endpoint over HTTPS.
 
@@ -53,7 +53,8 @@ or logs.
 The Upstash implementation uses a single server-side atomic operation per
 observation. The operation initializes `first_seen`, updates `last_seen`,
 increments `seen_count`, and refreshes the key's expiration. A read-only lookup
-must not change the record.
+must not change the record. Atomic updates preserve the minimum first-seen and
+maximum last-seen timestamps so concurrent requests cannot invert their order.
 
 ### Configuration
 
@@ -77,7 +78,8 @@ configuration error through health metadata.
 ### Address canonicalization and privacy
 
 The history identity is derived from the normalized mailbox already accepted by
-the sender parser. Gmail dots and plus-address tags follow the application's
+the sender parser, including IDNA domains and trailing-root-dot normalization.
+Gmail dots and plus-address tags follow the application's
 existing canonicalization rules; non-Gmail plus-address tags are removed only
 where the existing detector already classifies them as subaddresses.
 
@@ -104,17 +106,20 @@ address entry must not allow callers to inflate a sender's history.
 
 ### Raw-email analysis
 
-After the raw message parser has produced at least one valid `From` mailbox:
+After the outer raw message parser has produced at least one valid `From`
+mailbox:
 
-1. Canonicalize each unique sender mailbox.
-2. Record one observation for each unique canonical sender, with a small fixed
-   maximum matching the parser's existing mailbox bounds.
-3. Attach the strongest relevant history context to that sender's analysis.
-4. Continue content, link, structure, authentication, and attachment analysis
+1. Canonicalize and locally analyze each unique sender mailbox.
+2. Select the highest-risk sender that drives the returned sender result.
+3. Record one observation for only that selected canonical sender, bounding the
+   external history work to one request per message even with ambiguous headers.
+4. Attach the relevant history context to that sender's analysis.
+5. Continue content, link, structure, authentication, and attachment analysis
    independently of storage success.
 
 Repeated appearances of the same address inside one message count once. An
-invalid or missing `From` header does not create a record.
+invalid or missing outer `From` header does not create a record. Encapsulated
+messages still contribute risk evidence but do not access sender history.
 
 ### Returned contract
 
@@ -145,7 +150,9 @@ Sender analysis gains these fields:
 - `not_seen`: a read-only lookup found no record;
 - `disabled`: history was intentionally not configured;
 - `unavailable`: configured storage failed or timed out;
-- `not_applicable`: no valid sender mailbox was available.
+
+When no valid sender mailbox is available, raw-message output omits
+`sender_analysis` and no history request is made.
 
 Timestamps and counts describe only observations submitted to this deployment.
 They do not describe provider-side account activity. Counts are capped in API
@@ -179,16 +186,18 @@ deployment.” Disabled or failed history does not show a misleading zero count.
   analysis budget.
 - Errors returned to users and health endpoints are sanitized and never contain
   tokens, HMAC material, full URLs, Redis keys, or raw addresses.
+- HTTP redirects are rejected so the Upstash bearer token cannot leave the
+  configured, validated `*.upstash.io` origin.
 - Existing request-size and rate-limit controls remain in force.
 - History remains informational because a public caller can submit fabricated
   raw messages. It is not an authentication or reputation authority.
-- A single raw message records each unique sender once, limiting trivial count
-  inflation within one request.
+- A single raw message records only the selected highest-risk sender once,
+  limiting count inflation and external-call amplification within one request.
 
 ## Upstash Free-Plan Budget
 
-Each raw-message sender observation uses one REST request and one atomic Redis
-operation. Sender-only lookups use at most one read operation. The design stores
+Each raw-message analysis uses at most one sender-history REST request and one
+atomic Redis operation. Sender-only lookups use at most one read operation. The design stores
 only a few integers per active pseudonymous sender and applies a 90-day TTL.
 
 If the free command quota is exhausted, only sender history becomes unavailable;
@@ -206,7 +215,7 @@ existing implementation and then cover:
 4. configuration validation, including partial configuration and secret length;
 5. atomic first/previous observation behavior and TTL refresh;
 6. read-only sender analysis that does not increment history;
-7. raw-email analysis recording each unique sender once;
+7. raw-email analysis recording only the selected canonical sender once;
 8. no record for invalid or missing sender headers;
 9. timeout, quota, malformed response, and network-error fail-open behavior;
 10. neutral risk semantics for first-seen and previously-seen senders;

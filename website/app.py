@@ -46,6 +46,11 @@ from config import load_settings
 from disposable_registry import REGISTRY_DOMAIN_RE as _REGISTRY_DOMAIN_RE
 from disposable_registry import load_disposable_registry, load_privacy_relay_registry
 from request_limits import RequestBodyLimitMiddleware
+from sender_history import (
+    DisabledSenderHistoryStore,
+    build_sender_history_store,
+    canonicalize_sender_address,
+)
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 BASE_DIR = Path(__file__).parent
@@ -233,6 +238,12 @@ HIGH_TRAFFIC = {
     'google.com', 'amazon.com', 'facebook.com', 'linkedin.com',
     'github.com', 'spotify.com', 'chase.com', 'bankofamerica.com',
 }
+MAJOR_MAILBOX_PROVIDERS = {
+    'gmail.com', 'googlemail.com', 'yahoo.com', 'outlook.com', 'hotmail.com',
+    'icloud.com', 'mac.com', 'aol.com', 'proton.me', 'protonmail.com',
+    'zoho.com', 'mail.com', 'yandex.com', 'live.com', 'msn.com', 'me.com',
+    'qq.com', '163.com', '126.com', 'sina.com', 'sohu.com', 'foxmail.com',
+}
 HOMOGLYPH_MAP = {
     '0': 'o',   # amaz0n → amazon
     '1': 'l',   # paypa1 → paypal, app1e → apple
@@ -384,6 +395,7 @@ def normalize_homoglyphs(text: str) -> str:
 # Optional email-content text classifier (TF-IDF + selected linear model).
 # Populated at startup only from a verified offline artifact.
 _content_pipeline: dict | None = None
+_sender_history_store = DisabledSenderHistoryStore()
 
 def _shannon_entropy(s: str) -> float:
     if not s:
@@ -999,6 +1011,8 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     global _content_pipeline, _content_model_error, _content_model_artifact_sha256
+    global _sender_history_store
+    _sender_history_store = build_sender_history_store(SETTINGS)
     if SETTINGS.content_model_enabled:
         if not SETTINGS.content_model_artifact or not SETTINGS.content_model_artifact_sha256:
             _content_pipeline = None
@@ -1200,6 +1214,9 @@ async def health():
                 if _content_pipeline is not None else None
             ),
             "sender_analysis_method": "sender-domain-heuristics",
+            "sender_history_enabled": SETTINGS.sender_history_enabled,
+            "sender_history_available": SETTINGS.sender_history_ready,
+            "sender_history_error": SETTINGS.sender_history_config_error,
             "deployment_profile": SETTINGS.app_env,
             "email_verification_enabled": SETTINGS.domain_verification_enabled,
             "verification_mode": SETTINGS.effective_verification_mode,
@@ -1251,6 +1268,8 @@ async def get_public_config():
         "domain_verification_enabled": SETTINGS.domain_verification_enabled,
         "smtp_verification_enabled": SETTINGS.smtp_verification_enabled,
         "content_model_enabled": SETTINGS.content_model_enabled,
+        "sender_history_enabled": SETTINGS.sender_history_enabled,
+        "sender_history_available": SETTINGS.sender_history_ready,
         "full_version_local_only": True,
     })
 
@@ -1337,6 +1356,36 @@ def _analyze_sender_address(email: str) -> dict:
     }
 
 
+def _sender_account_observability(analysis: dict) -> str:
+    if analysis.get("disposable_status") in {
+        "known_disposable_provider", "privacy_relay",
+    }:
+        return "not_applicable"
+    normalized = _normalize_sender_address(str(analysis.get("email", "")))
+    domain = normalized.rsplit("@", 1)[-1].lower() if normalized else ""
+    if _match_domain_registry(domain, MAJOR_MAILBOX_PROVIDERS):
+        return "provider_account_unverifiable"
+    return "unknown"
+
+
+async def _analyze_sender_with_history(
+    address: str,
+    *,
+    observe: bool,
+) -> dict:
+    analysis = _analyze_sender_address(address)
+    normalized_address = _normalize_sender_address(address)
+    history_address = canonicalize_sender_address(normalized_address or address)
+    history = (
+        await _sender_history_store.observe(history_address)
+        if observe
+        else await _sender_history_store.lookup(history_address)
+    )
+    analysis["account_observability"] = _sender_account_observability(analysis)
+    analysis.update(history.as_dict())
+    return analysis
+
+
 _RAW_SENDER_LOCAL_RE = re.compile(
     r"^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+$"
 )
@@ -1383,7 +1432,7 @@ async def analyze_email(request: EmailRequest):
             status_code=400,
             detail="Enter a single email address, such as user@example.com. Use Email Content to analyze a message.",
         )
-    return JSONResponse(_analyze_sender_address(address))
+    return JSONResponse(await _analyze_sender_with_history(address, observe=False))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2499,7 +2548,12 @@ async def analyze_eml_endpoint(request: Request):
     return await _analyze_content(ContentRequest(), structure)
 
 
-async def _analyze_content(request: ContentRequest, structure: dict | None = None):
+async def _analyze_content(
+    request: ContentRequest,
+    structure: dict | None = None,
+    *,
+    observe_sender_history: bool = True,
+):
     subject = request.subject.strip()
     body    = request.body.strip()
     if structure is not None or request.raw_email.strip():
@@ -2540,13 +2594,27 @@ async def _analyze_content(request: ContentRequest, structure: dict | None = Non
         if floor_rank[structure["risk_floor"]] > floor_rank[result["risk_floor"]]:
             result["risk_floor"] = structure["risk_floor"]
 
-        sender_addresses = list(dict.fromkeys(
-            address for header in structure['header_candidates']['From']
-            for address in _raw_sender_addresses(header)))
+        sender_addresses_by_identity = {}
+        for header in structure['header_candidates']['From']:
+            for address in _raw_sender_addresses(header):
+                canonical = canonicalize_sender_address(address)
+                sender_addresses_by_identity.setdefault(canonical, address)
+        sender_addresses = list(sender_addresses_by_identity.values())
         if sender_addresses:
-            sender_analysis = max(
+            # Select locally before touching the external history store. An
+            # attacker can inject many ambiguous From values into one message;
+            # only the sender that actually drives the result gets one bounded
+            # observation request.
+            selected_sender = max(
                 (_analyze_sender_address(address) for address in sender_addresses),
                 key=lambda analysis: analysis["risk_score"],
+            )
+            sender_analysis = (
+                await _analyze_sender_with_history(
+                    selected_sender["email"], observe=True,
+                )
+                if observe_sender_history
+                else selected_sender
             )
             result["sender_analysis"] = sender_analysis
             sender_verdict = sender_analysis["verdict"]
@@ -2587,7 +2655,9 @@ async def _analyze_content(request: ContentRequest, structure: dict | None = Non
         nested_summaries = []
         floor_rank = {'safe': 0, 'unknown': 0, 'low': 1, 'medium': 2, 'high': 3, 'critical': 4}
         for nested in structure['nested_messages']:
-            nested_result = json.loads((await _analyze_content(ContentRequest(), nested)).body)
+            nested_result = json.loads((await _analyze_content(
+                ContentRequest(), nested, observe_sender_history=False,
+            )).body)
             result['analysis_warnings'].extend('Attached message: ' + warning
                                                 for warning in nested_result['analysis_warnings'])
             result['total_score'] = max(result['total_score'], nested_result['total_score'])

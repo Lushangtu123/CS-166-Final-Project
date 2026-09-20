@@ -418,6 +418,26 @@ code {
 .suspected-disposable .disp-learn-sm { color: var(--yellow); }
 .not-disposable .disp-learn-sm { color: var(--accent2); }
 
+/* ── Sender observation history ──────────────────────────────────────────── */
+.sender-history-card { margin-top: 12px; animation: fadeSlideIn 0.6s var(--ease); }
+.sender-history-row { display: flex; align-items: flex-start; gap: 14px; }
+.sender-history-icon {
+  display: grid; place-items: center; flex-shrink: 0;
+  width: 38px; height: 38px; border-radius: 10px;
+  color: var(--text-muted); background: rgba(141,162,189,0.10);
+  border: 1px solid rgba(141,162,189,0.18);
+}
+.sender-history-icon .ico { width: 21px; height: 21px; }
+.sender-history-body { flex: 1; min-width: 0; }
+.sender-history-label { font-size: 14.5px; font-weight: 700; margin-bottom: 5px; letter-spacing: -0.01em; }
+.sender-history-detail { font-size: 12.5px; color: var(--text-muted); line-height: 1.55; }
+.history-first .sender-history-icon,
+.history-first .sender-history-label,
+.history-seen .sender-history-icon,
+.history-seen .sender-history-label { color: var(--info); }
+.history-unavailable .sender-history-icon,
+.history-unavailable .sender-history-label { color: var(--text-muted); }
+
 /* ── Disposable Info Card ────────────────────────────────────────────────── */
 .disposable-info-card {
   background: var(--sheen), var(--surface); border: 1px solid var(--border);

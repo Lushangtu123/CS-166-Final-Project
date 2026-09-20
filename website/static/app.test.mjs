@@ -590,6 +590,84 @@ test('suspicious mailbox classification communicates uncertainty', () => {
   assert.match(elements.get('disp-check-detail').textContent, /cannot be confirmed/i);
 });
 
+test('sender history reports a first observation without claiming provider account age', () => {
+  const { context, elements } = loadFrontend();
+
+  context.renderResult({
+    ...senderResult('new.account@gmail.com'),
+    account_observability: 'provider_account_unverifiable',
+    sender_history_status: 'first_seen',
+    sender_first_seen_at: '2026-09-20T00:00:00Z',
+    sender_last_seen_at: '2026-09-20T00:00:00Z',
+    sender_seen_count: 1,
+    sender_history_scope: 'this_deployment_only',
+  });
+
+  assert.equal(elements.get('sender-history-label').textContent, 'First observed by this deployment');
+  assert.match(elements.get('sender-history-detail').textContent, /observed 1 time/i);
+  assert.match(elements.get('sender-history-detail').textContent, /Gmail account age cannot be verified/i);
+  assert.doesNotMatch(elements.get('sender-history-detail').textContent, /new account|account created/i);
+});
+
+test('sender history distinguishes a previous observation from sender safety', () => {
+  const { context, elements } = loadFrontend();
+
+  context.renderResult({
+    ...senderResult('billing@outlook.com'),
+    sender_history_status: 'previously_seen',
+    sender_first_seen_at: '2026-09-01T12:30:00Z',
+    sender_last_seen_at: '2026-09-20T00:00:00Z',
+    sender_seen_count: 12,
+    sender_history_scope: 'this_deployment_only',
+    account_observability: 'provider_account_unverifiable',
+  });
+
+  assert.equal(elements.get('sender-history-label').textContent, 'Observed previously by this deployment');
+  assert.match(elements.get('sender-history-detail').textContent, /observed 12 times/i);
+  assert.match(elements.get('sender-history-detail').textContent, /does not establish.*safe/i);
+});
+
+test('unavailable sender history never renders a false zero-count claim', () => {
+  const { context, elements } = loadFrontend();
+
+  context.renderResult({
+    ...senderResult('user@example.com'),
+    sender_history_status: 'unavailable',
+    sender_seen_count: null,
+    sender_history_scope: 'this_deployment_only',
+    account_observability: 'unknown',
+  });
+
+  assert.equal(elements.get('sender-history-label').textContent, 'Observation history unavailable');
+  assert.doesNotMatch(elements.get('sender-history-detail').textContent, /0 times|never seen/i);
+});
+
+test('raw-message results surface the observed sender history', () => {
+  const { context, elements } = loadFrontend();
+
+  context.renderContentResult({
+    risk_level: 'low', risk_label: 'Low', analysis_complete: true,
+    combined_phishing_score: 8, total_score: 0,
+    category_results: [], extra_indicators: [], safety_signals: [],
+    ml_status: 'insufficient_feature_coverage', ml_label: null,
+    sender_analysis: {
+      email: 'new.account@outlook.com',
+      account_observability: 'provider_account_unverifiable',
+      sender_history_status: 'first_seen',
+      sender_first_seen_at: '2026-09-20T00:00:00Z',
+      sender_last_seen_at: '2026-09-20T00:00:00Z',
+      sender_seen_count: 1,
+      sender_history_scope: 'this_deployment_only',
+    },
+  });
+
+  assert.equal(
+    elements.get('content-sender-history-label').textContent,
+    'First observed by this deployment',
+  );
+  assert.match(elements.get('content-sender-history-detail').textContent, /Outlook account age cannot be verified/i);
+});
+
 test('disposable education copy does not claim mailbox lifetime from a domain match', () => {
   const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
 

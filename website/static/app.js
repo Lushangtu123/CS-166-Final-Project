@@ -654,6 +654,60 @@ function shakeInput() {
   setTimeout(() => wrap.classList.remove('shake'), 500);
 }
 
+function senderProviderName(email) {
+  const domain = String(email || '').split('@')[1]?.toLowerCase() || '';
+  if (domain === 'gmail.com' || domain === 'googlemail.com') return 'Gmail';
+  if (['outlook.com', 'hotmail.com', 'live.com', 'msn.com'].includes(domain)) return 'Outlook';
+  if (domain === 'yahoo.com') return 'Yahoo';
+  if (domain === 'icloud.com' || domain === 'me.com' || domain === 'mac.com') return 'iCloud';
+  if (domain === 'proton.me' || domain === 'protonmail.com') return 'Proton';
+  return 'Provider';
+}
+
+function renderSenderHistory(data, prefix = '') {
+  const id = name => `${prefix}${name}`;
+  const card = document.getElementById(id('sender-history-card'));
+  const row = document.getElementById(id('sender-history-row'));
+  const iconEl = document.getElementById(id('sender-history-icon'));
+  const label = document.getElementById(id('sender-history-label'));
+  const detail = document.getElementById(id('sender-history-detail'));
+  const status = data.sender_history_status || 'disabled';
+  const count = Number.isInteger(data.sender_seen_count) ? data.sender_seen_count : null;
+  const countText = count == null ? '' : `Observed ${count} ${count === 1 ? 'time' : 'times'} by this deployment. `;
+  const providerCaveat = data.account_observability === 'provider_account_unverifiable'
+    ? `${senderProviderName(data.email)} account age cannot be verified from the address or this deployment's history. `
+    : '';
+  const firstSeen = typeof data.sender_first_seen_at === 'string'
+    ? data.sender_first_seen_at.slice(0, 10)
+    : null;
+
+  card.classList.remove('hidden');
+  row.className = 'sender-history-row';
+  iconEl.innerHTML = icon('clock');
+
+  if (status === 'first_seen') {
+    row.className += ' history-first';
+    label.textContent = 'First observed by this deployment';
+    detail.textContent = `${countText}${providerCaveat}This is deployment-local evidence, not an account-creation date.`;
+  } else if (status === 'previously_seen') {
+    row.className += ' history-seen';
+    label.textContent = 'Observed previously by this deployment';
+    detail.textContent = `${countText}${firstSeen ? `First retained observation: ${firstSeen}. ` : ''}${providerCaveat}Prior observation does not establish that this sender or message is safe.`;
+  } else if (status === 'not_seen') {
+    row.className += ' history-first';
+    label.textContent = 'No prior observation in this deployment';
+    detail.textContent = `${providerCaveat}Absence from retained history does not prove that the provider account is new or unsafe.`;
+  } else if (status === 'unavailable') {
+    row.className += ' history-unavailable';
+    label.textContent = 'Observation history unavailable';
+    detail.textContent = 'The history service could not be checked. No sender-history conclusion was used in the risk score.';
+  } else {
+    row.className += ' history-unavailable';
+    label.textContent = 'Observation history not enabled';
+    detail.textContent = 'This deployment is not recording privacy-preserving sender observations. No account-age claim is available.';
+  }
+}
+
 // ── Render Result ─────────────────────────────────────────────────────────────
 function renderResult(data) {
   const isHighRisk = data.verdict === 'high' || data.verdict === 'critical';
@@ -724,6 +778,8 @@ function renderResult(data) {
     dispLabel.textContent = 'No known disposable-provider match';
     dispDet.textContent   = `Domain "${domain}" did not match the local provider registry. Account age and intent cannot be determined from the address alone.${aliasNote}`;
   }
+
+  renderSenderHistory(data);
 
   // Verdict banner
   const banner = document.getElementById('verdict-banner');
@@ -1063,6 +1119,13 @@ function renderContentResult(data) {
     setRing('crb-ring', Math.min(100, (data.total_score / 30) * 100), cfg.scoreColor);
   }
   scoreEl.style.color = cfg.scoreColor;
+
+  const contentHistoryCard = document.getElementById('content-sender-history-card');
+  if (data.sender_analysis) {
+    renderSenderHistory(data.sender_analysis, 'content-');
+  } else {
+    contentHistoryCard.classList.add('hidden');
+  }
 
   // ── ML Classifier Card ───────────────────────────────────────────────────
   const mlCard = document.getElementById('content-ml-card');

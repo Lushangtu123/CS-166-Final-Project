@@ -255,6 +255,8 @@ class VerificationFeatureGateTests(unittest.TestCase):
             "domain_verification_enabled": False,
             "smtp_verification_enabled": False,
             "content_model_enabled": False,
+            "sender_history_enabled": False,
+            "sender_history_available": False,
             "full_version_local_only": True,
         })
 

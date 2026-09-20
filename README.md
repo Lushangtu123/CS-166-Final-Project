@@ -69,6 +69,24 @@ Review generated changes before committing them. Gmail and Outlook account age
 or intended lifetime cannot be inferred from an address alone; random-looking
 mailboxes remain heuristic suspicion rather than confirmed disposable accounts.
 
+An optional deployment-local observation history can add a second, independent
+piece of context. Full raw-message analysis records that a canonical sender was
+observed; address-only analysis performs a read-only lookup. A first observation
+means only “not previously retained by this deployment” — it does **not** mean
+the Gmail, Outlook, or other provider account was newly created. Previous
+observation is also not a safety signal and never reduces phishing risk.
+
+The history store receives only an HMAC-SHA-256 identifier, timestamps, and a
+bounded count. Raw addresses and message content are not stored. Gmail dot
+aliases and valid plus tags share one history identity, records expire after 90
+days by default, and unavailable storage fails open without changing the detector
+verdict. Rotating `SENDER_HISTORY_HMAC_KEY` starts a new observation namespace;
+old opaque records expire under their existing TTL.
+
+HMAC identifiers are **pseudonymization, not anonymization**. The deployment
+operator remains responsible for an appropriate privacy notice, access control,
+retention policy, and any legal obligations that apply to sender observations.
+
 Privacy relays are maintained separately in
 `website/data/privacy_relay_domains.json`, with provider-source URLs and a
 retrieval date. Registrable-domain and subdomain calculations use
@@ -352,6 +370,12 @@ does not perform live SPF/DKIM/DMARC verification or expand the trust boundary.
 | `CONTENT_MODEL_ARTIFACT` | empty | Path to the trusted artifact created by `prebuild_demo_model.py` |
 | `CONTENT_MODEL_ARTIFACT_SHA256` | empty | Required SHA-256 digest for the configured artifact |
 | `TRUSTED_AUTHSERV_IDS` | empty | Comma-separated authentication service IDs allowed to affect raw-message risk |
+| `SENDER_HISTORY_ENABLED` | `false` | Enables optional deployment-local sender observation history when all secrets are valid |
+| `UPSTASH_REDIS_REST_URL` | empty | HTTPS REST endpoint for an Upstash Redis database (`*.upstash.io`) |
+| `UPSTASH_REDIS_REST_TOKEN` | empty | Server-side Upstash REST token; never expose or commit it |
+| `SENDER_HISTORY_HMAC_KEY` | empty | Private random key of at least 32 bytes used to derive opaque sender identifiers |
+| `SENDER_HISTORY_RETENTION_DAYS` | `90` | Sliding history retention, from 1 through 365 days |
+| `SENDER_HISTORY_TIMEOUT_SECONDS` | `1.0` | Fail-open Upstash deadline, from 0.1 through 3.0 seconds |
 | `RATE_LIMIT_BUCKET_CAPACITY` | `4096` | Hard bound for in-process rate-limit keys |
 | `MAX_REQUEST_BYTES` | `65536` | Actual HTTP request-body byte limit before decoding; applies without Content-Length |
 | `CUSTOM_DOMAINS` | empty | Comma-separated custom hostnames appended to `ALLOWED_HOSTS` |
@@ -399,6 +423,29 @@ Deploy from the repository root with Vercel CLI 48.1.8 or newer, or import the
 Git repository in the Vercel dashboard. The deployment is intended for a
 personal/course demonstration; its in-memory limiter is per serverless instance,
 not a global abuse-control quota.
+
+### Optional free sender-history store
+
+[Upstash Redis currently offers a $0 tier for hobby projects](https://upstash.com/pricing/redis),
+and Vercel can provision and link it through the
+[Upstash Marketplace integration](https://vercel.com/marketplace/upstash).
+Limits and pricing can change, so confirm the current plan before provisioning.
+The detector remains fully usable without this optional store.
+
+1. In the Vercel project, open **Storage**, choose **Create Database**, select
+   **Upstash Redis**, choose the Free plan, and connect it to this project.
+2. Confirm Vercel added `UPSTASH_REDIS_REST_URL` and
+   `UPSTASH_REDIS_REST_TOKEN` for the Production environment.
+3. Generate a private HMAC key locally with `openssl rand -hex 32`. Add the
+   output as `SENDER_HISTORY_HMAC_KEY` in Vercel; do not put it in Git.
+4. Add `SENDER_HISTORY_ENABLED=true`. Optionally set retention and timeout using
+   the variables in the configuration table above.
+5. Redeploy, then confirm `/health` reports both
+   `sender_history_enabled: true` and `sender_history_available: true`.
+
+Missing, partial, malformed, or unreachable configuration disables only history
+evidence. Analysis continues, and the UI reports history as unavailable rather
+than treating an absent result as “never seen.”
 
 Vercel production `deployment_status` events run
 `.github/workflows/post-deploy-smoke.yml`. The workflow checks out the deployed

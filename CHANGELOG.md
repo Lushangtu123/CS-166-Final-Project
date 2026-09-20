@@ -22,6 +22,41 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-19 21:58 PT] — Add privacy-preserving sender observation history
+
+### Why
+- Disposable-domain lists cannot determine whether a Gmail or Outlook mailbox
+  is newly created, and random-looking mailbox names are only weak heuristics.
+- Serverless instances cannot maintain reliable cross-request history in local
+  memory, so deployment-local observations require an optional external store.
+
+### Files changed
+- `website/sender_history.py`, `website/config.py`, and `website/app.py`: add an
+  optional Upstash REST store keyed by HMAC-SHA-256 sender identifiers, atomic
+  first/last-seen updates, bounded counts, a 90-day default TTL, short fail-open
+  timeouts, redirect rejection, safe configuration validation, and public
+  capability flags.
+- `website/static/index.html`, `website/static/app.js`, and
+  `website/static/style.css`: show first-observed, previously-observed, disabled,
+  and unavailable states while explicitly separating deployment history from
+  provider account age and sender safety.
+- `website/tests/test_sender_history.py`,
+  `website/tests/test_sender_history_integration.py`,
+  `website/tests/test_config.py`, and `website/static/app.test.mjs`: cover opaque
+  identities, alias canonicalization, atomic/read-only behavior, failure paths,
+  risk neutrality, raw-message integration, configuration, and UI wording.
+- `README.md`: document privacy boundaries and optional Vercel Marketplace
+  setup using Upstash Redis.
+
+### Effect
+- Full raw-message analysis records only the highest-risk sender selected for
+  the result, with at most one external history request per analysis;
+  nested messages cannot amplify requests, and address-only analysis remains
+  read-only. No raw sender address or message body is written to Redis.
+- Observation history can add context for one-time provider accounts, but never
+  claims a Gmail/Outlook creation date and never suppresses phishing evidence.
+- Missing or unavailable Upstash storage leaves all existing analysis available.
+
 ## [2026-09-19 13:07 PT] — Reduce text-model false positives and expose uncertainty
 
 ### Why
