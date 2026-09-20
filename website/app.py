@@ -1709,8 +1709,10 @@ _OBFUSCATION_PAIRS = [
 ]
 
 
-def _count_urls(text: str) -> int:
-    return len(re.findall(r'https?://\S+', text))
+def _count_urls(links: list[tuple[str, str]]) -> int:
+    """Count inspected visible URLs and explicit destinations, not hidden prose."""
+    return sum(bool(re.match(r'^https?://', destination, re.IGNORECASE))
+               for _visible, destination in links)
 
 
 def _has_ip_url(text: str, *, links=None) -> bool:
@@ -1943,17 +1945,27 @@ def _collect_html(factory, text: str, parse_warnings=None):
     return collector
 
 
-def _extract_links(text: str, *, parse_html: bool = True, parse_warnings=None) -> list[tuple[str, str]]:
+def _extract_links(text: str, *, parse_html: bool = True, parse_warnings=None,
+                   visible_text: str | None = None) -> list[tuple[str, str]]:
     """Extract visible text and destination from Markdown and HTML links."""
-    links = list(re.findall(r'\[([^\]]+)\]\(((?:https?|hxxps?)://[^)]+)\)', text, re.IGNORECASE))
+    # Free-text URLs and Markdown links must come from visible prose, while
+    # explicit href/action destinations remain inspectable even when hidden.
+    scan_text = (visible_text if visible_text is not None else _visible_content_text(text, parse_warnings)) if parse_html else text
+    links = list(re.findall(r'\[([^\]]+)\]\(((?:https?|hxxps?)://[^)]+)\)', scan_text, re.IGNORECASE))
 
     class LinkCollector(_AnalysisHTMLParser):
         def __init__(self):
             super().__init__()
             self.href = None
-            self.visible = []
+            self.label_markup = []
             self.links = []
             self.base_href = None
+
+        def finish_anchor(self):
+            if self.href is not None:
+                self.links.append((_visible_content_text(''.join(self.label_markup)), self.href))
+            self.href = None
+            self.label_markup = []
 
         def handle_starttag(self, tag, attrs):
             attributes = dict(attrs)
@@ -1965,24 +1977,31 @@ def _extract_links(text: str, *, parse_html: bool = True, parse_warnings=None) -
                 self.links.append(('', attributes['formaction']))
             if tag.lower() == "a":
                 if self.href is not None:
-                    self.links.append(("".join(self.visible).strip(), self.href))
-                self.href = dict(attrs).get("href")
-                self.visible = []
+                    self.finish_anchor()
+                self.href = next((value for name, value in attrs if name == 'href'), None)
+                self.label_markup = [self.get_starttag_text() or '<a>']
+            elif self.href is not None:
+                self.label_markup.append(self.get_starttag_text() or f'<{tag}>')
+
+        def handle_startendtag(self, tag, attrs):
+            self.handle_starttag(tag, attrs)
+            if tag in _HTML_VOID_ELEMENTS:
+                self.handle_endtag(tag)
 
         def handle_data(self, data):
             if self.href is not None:
-                self.visible.append(data)
+                self.label_markup.append(escape_html(data))
 
         def handle_endtag(self, tag):
-            if tag.lower() == "a" and self.href is not None:
-                self.links.append(("".join(self.visible).strip(), self.href))
-                self.href = None
-                self.visible = []
+            if self.href is not None:
+                self.label_markup.append(f'</{tag}>')
+                if tag.lower() == 'a':
+                    self.finish_anchor()
 
     collector = _collect_html(LinkCollector, text, parse_warnings) if parse_html else LinkCollector()
     try:
         if collector.href is not None:
-            collector.links.append(("".join(collector.visible).strip(), collector.href))
+            collector.finish_anchor()
         base = None
         try:
             candidate = _parse_link_target(collector.base_href or '')
@@ -2005,7 +2024,7 @@ def _extract_links(text: str, *, parse_html: bool = True, parse_warnings=None) -
 
     links.extend(
         ("", url.rstrip(".,;:)"))
-        for url in re.findall(r"(?:https?|hxxps?)://[^\s<>\"']+", text, re.IGNORECASE)
+        for url in re.findall(r"(?:https?|hxxps?)://[^\s<>\"']+", scan_text, re.IGNORECASE)
     )
 
     return [
@@ -2227,6 +2246,89 @@ def _has_mismatched_link_text(text: str) -> bool:
     return any("does not match" in finding["msg"] for finding in findings)
 
 
+_HIDDEN_HTML_TEXT_WARNING = (
+    'Hidden HTML text was excluded from text scoring; visual rendering was not '
+    'fully verified, so analysis is incomplete.'
+)
+_HTML_VOID_ELEMENTS = {
+    'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta',
+    'param', 'source', 'track', 'wbr',
+}
+_P_IMPLIED_END_START_TAGS = {
+    'address', 'article', 'aside', 'blockquote', 'details', 'dialog', 'div',
+    'dl', 'fieldset', 'figcaption', 'figure', 'footer', 'form', 'h1', 'h2',
+    'h3', 'h4', 'h5', 'h6', 'header', 'hgroup', 'hr', 'main', 'menu', 'nav',
+    'ol', 'p', 'pre', 'search', 'section', 'table', 'ul',
+}
+
+
+def _inline_visibility(style: str) -> tuple[bool, bool | None]:
+    """Read only inline display/visibility declarations, respecting !important."""
+    # A semicolon inside quoted content, url(), or a CSS escape is not a
+    # declaration boundary. Splitting it blindly can hide genuinely visible
+    # text when an unrelated property contains the string "; display:none".
+    declarations = []
+    current = []
+    quote = None
+    depth = 0
+    index = 0
+    while index < len(style):
+        character = style[index]
+        following = style[index + 1] if index + 1 < len(style) else ''
+        if quote:
+            current.append(character)
+            if character == '\\' and following:
+                current.append(following)
+                index += 1
+            elif character == quote:
+                quote = None
+        elif character == '/' and following == '*':
+            ending = style.find('*/', index + 2)
+            if ending < 0:
+                break
+            index = ending + 1
+        elif character == '\\' and following:
+            current.extend((character, following))
+            index += 1
+        elif character in {'"', "'"}:
+            quote = character
+            current.append(character)
+        elif character == '(':
+            depth += 1
+            current.append(character)
+        elif character == ')':
+            depth = max(0, depth - 1)
+            current.append(character)
+        elif character == ';' and depth == 0:
+            declarations.append(''.join(current))
+            current = []
+        else:
+            current.append(character)
+        index += 1
+    declarations.append(''.join(current))
+    values = {}
+    for declaration in declarations:
+        name, separator, value = declaration.partition(':')
+        name = _unescape_css(name).strip().lower()
+        if not separator or name not in {'display', 'visibility'}:
+            continue
+        value = _unescape_css(value).strip().lower()
+        important = bool(re.search(r'!\s*important\s*$', value))
+        value = re.sub(r'!\s*important\s*$', '', value).strip()
+        if name not in values or important or not values[name][1]:
+            values[name] = (value, important)
+    display_hidden = values.get('display', ('', False))[0] == 'none'
+    visibility = values.get('visibility', ('', False))[0]
+    if visibility in {'hidden', 'collapse'}:
+        visibility_hidden = True
+    elif visibility in {'visible', 'initial'}:
+        visibility_hidden = False
+    else:
+        # inherit/unset/invalid values cannot clear a hidden parent.
+        visibility_hidden = None
+    return display_hidden, visibility_hidden
+
+
 def _visible_content_text(text: str, parse_warnings=None) -> str:
     """Decode HTML text separately from destinations, preserving inline words."""
     class TextCollector(_AnalysisHTMLParser):
@@ -2237,6 +2339,56 @@ def _visible_content_text(text: str, parse_warnings=None) -> str:
             super().__init__(convert_charrefs=True)
             self.parts = []
             self.hidden = []
+            self.elements = []
+            self.excluded_hidden_text = False
+            self.open_paragraph = False
+
+        def _visually_hidden(self):
+            return bool(self.elements and (self.elements[-1][1] or self.elements[-1][2]))
+
+        def _truncate_elements(self, index):
+            if self.open_paragraph and any(item[0] == 'p' for item in self.elements[index:]):
+                self.open_paragraph = False
+            del self.elements[index:]
+
+        def _implicitly_close(self, tag):
+            if tag in {'td', 'th', 'tr'}:
+                for index in range(len(self.elements) - 1, -1, -1):
+                    existing = self.elements[index][0]
+                    if existing == 'table':
+                        break
+                    if tag in {'td', 'th'} and existing == 'tr':
+                        break
+                    if existing in ({'td', 'th'} if tag in {'td', 'th'} else {'tr'}):
+                        self._truncate_elements(index)
+                        break
+            if self.open_paragraph and tag in _P_IMPLIED_END_START_TAGS:
+                for index in range(len(self.elements) - 1, -1, -1):
+                    if self.elements[index][0] == 'p':
+                        self._truncate_elements(index)
+                        break
+            if tag == 'li':
+                for index in range(len(self.elements) - 1, -1, -1):
+                    existing = self.elements[index][0]
+                    if existing in {'ul', 'ol', 'menu'}:
+                        break
+                    if existing == 'li':
+                        self._truncate_elements(index)
+                        break
+            if tag in {'dt', 'dd'}:
+                for index in range(len(self.elements) - 1, -1, -1):
+                    existing = self.elements[index][0]
+                    if existing == 'dl':
+                        break
+                    if existing in {'dt', 'dd'}:
+                        self._truncate_elements(index)
+                        break
+
+        def handle_startendtag(self, tag, attrs):
+            # HTML ignores the self-closing slash on non-void elements.
+            self.handle_starttag(tag, attrs)
+            if tag in _HTML_VOID_ELEMENTS:
+                self.handle_endtag(tag)
 
         def handle_starttag(self, tag, attrs):
             # A head end tag is optional: body content implicitly closes it.
@@ -2247,7 +2399,21 @@ def _visible_content_text(text: str, parse_warnings=None) -> str:
                 return
             if tag in {'script', 'style', 'head', 'title', 'template', 'noframes'}:
                 self.hidden.append(tag)
-            if not self.hidden and tag in {'p', 'div', 'br', 'li', 'tr', 'td', 'hr', 'section'}:
+            if self.hidden:
+                return
+            self._implicitly_close(tag)
+            # Browsers retain the first duplicate attribute, not the last.
+            style = next((value for name, value in attrs if name == 'style'), '')
+            display_hidden, visibility_hidden = _inline_visibility(style or '')
+            parent_display = self.elements[-1][1] if self.elements else False
+            parent_visibility = self.elements[-1][2] if self.elements else False
+            element_display = parent_display or any(name == 'hidden' for name, _ in attrs) or display_hidden
+            element_visibility = parent_visibility if visibility_hidden is None else visibility_hidden
+            if tag not in _HTML_VOID_ELEMENTS:
+                self.elements.append((tag, element_display, element_visibility))
+                if tag == 'p':
+                    self.open_paragraph = True
+            if not element_display and not element_visibility and tag in {'p', 'div', 'br', 'li', 'tr', 'td', 'hr', 'section'}:
                 self.parts.append(' ')
 
         def handle_endtag(self, tag):
@@ -2255,16 +2421,28 @@ def _visible_content_text(text: str, parse_warnings=None) -> str:
                 self.hidden.pop()
             if self.hidden and tag == self.hidden[-1]:
                 self.hidden.pop()
-            if not self.hidden and tag in {'p', 'div', 'li', 'tr', 'td', 'section'}:
+                return
+            for index in range(len(self.elements) - 1, -1, -1):
+                if self.elements[index][0] == tag:
+                    self._truncate_elements(index)
+                    break
+            if not self.hidden and not self._visually_hidden() and tag in {'p', 'div', 'li', 'tr', 'td', 'section'}:
                 self.parts.append(' ')
 
         def handle_data(self, data):
             if self.hidden == ['head'] and data.strip():
                 self.hidden.pop()
-            if not self.hidden:
+            if self.hidden:
+                return
+            if self._visually_hidden():
+                if data.strip():
+                    self.excluded_hidden_text = True
+            else:
                 self.parts.append(data)
 
     collector = _collect_html(TextCollector, text, parse_warnings)
+    if collector.excluded_hidden_text and parse_warnings is not None:
+        parse_warnings.append(_HIDDEN_HTML_TEXT_WARNING)
     return re.sub(r'\s+', ' ', ''.join(collector.parts)).strip()
 
 
@@ -2526,8 +2704,9 @@ def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] 
     url_parts = [_mask_inline_data_payloads(part) if is_html else part
                  for part, is_html in zip(raw_parts, html_parts)]
     raw_text = '\n'.join(url_parts)
-    links = [link for part, is_html in zip(url_parts, html_parts)
-             for link in _extract_links(part, parse_html=is_html, parse_warnings=analysis_warnings)]
+    links = [link for part, visible, is_html in zip(url_parts, visible_parts, html_parts)
+             for link in _extract_links(part, parse_html=is_html, parse_warnings=analysis_warnings,
+                                        visible_text=_strip_invisible_format_controls(visible) if is_html else None)]
     full_orig = re.sub(r'\s+', ' ', '\n'.join(visible_parts)).strip()
     analysis_text = _strip_invisible_format_controls(full_orig)
     full_lower = analysis_text.lower()
@@ -2613,7 +2792,7 @@ def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] 
         })
 
     # 6. Excessive question marks in subject
-    subj_q = subject.count("?")
+    subj_q = visible_parts[0].count("?")
     if subj_q >= 2:
         total_score += 1
         extra_indicators.append({
@@ -2622,7 +2801,7 @@ def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] 
         })
 
     # 7. High URL count
-    url_count = _count_urls(raw_text)
+    url_count = _count_urls(links)
     if url_count > 6:
         total_score += 1
         extra_indicators.append({

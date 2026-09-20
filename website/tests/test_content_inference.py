@@ -38,8 +38,12 @@ class _CountingVectorizer:
 
 
 class _CapturingVectorizer(_CountingVectorizer):
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
     def transform(self, texts):
-        self.texts = texts
+        self.calls.append(texts)
         return super().transform(texts)
 
 
@@ -73,6 +77,12 @@ class _UnexpectedClassifier(_Classifier):
 class _UnexpectedVectorizer(_CountingVectorizer):
     def transform(self, _texts):
         raise AssertionError("short input must not reach the vectorizer")
+
+
+class _OneScriptVectorizer(_CountingVectorizer):
+    def transform(self, texts):
+        # Simulate a fitted vocabulary that knows Cyrillic but not Han.
+        return _SparseFeatures() if 'счет' in texts[0] else _EmptySparseFeatures()
 
 
 class ContentInferenceTests(unittest.TestCase):
@@ -149,7 +159,7 @@ class ContentInferenceTests(unittest.TestCase):
         literal = '<project notes about the planned meeting and release timeline>'
         result = predict_content(pipeline, '', literal, canonical_text=True)
         self.assertEqual(result['ml_status'], 'available')
-        self.assertEqual(vectorizer.texts, ['\n' + literal])
+        self.assertEqual(vectorizer.calls[0], ['\n' + literal])
 
     def test_zero_feature_message_abstains_without_calling_classifier(self):
         pipeline = {
@@ -169,6 +179,18 @@ class ContentInferenceTests(unittest.TestCase):
         self.assertIsNone(result["ml_legitimate_probability"])
         self.assertIsNone(result["ml_prediction"])
         self.assertEqual(result["ml_top_contributors"], [])
+
+    def test_covered_cyrillic_cannot_mask_uncovered_han_segment(self):
+        pipeline = {
+            'vectorizer': _OneScriptVectorizer(),
+            'clf': _UnexpectedClassifier(),
+            'decision_threshold': 0.5,
+        }
+        body = ('Ваш счет за проект уже оплачен, и встреча состоится завтра. '
+                '本月发票的收款银行账户已经变更，请将未结款项汇入新账户并回复确认。')
+        result = predict_content(pipeline, 'Project update for tomorrow', body)
+        self.assertEqual(result['ml_status'], 'insufficient_feature_coverage')
+        self.assertIsNone(result['ml_phishing_probability'])
 
 
 if __name__ == "__main__":

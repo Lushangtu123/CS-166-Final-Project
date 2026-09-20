@@ -424,16 +424,35 @@ class HTMLInputCoverageTests(unittest.TestCase):
                                         for warning in result['analysis_warnings']))
                     self.assertEqual(result['risk_level'], 'unknown')
 
-    def test_english_body_features_remain_usable_with_han_footer(self):
+    def test_substantial_han_footer_abstains_despite_english_body_features(self):
         pipeline = self.deployment_pipeline()
         body = ('Please review the project notes before our regular meeting tomorrow. '
                 'Bring the agenda and the latest release schedule. '
                 '本月发票已经按原来的银行账户完成付款，无需更改收款信息。')
         with patch.object(app, '_content_pipeline', pipeline):
             result = self.analyze(subject='Project update', body=body)
-        self.assertEqual(result['ml_status'], 'available')
+        self.assertEqual(result['ml_status'], 'insufficient_feature_coverage')
+        self.assertIsNone(result['ml_phishing_probability'])
         self.assertTrue(any('han-script' in warning.lower()
                             for warning in result['analysis_warnings']))
+
+    def test_short_han_instruction_cannot_borrow_english_body_features(self):
+        pipeline = self.deployment_pipeline()
+        body = ('Please review the ordinary project meeting notes and calendar invitation. '
+                '银行账户已变更,请立即转账并保密。')
+        with patch.object(app, '_content_pipeline', pipeline):
+            result = self.analyze(subject='Project update', body=body)
+        self.assertEqual(result['ml_status'], 'insufficient_feature_coverage')
+        self.assertIsNone(result['ml_phishing_probability'])
+
+    def test_digits_cannot_supply_features_for_uncovered_han_instruction(self):
+        pipeline = self.deployment_pipeline()
+        body = ('Please review the ordinary project planning agenda for tomorrow. '
+                '本月发票付款账户已经变更请转账1234567890')
+        with patch.object(app, '_content_pipeline', pipeline):
+            result = self.analyze(subject='Project update', body=body)
+        self.assertEqual(result['ml_status'], 'insufficient_feature_coverage')
+        self.assertIsNone(result['ml_phishing_probability'])
 
     def test_chinese_body_model_abstention_preserves_link_risk(self):
         pipeline = self.deployment_pipeline()
@@ -501,6 +520,200 @@ class HTMLInputCoverageTests(unittest.TestCase):
             result = self.analyze(subject='Hi', body='<p>Ok</p><style>' + 'urgent account verify ' * 100 + '</style>')
         self.assertEqual(result['ml_status'], 'insufficient_context')
         self.assertEqual(result['risk_level'], 'unknown')
+
+    def test_hidden_attribute_and_inline_style_cannot_pad_visible_text(self):
+        pipeline = self.deployment_pipeline()
+        subject = 'Invoice problem - call support'
+        visible = ('Your subscription renewal of $499 is complete. If you did not authorize '
+                   'this charge, call 1-888-555-0199 immediately.')
+        padding = 'Please review the project notes before our meeting tomorrow. ' * 30
+        with patch.object(app, '_content_pipeline', pipeline):
+            control = self.analyze(subject=subject, body=visible)
+            for hidden in (f'<div hidden>{padding}</div>',
+                           f'<div style="display:none">{padding}</div>',
+                           f'<div style="visibility: hidden">{padding}</div>'):
+                with self.subTest(hidden=hidden[:40]):
+                    result = self.analyze(subject=subject, body=f'<p>{visible}</p>{hidden}')
+                    self.assertEqual(result['ml_phishing_probability'],
+                                     control['ml_phishing_probability'])
+                    self.assertEqual(result['risk_level'], control['risk_level'])
+                    self.assertFalse(result['analysis_complete'])
+                    self.assertTrue(any('hidden html text' in warning.lower()
+                                        for warning in result['analysis_warnings']))
+
+    def test_hidden_phishing_text_is_not_scored_and_visible_sibling_survives(self):
+        pipeline = self.deployment_pipeline()
+        subject = 'Project notes for tomorrow'
+        visible = 'Hello everyone, please review the agenda before our scheduled meeting.'
+        hidden = 'Your account is suspended. Act now and verify your password immediately. ' * 30
+        html = f'<p>{visible}</p><div style="display:none">{hidden}</div><p>Thank you.</p>'
+        with patch.object(app, '_content_pipeline', pipeline):
+            control = self.analyze(subject=subject, body=visible + ' Thank you.')
+            manual = self.analyze(subject=subject, body=html)
+            message = EmailMessage()
+            message['Subject'] = subject
+            message.set_content(html, subtype='html')
+            mime = self.analyze(raw_email=message.as_string())
+        for result in (manual, mime):
+            self.assertEqual(result['ml_phishing_probability'], control['ml_phishing_probability'])
+            self.assertEqual(result['total_score'], control['total_score'])
+            self.assertFalse(result['analysis_complete'])
+            self.assertTrue(any('hidden html text' in warning.lower()
+                                for warning in result['analysis_warnings']))
+
+    def test_implied_paragraph_and_list_end_tags_restore_visible_text(self):
+        for html in (
+            '<p hidden>Hidden note<p>Visible urgent send password immediately',
+            '<p hidden>Hidden note<div>Visible urgent send password immediately</div>',
+            '<ul><li hidden>Hidden note<li>Visible urgent send password immediately</ul>',
+            '<table><tr><td hidden>Hidden note<td>Visible urgent send password immediately</tr></table>',
+            '<table><tr style="display:none"><td>Hidden note<tr><td>Visible urgent send password immediately</table>',
+        ):
+            with self.subTest(html=html):
+                warnings = []
+                visible = app._visible_content_text(html, warnings)
+                self.assertIn('Visible urgent send password immediately', visible)
+                self.assertNotIn('Hidden note', visible)
+                self.assertTrue(any('hidden html text' in warning.lower()
+                                    for warning in warnings))
+
+    def test_nonvoid_self_closing_syntax_does_not_expose_hidden_text(self):
+        html = ('<div hidden/>Hidden account password instruction</div>'
+                '<p>Visible regular project meeting note for tomorrow.</p>')
+        warnings = []
+        visible = app._visible_content_text(html, warnings)
+        self.assertNotIn('Hidden account password', visible)
+        self.assertIn('Visible regular project meeting', visible)
+        self.assertTrue(any('hidden html text' in warning.lower() for warning in warnings))
+
+    def test_first_duplicate_style_attribute_controls_visibility(self):
+        warnings = []
+        hidden = app._visible_content_text(
+            '<div style="display:none" style="display:block">Hidden password instruction</div>',
+            warnings,
+        )
+        self.assertEqual(hidden, '')
+        self.assertTrue(any('hidden html text' in warning.lower() for warning in warnings))
+        warnings = []
+        visible = app._visible_content_text(
+            '<div style="display:block" style="display:none">Visible project meeting note</div>',
+            warnings,
+        )
+        self.assertEqual(visible, 'Visible project meeting note')
+        self.assertEqual(warnings, [])
+
+    def test_link_inside_hidden_text_keeps_independent_destination_risk(self):
+        with patch.object(app, '_content_pipeline', None):
+            result = self.analyze(body=(
+                '<p>Please review the project notes before our meeting tomorrow.</p>'
+                '<div hidden><a href="https://paypal.com.login.example">Continue</a></div>'
+            ))
+        self.assertGreater(result['url_count'], 0)
+        self.assertIn(result['risk_level'], {'high', 'critical'})
+        self.assertFalse(result['analysis_complete'])
+
+    def test_hidden_anchor_label_does_not_create_display_domain_mismatch(self):
+        visible = '<a href="https://example.org/review">Continue</a>'
+        hidden_label = ('<a href="https://example.org/review">'
+                        '<span hidden>paypal.com</span>Continue</a>')
+        with patch.object(app, '_content_pipeline', None):
+            control = self.analyze(body=visible)
+            result = self.analyze(body=hidden_label)
+        self.assertEqual(result['total_score'], control['total_score'])
+        self.assertFalse(any('does not match' in finding['msg']
+                             for finding in result['extra_indicators']))
+        self.assertFalse(result['analysis_complete'])
+
+    def test_hidden_naked_and_markdown_urls_do_not_become_link_evidence(self):
+        for hidden in ('https://paypal.com.login.example',
+                       '[PayPal](https://paypal.com.login.example)'):
+            with self.subTest(hidden=hidden), patch.object(app, '_content_pipeline', None):
+                result = self.analyze(body=(
+                    '<p>Please review the regular project meeting notes for tomorrow.</p>'
+                    f'<div hidden>{hidden}</div>'
+                ))
+            self.assertEqual(result['url_count'], 0)
+            self.assertEqual(result['total_score'], 0)
+            self.assertFalse(result['analysis_complete'])
+
+    def test_hidden_manual_subject_punctuation_does_not_add_rule_points(self):
+        body = 'Please review the regular project planning notes for tomorrow.'
+        with patch.object(app, '_content_pipeline', None):
+            control = self.analyze(subject='Project update', body=body)
+            result = self.analyze(subject='<span hidden>??</span>Project update', body=body)
+        self.assertEqual(result['total_score'], control['total_score'])
+        self.assertFalse(result['analysis_complete'])
+
+    def test_uncovered_kana_and_cyrillic_bodies_do_not_inherit_english_subject_score(self):
+        pipeline = self.deployment_pipeline()
+        bodies = (
+            'この請求書の支払い先口座が変更されました。今日中に新しい口座へ送金してください。',
+            'Ваш банковский счет для оплаты счета изменился. Срочно переведите деньги на новый счет сегодня.',
+        )
+        with patch.object(app, '_content_pipeline', pipeline):
+            for body in bodies:
+                with self.subTest(body=body):
+                    result = self.analyze(subject='Routine invoice notice for your records', body=body)
+                    self.assertEqual(result['ml_status'], 'insufficient_feature_coverage')
+                    self.assertIsNone(result['ml_phishing_probability'])
+                    self.assertFalse(result['analysis_complete'])
+
+    def test_inline_visibility_override_does_not_hide_displayed_child(self):
+        html = ('<div style="visibility:hidden">Ignored note.'
+                '<span style="visibility:visible">Visible meeting agenda for the regular '
+                'project planning session tomorrow.</span></div>')
+        visible = app._visible_content_text(html)
+        self.assertNotIn('Ignored note', visible)
+        self.assertIn('Visible meeting agenda', visible)
+
+    def test_inherited_or_invalid_visibility_cannot_clear_hidden_parent(self):
+        for value in ('inherit', 'unset', 'banana'):
+            with self.subTest(value=value):
+                warnings = []
+                html = (f'<div style="visibility:hidden"><span style="visibility:{value}">'
+                        'Hidden account password instruction</span></div>')
+                self.assertNotIn('Hidden account', app._visible_content_text(html, warnings))
+                self.assertTrue(any('hidden html text' in warning.lower()
+                                    for warning in warnings))
+
+    def test_later_display_declaration_can_restore_visibility(self):
+        html = '<p style="display:none; display:block">Visible meeting agenda.</p>'
+        warnings = []
+        self.assertEqual(app._visible_content_text(html, warnings), 'Visible meeting agenda.')
+        self.assertEqual(warnings, [])
+
+    def test_css_string_or_url_does_not_create_a_hidden_declaration(self):
+        for style in ('content:"; display:none;"; color:red',
+                      'background:url(data:image/svg+xml;display:none); color:red'):
+            with self.subTest(style=style):
+                warnings = []
+                html = f'<p style=\'{style}\'>Visible meeting agenda.</p>'
+                self.assertEqual(app._visible_content_text(html, warnings),
+                                 'Visible meeting agenda.')
+                self.assertEqual(warnings, [])
+
+    def test_substantial_uncovered_chinese_segment_abstains_despite_english_body(self):
+        pipeline = self.deployment_pipeline()
+        body = ('Hello team, these are routine project meeting notes for everyone. '
+                'Please review the ordinary planning details and calendar invitation. '
+                '本月发票的收款银行账户已经变更，请将未结款项汇入新账户并回复确认。')
+        with patch.object(app, '_content_pipeline', pipeline):
+            result = self.analyze(subject='Project update', body=body)
+        self.assertEqual(result['ml_status'], 'insufficient_feature_coverage')
+        self.assertIsNone(result['ml_phishing_probability'])
+        self.assertFalse(result['analysis_complete'])
+
+    def test_scattered_chinese_names_do_not_force_model_abstention(self):
+        pipeline = self.deployment_pipeline()
+        names = ('张伟', '李娜', '王芳', '刘洋', '陈明', '赵敏', '孙强', '周静',
+                 '吴军', '郑丽', '王磊', '陈芳', '张敏', '李伟', '刘芳', '赵强')
+        body = ('Please review the normal project planning agenda for tomorrow. '
+                + ' '.join(f'The contact {name} will join the meeting.' for name in names))
+        with patch.object(app, '_content_pipeline', pipeline):
+            result = self.analyze(subject='Project update', body=body)
+        self.assertEqual(result['ml_status'], 'available')
+        self.assertTrue(any('han-script' in warning.lower()
+                            for warning in result['analysis_warnings']))
 
     def test_committed_model_ignores_hidden_text_in_both_directions(self):
         from content_inference import predict_content

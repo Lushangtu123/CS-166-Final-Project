@@ -22,6 +22,26 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-20 15:51 PT] — Exclude hidden HTML text and abstain on uncovered body segments
+
+### Why
+- Inline-hidden HTML text could swing a committed-model score without changing the text readers see: a constructed scam example fell from 52.1% to 7.4% with hidden benign padding, while a benign example rose from 4.7% to 99.0% with hidden phishing padding.
+- English subject/body features could mask a substantial Japanese, Cyrillic, or Chinese passage with no fitted model features.
+
+### Files changed
+- `website/app.py` — exclude text under `hidden` and inline `display:none` / `visibility:hidden` from text scoring, respect local visibility and implied HTML tag closures, and warn when text was omitted; inspect actual raw-HTML link destinations while deriving labels and free-text URLs from visible prose.
+- `website/content_inference.py` — require fitted features for a substantial body and for each substantive non-Latin-script passage before emitting a model score.
+- `website/language_coverage.py` — share Han recognition with script-passage extraction, excluding numbers/symbols from feature coverage and retaining newer Han extensions.
+- `website/tests/test_content_inference.py` — account for the additional body-only vectorization check.
+- `website/tests/test_html_input_coverage.py` — add committed-model, HTML/MIME, CSS-override, link-preservation, and multilingual-abstention regressions.
+- `README.md` — document hidden-text handling, coverage gates, and limits of non-rendered CSS/language analysis.
+- `CHANGELOG.md` — record the behavior change and its limits.
+
+### Effect
+- The constructed hidden-padding controls now retain the visible-text model score and report `analysis_complete=false`; links in hidden subtrees remain inspectable as independent destination evidence.
+- The tested Japanese, Cyrillic, and mixed English/Chinese bodies now return `ml_status=insufficient_feature_coverage` with nullable model scores; a 26-Han-character footer also now abstains rather than showing an English-only model score. Scattered Chinese names separated by English text retain the English model score plus the Han warning.
+- The committed model artifact and threshold are unchanged. This is a regression fix, not a measured improvement in real-world Gmail/Outlook recall or false-positive rate.
+
 ## [2026-09-20 15:27 PT] — Abstain on uncovered Chinese bodies and disclose alternate image references
 
 ### Why

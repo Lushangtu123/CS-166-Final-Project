@@ -274,10 +274,18 @@ than silently disappearing. This normalization is not a full WHATWG URL engine.
 Text rules decode HTML entities, preserve words across inline tags, and normalize
 whitespace independently of destination analysis. Script/style/comment text is
 not treated as visible prose. The content model now receives this same
-MIME-aware visible text rather than raw HTML, so hidden markup does not supply
-model features or context. MIME `text/plain` remains literal. Raw HTML is still
-used for structural link and form checks; opaque image data-URI payloads do not
-become link destinations. Shortener checks use decoded destination hosts with
+MIME-aware visible text rather than raw HTML. Text under the HTML `hidden`
+attribute or inline `display:none` / `visibility:hidden` is also excluded from
+text rules and model input; a warning marks the result incomplete when such
+text is present. Inline `visibility:visible` can restore a child of a
+`visibility:hidden` element, but not a child of `display:none`. This is not a
+browser renderer: stylesheet selectors, media queries, external CSS, and
+other visual-hiding methods are not fully resolved, so a complete result does
+not establish pixel-level visibility. MIME `text/plain` remains literal. HTML
+anchor labels and free-text URL scans use this visible text; a hidden naked URL
+is not treated as a link. Raw HTML is still used for actual `href`, `action`,
+and `formaction` destinations even inside hidden subtrees; opaque image data-URI
+payloads do not become link destinations. Shortener checks use decoded destination hosts with
 domain boundaries rather than substrings anywhere in a message. Form `action`
 and submit-control `formaction` targets are inspected; an enabled password field
 associated with a form is medium-risk evidence, not proof that a client executes it.
@@ -302,15 +310,20 @@ Substantial visible Han-script text, including supplementary-plane ideographs,
 now adds a language-coverage warning and prevents an unqualified complete Safe
 result. It does not add phishing points or
 pretend that an English-oriented model has learned Chinese phishing patterns.
-When a substantial Han-script body produces no fitted vectorizer features, the
-model abstains even if an English subject has features. A model score must not
-be presented as evidence about an unrepresented Chinese body; independent
-sender, link, rule, and structure findings still apply. If the body also has
-English model features, only the existing language-coverage warning applies;
-this does not establish Chinese-language detection accuracy.
+When a substantial body produces no fitted vectorizer features, the model
+abstains even if an English subject has features. It also checks a substantial
+non-Latin-script segment separately, so English padding in the same body cannot
+stand in for an unrepresented Chinese, Japanese, or Cyrillic passage. The
+current segment gate requires at least 12 letters in a same-script passage and
+zero fitted features; numbers and symbols cannot stand in for those letters.
+Scattered foreign names separated by English text do not form one passage,
+but a long list without intervening Latin text may conservatively abstain.
+Shorter passages can still receive a model score. Independent sender,
+link, rule, and structure findings still apply. These coverage gates do not
+establish detection accuracy in those languages.
 
 If the fitted vectorizer produces no usable feature for a message or for a
-substantial Han-script body, the model abstains with
+substantial body/segment, the model abstains with
 `ml_status=insufficient_feature_coverage` and nullable model
 scores instead of inventing a prediction. Rules, sender, link, and structure
 checks still run. The model also abstains with `ml_status=insufficient_context`
@@ -319,7 +332,7 @@ Unicode word tokens or fewer than 40 non-whitespace characters; hidden HTML tags
 and attributes in HTML parts do not count toward this context measure. This
 prevents short routine
 subjects from producing unsupported high-confidence verdicts.
-The HTML input change leaves the committed artifact and threshold unchanged.
+This input change leaves the committed artifact and threshold unchanged.
 Constructed hidden-text controls and the existing committed-model controls pass,
 but the stored offline metrics were measured on their original input pipeline;
 they are not a fresh evaluation of this HTML-serving behavior or provider-specific

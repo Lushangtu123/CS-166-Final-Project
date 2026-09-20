@@ -14,13 +14,15 @@ import numpy as np
 import sklearn
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.naive_bayes import ComplementNB
-from language_coverage import has_substantial_han_text
+from language_coverage import non_latin_script_segments
 
 
 ARTIFACT_SCHEMA = "phishguard-content-model-v1"
 PIPELINE_KEYS = {"vectorizer", "clf", "decision_threshold", "metrics", "top_terms"}
 MIN_MODEL_CONTEXT_TOKENS = 5
 MIN_MODEL_CONTEXT_NONSPACE_CHARS = 40
+MIN_SUBSTANTIAL_BODY_CHARS = 40
+MIN_UNCOVERED_SCRIPT_LETTERS = 12
 
 
 def _major_minor(version: str) -> str:
@@ -125,17 +127,20 @@ def predict_content(pipeline: dict, subject: str, body: str, *, canonical_text: 
         }
     vectorizer = pipeline["vectorizer"]
     features = vectorizer.transform([text])
-    # Subject features do not establish that a substantial, differently
-    # scripted body was represented by the fitted English-oriented model.
+    # Subject features do not establish that a substantial body was represented
+    # by the fitted model. Check the body and meaningful non-Latin segments
+    # separately, so English padding cannot mask an uncovered segment.
     context_body = (
         (body or "") if canonical_text
         else re.sub(r"<[^>]*>", " ", unescape(body or ""))
     )
-    uncovered_han_body = (
-        has_substantial_han_text(context_body)
-        and vectorizer.transform([context_body]).nnz == 0
+    substantial_body = sum(not character.isspace() for character in context_body) >= MIN_SUBSTANTIAL_BODY_CHARS
+    uncovered_body = substantial_body and vectorizer.transform([context_body]).nnz == 0
+    uncovered_segment = any(
+        vectorizer.transform([segment]).nnz == 0
+        for segment in non_latin_script_segments(context_body, MIN_UNCOVERED_SCRIPT_LETTERS)
     )
-    if features.nnz == 0 or uncovered_han_body:
+    if features.nnz == 0 or uncovered_body or uncovered_segment:
         return {
             "ml_status": "insufficient_feature_coverage",
             "ml_phishing_probability": None,
