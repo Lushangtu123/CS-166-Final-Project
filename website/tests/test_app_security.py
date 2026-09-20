@@ -257,6 +257,7 @@ class VerificationFeatureGateTests(unittest.TestCase):
             "content_model_enabled": False,
             "sender_history_enabled": False,
             "sender_history_available": False,
+            "sender_history_configured": False,
             "full_version_local_only": True,
         })
 
@@ -319,6 +320,56 @@ class RateLimitBoundaryTests(unittest.TestCase):
             app._rate_limit_key(request),
             "203.0.113.9:/api/analyze-content",
         )
+
+    def test_vercel_uses_the_platform_client_ip_instead_of_the_proxy_peer(self):
+        def request(ip):
+            return app.Request({
+                "type": "http",
+                "method": "POST",
+                "path": "/api/analyze-content",
+                "raw_path": b"/api/analyze-content",
+                "query_string": b"",
+                "headers": [(b"x-forwarded-for", ip.encode())],
+                "client": ("10.0.0.8", 43100),
+                "server": ("testserver", 80),
+                "scheme": "https",
+            })
+
+        with patch.dict(
+            os.environ,
+            {"PHISHGUARD_DEPLOYMENT_PROFILE": "vercel-free"},
+        ):
+            first = app._rate_limit_key(request("203.0.113.9"))
+            second = app._rate_limit_key(request("198.51.100.77"))
+
+        self.assertEqual(first, "203.0.113.9:/api/analyze-content")
+        self.assertEqual(second, "198.51.100.77:/api/analyze-content")
+        self.assertNotEqual(first, second)
+
+    def test_vercel_rejects_ambiguous_or_invalid_forwarded_addresses(self):
+        def request(value):
+            return app.Request({
+                "type": "http",
+                "method": "POST",
+                "path": "/api/analyze-content",
+                "raw_path": b"/api/analyze-content",
+                "query_string": b"",
+                "headers": [(b"x-forwarded-for", value.encode())],
+                "client": ("10.0.0.8", 43100),
+                "server": ("testserver", 80),
+                "scheme": "https",
+            })
+
+        with patch.dict(
+            os.environ,
+            {"PHISHGUARD_DEPLOYMENT_PROFILE": "vercel-free"},
+        ):
+            for value in ("203.0.113.9, 198.51.100.77", "not-an-ip", ""):
+                with self.subTest(value=value):
+                    self.assertEqual(
+                        app._rate_limit_key(request(value)),
+                        "10.0.0.8:/api/analyze-content",
+                    )
 
     def test_bucket_store_evicts_oldest_entry_at_hard_capacity(self):
         buckets = {

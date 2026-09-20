@@ -227,6 +227,11 @@ class DisposableEmailClassificationTests(unittest.TestCase):
                 self.assertEqual(tagged["risk_score"], base["risk_score"])
                 self.assertEqual(tagged["disposable_status"], base["disposable_status"])
 
+    def test_custom_domain_plus_local_part_is_not_claimed_as_an_alias(self):
+        result = self.analyze("alice+sales@example.com")
+
+        self.assertIsNone(result["address_alias_type"])
+
     def test_gmail_dot_variant_uses_the_same_sender_risk(self):
         for compact_address, dotted_address in (
             ("alicesmith@gmail.com", "alice.smith@gmail.com"),

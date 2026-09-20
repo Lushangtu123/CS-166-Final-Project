@@ -51,6 +51,8 @@ from sender_history import (
     SenderHistoryResult,
     build_sender_history_store,
     canonicalize_sender_address,
+    supports_plus_alias,
+    uses_gmail_dot_aliasing,
 )
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -427,7 +429,8 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
 
     base_local, plus_separator, alias_tag = raw_local.partition("+")
     is_subaddress = bool(
-        plus_separator
+        supports_plus_alias(domain)
+        and plus_separator
         and base_local
         and alias_tag
         and re.fullmatch(r"[a-z0-9._%+\-]+", alias_tag)
@@ -435,9 +438,9 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
     address_alias_type = "subaddress" if is_subaddress else None
     tag_stripped_local = base_local if is_subaddress else raw_local
     local = tag_stripped_local
-    if domain == "gmail.com":
+    if uses_gmail_dot_aliasing(domain):
         local = local.replace(".", "")
-    scoring_local = local if domain == "gmail.com" else tag_stripped_local
+    scoring_local = local if uses_gmail_dot_aliasing(domain) else tag_stripped_local
     scoring_email = (
         f"{scoring_local}@{domain}"
         if at_count == 1
@@ -1096,8 +1099,15 @@ _rate_limit_buckets: dict[str, deque[float]] = {}
 
 
 def _rate_limit_key(request: Request) -> str:
-    """Use the ASGI server's trusted peer address, never a raw forwarding header."""
+    """Use Vercel's normalized client address only in the Vercel profile."""
     client_ip = request.client.host if request.client else "unknown"
+    if os.getenv("PHISHGUARD_DEPLOYMENT_PROFILE", "").strip().lower() == "vercel-free":
+        forwarded_ip = request.headers.get("x-forwarded-for", "").strip()
+        if forwarded_ip and "," not in forwarded_ip:
+            try:
+                client_ip = str(ipaddress.ip_address(forwarded_ip))
+            except ValueError:
+                pass
     return f"{client_ip}:{request.url.path}"
 
 
@@ -1230,6 +1240,7 @@ async def health():
             ),
             "sender_analysis_method": "sender-domain-heuristics",
             "sender_history_enabled": SETTINGS.sender_history_enabled,
+            "sender_history_configured": SETTINGS.sender_history_ready,
             "sender_history_available": SETTINGS.sender_history_ready,
             "sender_history_error": SETTINGS.sender_history_config_error,
             "deployment_profile": SETTINGS.app_env,
@@ -1284,6 +1295,7 @@ async def get_public_config():
         "smtp_verification_enabled": SETTINGS.smtp_verification_enabled,
         "content_model_enabled": SETTINGS.content_model_enabled,
         "sender_history_enabled": SETTINGS.sender_history_enabled,
+        "sender_history_configured": SETTINGS.sender_history_ready,
         "sender_history_available": SETTINGS.sender_history_ready,
         "full_version_local_only": True,
     })

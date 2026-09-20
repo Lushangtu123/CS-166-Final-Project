@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import time
 from typing import Callable
 import uuid
 from urllib.parse import urlsplit
@@ -86,16 +87,14 @@ def _request_json(
     return payload
 
 
-def validate_deployment(
+def _read_deployment_readiness(
     base_url: str,
     *,
     expected_model_sha256: str,
-    opener: Callable = urlopen,
-    require_sender_history: bool = False,
-    history_probe_id: str | None = None,
-) -> dict:
-    """Check health, public flags, and positive/negative control predictions."""
-    base_url = _validated_base_url(base_url)
+    opener: Callable,
+    require_sender_history: bool,
+) -> tuple[dict, dict]:
+    """Perform the retry-safe, read-only portion of deployment validation."""
     health = _request_json(Request(base_url + "/health"), opener=opener)
     if health.get("status") != "ok" or health.get("content_model_loaded") is not True:
         raise RuntimeError(f"Deployment is not model-ready: {health!r}")
@@ -116,8 +115,65 @@ def validate_deployment(
         for name, payload in (("health", health), ("config", config)):
             if payload.get("sender_history_enabled") is not True:
                 raise RuntimeError(f"Sender history is not enabled in {name}: {payload!r}")
+            if payload.get("sender_history_configured") is not True:
+                raise RuntimeError(f"Sender history is not configured in {name}: {payload!r}")
             if payload.get("sender_history_available") is not True:
                 raise RuntimeError(f"Sender history is not available in {name}: {payload!r}")
+    return health, config
+
+
+def _wait_for_deployment_readiness(
+    base_url: str,
+    *,
+    expected_model_sha256: str,
+    opener: Callable,
+    require_sender_history: bool,
+    attempts: int,
+    retry_delay: float,
+    sleeper: Callable[[float], None],
+) -> tuple[dict, dict]:
+    if attempts < 1:
+        raise ValueError("readiness_attempts must be at least 1")
+    if retry_delay < 0:
+        raise ValueError("retry_delay must not be negative")
+
+    for attempt in range(attempts):
+        try:
+            return _read_deployment_readiness(
+                base_url,
+                expected_model_sha256=expected_model_sha256,
+                opener=opener,
+                require_sender_history=require_sender_history,
+            )
+        except Exception:
+            if attempt + 1 >= attempts:
+                raise
+            sleeper(retry_delay)
+    raise AssertionError("readiness retry loop exited unexpectedly")
+
+
+def validate_deployment(
+    base_url: str,
+    *,
+    expected_model_sha256: str,
+    opener: Callable = urlopen,
+    require_sender_history: bool = False,
+    history_probe_id: str | None = None,
+    readiness_attempts: int = 1,
+    retry_delay: float = 0,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> dict:
+    """Check health, public flags, and positive/negative control predictions."""
+    base_url = _validated_base_url(base_url)
+    health, config = _wait_for_deployment_readiness(
+        base_url,
+        expected_model_sha256=expected_model_sha256,
+        opener=opener,
+        require_sender_history=require_sender_history,
+        attempts=readiness_attempts,
+        retry_delay=retry_delay,
+        sleeper=sleeper,
+    )
 
     analysis = _request_json(Request(
         base_url + "/api/analyze-content",
@@ -201,11 +257,15 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--require-sender-history", action="store_true")
+    parser.add_argument("--readiness-attempts", type=int, default=6)
+    parser.add_argument("--retry-delay", type=float, default=5.0)
     args = parser.parse_args()
     result = validate_deployment(
         args.base_url,
         expected_model_sha256=_expected_model_sha256(),
         require_sender_history=args.require_sender_history,
+        readiness_attempts=args.readiness_attempts,
+        retry_delay=args.retry_delay,
     )
     print(json.dumps(result, sort_keys=True))
 

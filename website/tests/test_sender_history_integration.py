@@ -204,6 +204,7 @@ Your mailbox will be suspended. Confirm your password now at http://paypa1-secur
         for payload in (health, config):
             self.assertIn("sender_history_enabled", payload)
             self.assertIn("sender_history_available", payload)
+            self.assertIn("sender_history_configured", payload)
             serialized = json.dumps(payload)
             self.assertNotIn("UPSTASH_REDIS_REST_TOKEN", serialized)
             self.assertNotIn("SENDER_HISTORY_HMAC_KEY", serialized)

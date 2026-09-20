@@ -59,6 +59,7 @@ class PostDeploySmokeTests(unittest.TestCase):
                     "content_model_artifact_sha256": "a" * 64,
                     "sender_history_enabled": True,
                     "sender_history_available": True,
+                    "sender_history_configured": True,
                 })
             if request.full_url.endswith("/api/config"):
                 return _Response({
@@ -66,6 +67,7 @@ class PostDeploySmokeTests(unittest.TestCase):
                     "content_model_enabled": True,
                     "sender_history_enabled": True,
                     "sender_history_available": True,
+                    "sender_history_configured": True,
                 })
             if request.full_url.endswith("/api/analyze-content"):
                 body = json.loads(request.data.decode("utf-8"))
@@ -115,6 +117,86 @@ class PostDeploySmokeTests(unittest.TestCase):
             ["GET", "GET", "POST", "POST", "POST", "POST", "POST"],
         )
         self.assertTrue(all(timeout == 20 for _, _, timeout in requests))
+
+    def test_readiness_retries_do_not_repeat_stateful_controls(self):
+        self.assertIsNotNone(post_deploy_smoke, "post-deploy smoke module is missing")
+        requests = []
+        sleeps = []
+        health_attempts = 0
+
+        def opener(request, timeout):
+            nonlocal health_attempts
+            requests.append((request.full_url, request.get_method()))
+            if request.full_url.endswith("/health"):
+                health_attempts += 1
+                return _Response({
+                    "status": "ok",
+                    "content_model_loaded": True,
+                    "content_model_id": "sha256:abc123",
+                    "content_model_artifact_sha256": (
+                        "b" * 64 if health_attempts == 1 else "a" * 64
+                    ),
+                    "sender_history_enabled": True,
+                    "sender_history_available": True,
+                    "sender_history_configured": True,
+                })
+            if request.full_url.endswith("/api/config"):
+                return _Response({
+                    "verification_mode": "lite",
+                    "content_model_enabled": True,
+                    "sender_history_enabled": True,
+                    "sender_history_available": True,
+                    "sender_history_configured": True,
+                })
+            body = json.loads(request.data.decode("utf-8"))
+            if body.get("raw_email"):
+                repeated = sum(
+                    method == "POST" and url.endswith("/api/analyze-content")
+                    for url, method in requests
+                ) >= 5
+                return _Response({
+                    "risk_level": "safe",
+                    "sender_analysis": {
+                        "sender_history_status": (
+                            "previously_seen" if repeated else "first_seen"
+                        ),
+                        "sender_history_scope": "this_service_history",
+                    },
+                })
+            if body["subject"] in {
+                "Monthly project update",
+                "Notes from today's planning session",
+            }:
+                return _Response({
+                    "risk_level": "safe", "ml_prediction": 0,
+                    "ml_status": "available",
+                })
+            return _Response({
+                "risk_level": "critical", "ml_prediction": 1,
+                "ml_status": "available",
+            })
+
+        result = post_deploy_smoke.validate_deployment(
+            "https://project.vercel.app",
+            expected_model_sha256="a" * 64,
+            opener=opener,
+            require_sender_history=True,
+            history_probe_id="retry-probe",
+            readiness_attempts=2,
+            retry_delay=3,
+            sleeper=sleeps.append,
+        )
+
+        self.assertEqual(result["sender_history_probe"], "previously_seen")
+        self.assertEqual(sleeps, [3])
+        self.assertEqual(
+            sum(method == "POST" for _, method in requests),
+            5,
+        )
+        self.assertEqual(
+            [method for _, method in requests[:3]],
+            ["GET", "GET", "GET"],
+        )
 
     def test_smoke_rejects_non_vercel_targets(self):
         self.assertIsNotNone(post_deploy_smoke, "post-deploy smoke module is missing")

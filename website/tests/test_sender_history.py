@@ -50,6 +50,22 @@ class SenderIdentityTests(unittest.TestCase):
             "alice+bad tag@outlook.com",
         )
 
+    def test_custom_domains_do_not_assume_plus_addressing(self):
+        self.assertEqual(
+            canonicalize_sender_address("alice+sales@example.com"),
+            "alice+sales@example.com",
+        )
+        self.assertNotEqual(
+            sender_history_key("alice+sales@example.com", "a" * 32),
+            sender_history_key("alice@example.com", "a" * 32),
+        )
+
+    def test_googlemail_aliases_follow_gmail_canonicalization(self):
+        self.assertEqual(
+            canonicalize_sender_address("A.Lice+shopping@googlemail.com"),
+            "alice@googlemail.com",
+        )
+
     def test_hmac_key_is_deterministic_secret_scoped_and_opaque(self):
         address = "alice.smith@gmail.com"
         first = sender_history_key(address, "a" * 32)

@@ -43,7 +43,8 @@ probability. Signals include:
 - confirmed disposable-provider domains, separated from privacy relays;
 - anchored disposable-domain patterns and multi-factor auto-generated mailbox
   patterns, reported as suspicion rather than proof;
-- plus-address aliases and Gmail dot normalization without added risk.
+- provider-aware plus-address aliases and Gmail-compatible dot normalization
+  without added risk.
 
 Disposable-email results include `disposable_status`,
 `disposable_confidence`, `matched_provider_domain`, and
@@ -79,11 +80,14 @@ observation is also not a safety signal and never reduces phishing risk.
 
 The history store receives only an HMAC-SHA-256 identifier, timestamps, and a
 bounded count. Public API responses expose only the coarse first/previous status,
-not exact observation timestamps or counts. Raw addresses and message content are not stored. Gmail dot
-aliases and valid plus tags share one history identity, records expire after 90
-days by default, and unavailable storage fails open without changing the detector
-verdict. Rotating `SENDER_HISTORY_HMAC_KEY` starts a new observation namespace;
-old opaque records expire under their existing TTL.
+not exact observation timestamps or counts. Raw addresses and message content are not stored.
+Valid plus tags share one history identity only for known supporting providers
+(`gmail.com`, `googlemail.com`, `outlook.com`, `hotmail.com`, and `live.com`),
+while Gmail/Googlemail dot aliases are also normalized. Unknown custom domains
+keep their literal local part because their delivery semantics are not known.
+Records expire after 90 days by default, and unavailable storage fails open
+without changing the detector verdict. Rotating `SENDER_HISTORY_HMAC_KEY` starts
+a new observation namespace; old opaque records expire under their existing TTL.
 
 HMAC identifiers are **pseudonymization, not anonymization**. The deployment
 operator remains responsible for an appropriate privacy notice, access control,
@@ -427,6 +431,15 @@ personal/course demonstration. It always keeps a bounded in-memory limiter; when
 the optional Upstash configuration is ready, POST requests also use an atomic,
 HMAC-keyed distributed limit shared by Vercel instances. Upstash failure fails
 open to the existing local limiter so detection remains available.
+The Vercel profile uses only a single syntactically valid platform-normalized
+`X-Forwarded-For` address as the local-limit identity; ambiguous lists and
+invalid values fall back to the ASGI peer. Other deployment profiles ignore
+that header rather than trusting arbitrary forwarding input.
+
+Email bodies and attachment content are processed server-side for analysis and
+are not retained by this application. When sender history is enabled, a
+pseudonymous sender observation may be retained as described above. Users
+should remove unrelated personal content before submitting an email.
 
 ### Optional free sender-history store
 
@@ -444,12 +457,15 @@ The detector remains fully usable without this optional store.
    output as `SENDER_HISTORY_HMAC_KEY` in Vercel; do not put it in Git.
 4. Add `SENDER_HISTORY_ENABLED=true`. Optionally set retention and timeout using
    the variables in the configuration table above.
-5. Redeploy, then confirm `/health` reports both
-   `sender_history_enabled: true` and `sender_history_available: true`.
+5. Redeploy, then confirm `/health` reports
+   `sender_history_enabled: true`, `sender_history_configured: true`, and
+   `sender_history_available: true`.
 
 Missing, partial, malformed, or unreachable configuration disables only history
 evidence. Analysis continues, and the UI reports history as unavailable rather
 than treating an absent result as “never seen.”
+The `configured` and backward-compatible `available` fields describe startup
+configuration readiness; they are not a continuous Upstash reachability probe.
 
 Vercel production `deployment_status` events run
 `.github/workflows/post-deploy-smoke.yml`. The workflow checks out the deployed
@@ -457,6 +473,9 @@ revision and validates `/health`, `/api/config`, the exact model ID, phishing an
 legitimate controls, and a unique first/previous sender-history probe against the
 public production alias. It rejects cross-host redirects and non-JSON responses,
 so Vercel SSO pages cannot be mistaken for application health output.
+Read-only health/config readiness checks retry briefly while a deployment alias
+converges; phishing, legitimate, and sender-history POST controls run exactly
+once after the expected model and configuration are ready.
 
 For local research with the text model, train and package it before starting the
 web service:
@@ -655,8 +674,9 @@ ASCII brand lookalikes, URL userinfo, attachment MIME types, raw-message sender
 fusion, footer spoofing, regional-language neutrality, conservative evidence
 fusion, group isolation, deployment flags, and frontend payload/rendering
 behavior. Disposable-address regressions cover multi-label provider domains,
-random-looking Gmail and Outlook mailboxes, versioned privacy relays, plus aliases, Gmail
-dot variants, and collision domains that must remain unclassified.
+random-looking Gmail and Outlook mailboxes, versioned privacy relays,
+provider-aware plus aliases, Gmail/Googlemail dot variants, and custom-domain
+local parts that must not be merged without known provider semantics.
 
 ## Historical benchmark results
 

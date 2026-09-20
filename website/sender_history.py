@@ -19,6 +19,14 @@ from config import Settings
 HISTORY_SCOPE = "this_service_history"
 MAX_RETAINED_SEEN_COUNT = 1_000_000
 _ALIAS_TAG_RE = re.compile(r"[a-z0-9._%+\-]+", re.IGNORECASE)
+PLUS_ALIAS_DOMAINS = frozenset({
+    "gmail.com",
+    "googlemail.com",
+    "outlook.com",
+    "hotmail.com",
+    "live.com",
+})
+GMAIL_DOT_ALIAS_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
 
 
 class _NoRedirectHandler(HTTPRedirectHandler):
@@ -78,6 +86,16 @@ class RateLimitDecision:
     retry_after: int = 0
 
 
+def supports_plus_alias(domain: str) -> bool:
+    """Return whether this provider is known to treat ``+tag`` as an alias."""
+    return (domain or "").strip().lower().rstrip(".") in PLUS_ALIAS_DOMAINS
+
+
+def uses_gmail_dot_aliasing(domain: str) -> bool:
+    """Return whether dots in the local part are ignored by the provider."""
+    return (domain or "").strip().lower().rstrip(".") in GMAIL_DOT_ALIAS_DOMAINS
+
+
 def canonicalize_sender_address(address: str) -> str:
     """Apply the sender detector's alias rules without retaining the original."""
     normalized = (address or "").strip().lower()
@@ -85,9 +103,15 @@ def canonicalize_sender_address(address: str) -> str:
         return normalized
     local, domain = normalized.rsplit("@", 1)
     base, separator, tag = local.partition("+")
-    if separator and base and tag and _ALIAS_TAG_RE.fullmatch(tag):
+    if (
+        supports_plus_alias(domain)
+        and separator
+        and base
+        and tag
+        and _ALIAS_TAG_RE.fullmatch(tag)
+    ):
         local = base
-    if domain == "gmail.com":
+    if uses_gmail_dot_aliasing(domain):
         local = local.replace(".", "")
     return f"{local}@{domain}"
 

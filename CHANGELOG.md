@@ -22,6 +22,34 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-20 10:03 PT] — Clarify provider aliases and deployment readiness
+
+### Why
+- Treating every `+tag` local part as an alias could merge distinct mailboxes on
+  custom domains whose delivery rules are unknown.
+- Vercel rollout convergence could make a correct deployment smoke check fail,
+  while repeating stateful probes would mutate sender history more than once.
+- Public capability fields and the content form did not clearly distinguish
+  configured history from live reachability or disclose server-side processing.
+
+### Files changed
+- `website/sender_history.py`, `website/app.py`, and backend tests: limit plus-tag
+  canonicalization to known Gmail/Microsoft providers, normalize Googlemail dot
+  aliases, and trust one valid Vercel client IP only in the Vercel profile.
+- `website/tools/post_deploy_smoke.py` and its tests: retry read-only readiness
+  checks before running the phishing, legitimate, and sender-history POST probes
+  exactly once.
+- `website/app.py`, `website/static/index.html`, frontend tests, and `README.md`:
+  expose `sender_history_configured`, retain the compatible availability field,
+  and add processing, retention, and data-minimization guidance.
+
+### Effect
+- Sender identities no longer collide on providers without documented alias
+  semantics, and public rate limiting no longer groups all Vercel clients under
+  the serverless proxy peer.
+- Deployment checks tolerate brief alias propagation without duplicating
+  stateful requests, and users receive clearer capability and privacy language.
+
 ## [2026-09-20 09:43 PT] — Harden sender history and production smoke checks
 
 ### Why

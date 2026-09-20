@@ -213,6 +213,15 @@ test('content analysis copy does not describe model output as probability', () =
   assert.match(html, /group-isolated model score/i);
 });
 
+test('content input explains server processing and pseudonymous sender retention', () => {
+  const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+
+  assert.match(html, /processed on this server/i);
+  assert.match(html, /does not retain.*message body.*attachment content/is);
+  assert.match(html, /pseudonymous sender observation/i);
+  assert.match(html, /remove unrelated personal content/i);
+});
+
 const senderResult = email => ({
   email, verdict: 'low', label: 'Low Sender Risk', risk_score: 0,
   risk_indicators: [], feature_breakdown: [], high_risk_count: 0, med_risk_count: 0,
