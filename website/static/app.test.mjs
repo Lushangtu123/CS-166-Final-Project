@@ -200,6 +200,17 @@ test('attachment coverage is distinguished from parser and model limitations', (
   assert.match(elements.get('crb-sub').textContent, /attachment contents were not inspected/i);
 });
 
+test('embedded image coverage has distinct incomplete-analysis wording', () => {
+  const { context, elements } = loadFrontend();
+  const data = { total_score: 0, category_results: [], extra_indicators: [], safety_signals: [],
+    analysis_complete: false, risk_level: 'unknown', risk_label: 'Analysis Incomplete — Risk Undetermined',
+    combined_phishing_score: null, inline_image_coverage: { count: 1, inspection_status: 'metadata_only' } };
+  context.renderContentResult(data);
+  assert.match(elements.get('crb-sub').textContent, /embedded image content was not inspected/i);
+  assert.doesNotMatch(elements.get('crb-sub').textContent, /attachment contents|reliably parsed|text model/i);
+  assert.equal(elements.get('crb-score').textContent, '—');
+});
+
 test('content model abstention is shown without probability bars', () => {
   const { context, elements } = loadFrontend();
   context.renderContentResult({

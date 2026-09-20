@@ -36,6 +36,12 @@ class _CountingVectorizer:
         return np.array(["word:urgent", "char:x", "word:account"])
 
 
+class _CapturingVectorizer(_CountingVectorizer):
+    def transform(self, texts):
+        self.texts = texts
+        return super().transform(texts)
+
+
 class _Classifier:
     coef_ = np.array([[0.4, -0.2, 0.3]])
 
@@ -123,6 +129,18 @@ class ContentInferenceTests(unittest.TestCase):
 
         self.assertEqual(result["ml_status"], "insufficient_context")
         self.assertIsNone(result["ml_prediction"])
+
+    def test_canonical_literal_text_uses_same_context_and_vector_input(self):
+        vectorizer = _CapturingVectorizer()
+        pipeline = {
+            "vectorizer": vectorizer,
+            "clf": _Classifier(),
+            "decision_threshold": 0.5,
+        }
+        literal = '<project notes about the planned meeting and release timeline>'
+        result = predict_content(pipeline, '', literal, canonical_text=True)
+        self.assertEqual(result['ml_status'], 'available')
+        self.assertEqual(vectorizer.texts, ['\n' + literal])
 
     def test_zero_feature_message_abstains_without_calling_classifier(self):
         pipeline = {

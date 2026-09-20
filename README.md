@@ -181,6 +181,16 @@ phishing points. If there is no detected risk and analysis is incomplete,
 `combined_phishing_score` is `null`. The UI shows “Analysis Incomplete” and a dash
 instead of a green zero. Detected risks remain visible alongside the warning.
 API consumers must accept this additional risk level and nullable score.
+HTML `data:image/...` references in image elements, `srcset`, and CSS `url()`
+are reported separately as top-level `inline_image_coverage`, including
+recognized images in analyzed attached emails. Its count is capped at 20;
+`inspection_status=metadata_only` means the image content was
+not inspected. These references add no phishing points, but add one analysis
+warning and prevent a complete Safe verdict. An otherwise Safe result becomes
+Unknown with a null combined score; independent high-risk evidence stays
+visible. MIME image attachments remain in `message_structure.attachments`.
+The detector does not decode embedded images, scan QR codes, perform OCR, or
+fetch remote images; remote destinations still receive the existing URL checks.
 
 MIME tree construction is limited to **200 message/part nodes per upload**,
 including the root. This bounds deeply nested and very wide messages before
@@ -250,7 +260,11 @@ than silently disappearing. This normalization is not a full WHATWG URL engine.
 
 Text rules decode HTML entities, preserve words across inline tags, and normalize
 whitespace independently of destination analysis. Script/style/comment text is
-not treated as visible prose. Shortener checks use decoded destination hosts with
+not treated as visible prose. The content model now receives this same
+MIME-aware visible text rather than raw HTML, so hidden markup does not supply
+model features or context. MIME `text/plain` remains literal. Raw HTML is still
+used for structural link and form checks; opaque image data-URI payloads do not
+become link destinations. Shortener checks use decoded destination hosts with
 domain boundaries rather than substrings anywhere in a message. Form `action`
 and submit-control `formaction` targets are inspected; an enabled password field
 associated with a form is medium-risk evidence, not proof that a client executes it.
@@ -277,9 +291,15 @@ abstains with `ml_status=insufficient_feature_coverage` and nullable model
 scores instead of inventing a prediction. Rules, sender, link, and structure
 checks still run. The model also abstains with `ml_status=insufficient_context`
 before vectorization when the combined subject and body contain fewer than five
-Unicode word tokens or fewer than 40 non-whitespace characters; HTML tags and
-attributes do not count toward this context measure. This prevents short routine
+Unicode word tokens or fewer than 40 non-whitespace characters; hidden HTML tags
+and attributes in HTML parts do not count toward this context measure. This
+prevents short routine
 subjects from producing unsupported high-confidence verdicts.
+The HTML input change leaves the committed artifact and threshold unchanged.
+Constructed hidden-text controls and the existing committed-model controls pass,
+but the stored offline metrics were measured on their original input pipeline;
+they are not a fresh evaluation of this HTML-serving behavior or provider-specific
+recall.
 With no independent evidence, either abstention produces an incomplete
 `unknown` result rather than claiming the email is safe. The UI labels supported
 outputs as a **model risk score**, not a calibrated probability or confidence claim.

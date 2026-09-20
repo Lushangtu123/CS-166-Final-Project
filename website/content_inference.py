@@ -100,11 +100,13 @@ def _explanation_metadata(pipeline: dict) -> tuple[np.ndarray, np.ndarray | None
     return pipeline[names_key], pipeline[coefficients_key]
 
 
-def predict_content(pipeline: dict, subject: str, body: str) -> dict:
+def predict_content(pipeline: dict, subject: str, body: str, *, canonical_text: bool = False) -> dict:
     """Score one subject/body pair and return bounded explainability details."""
     text = (subject or "") + "\n" + (body or "")
     threshold = float(pipeline.get("decision_threshold", 0.5))
-    context_text = re.sub(r"<[^>]*>", " ", unescape(text))
+    # Endpoint callers already supply MIME-aware visible text. Keep literal
+    # text/plain markup intact for both the context gate and the vectorizer.
+    context_text = text if canonical_text else re.sub(r"<[^>]*>", " ", unescape(text))
     token_count = len(re.findall(r"\w+", context_text, flags=re.UNICODE))
     nonspace_char_count = sum(not character.isspace() for character in context_text)
     if (

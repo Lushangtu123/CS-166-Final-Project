@@ -1091,11 +1091,14 @@ function renderContentResult(data) {
     const attachmentCoverage = (data.message_structure?.attachments || []).some(
       attachment => attachment.inspection_status === 'metadata_only') ||
       (data.analysis_warnings || []).some(warning => warning.includes('Attachment content was not inspected;'));
+    const inlineImageCoverage = data.inline_image_coverage?.inspection_status === 'metadata_only' ||
+      (data.analysis_warnings || []).some(warning => warning.includes('Embedded image content was not inspected;'));
     const parseIssues = (data.message_structure?.parse_warnings || []).length > 0;
     subParts.push('Analysis incomplete. Review the warnings below.');
     if (attachmentCoverage) {
       subParts.push('Attachment contents were not inspected; only filenames and MIME types were checked.');
     }
+    if (inlineImageCoverage) subParts.push('Embedded image content was not inspected.');
     if (parseIssues) subParts.push('Some message content could not be reliably parsed.');
     if (data.ml_status === 'insufficient_context' || data.ml_status === 'insufficient_feature_coverage') {
       subParts.push('The text model could not score this message.');

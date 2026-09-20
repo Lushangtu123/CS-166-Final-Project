@@ -67,11 +67,11 @@ def load_content_pipeline_artifact(path: Path, expected_sha256: str) -> dict:
     return loader(path, expected_sha256)
 
 
-def predict_content(pipeline: dict, subject: str, body: str) -> dict:
+def predict_content(pipeline: dict, subject: str, body: str, *, canonical_text: bool = False) -> dict:
     """Run optional inference without importing training dependencies."""
     from content_inference import predict_content as predictor
 
-    return predictor(pipeline, subject, body)
+    return predictor(pipeline, subject, body, canonical_text=canonical_text)
 
 
 from email_structure import (
@@ -2267,6 +2267,84 @@ def _visible_content_text(text: str, parse_warnings=None) -> str:
     return re.sub(r'\s+', ' ', ''.join(collector.parts)).strip()
 
 
+_INLINE_IMAGE_WARNING = 'Embedded image content was not inspected; analysis is incomplete.'
+
+
+def _unescape_css(value: str) -> str:
+    value = re.sub(r'\\(?:\r\n|[\n\r\f])', '', value)
+    def replacement(match):
+        if match.group(1):
+            codepoint = int(match.group(1), 16)
+            return chr(codepoint) if 0 < codepoint <= 0x10ffff else '\ufffd'
+        return match.group(2)
+
+    return re.sub(r'\\(?:([0-9a-fA-F]{1,6})(?:[ \t\n\r\f])?|([^\n\r\f]))',
+                  replacement, value)
+
+
+def _mask_inline_data_payloads(text: str) -> str:
+    """Keep image data bytes out of URL scans without hiding real destinations."""
+    def mask_css_url(match):
+        normalized = _unescape_css(match.group(0))
+        if re.search(r'url\(\s*[\'\"]?\s*data:image/', normalized, re.IGNORECASE):
+            return 'url(data:image/opaque)'
+        return match.group(0)
+
+    css_url = r"""url\(\s*(?:"(?:\\.|[^"<>])*"|'(?:\\.|[^'<>])*'|(?:\\.|[^)'"<>])*)\s*\)"""
+    text = re.sub(css_url, mask_css_url, text, flags=re.IGNORECASE)
+    return re.sub(r'data:image/[^\s\'"<>)]*', 'data:image/opaque', text, flags=re.IGNORECASE)
+
+
+def _inline_data_image_count(text: str, parse_warnings=None) -> int:
+    """Count HTML-embedded image references without decoding their content."""
+    data_image = re.compile(r'^\s*data:image/[a-z0-9.+-]+', re.IGNORECASE)
+    srcset_image = re.compile(r'(?:^|[\s,])data:image/[a-z0-9.+-]+', re.IGNORECASE)
+    css_image = re.compile(r'url\(\s*[\'\"]?\s*data:image/[a-z0-9.+-]+', re.IGNORECASE)
+
+    class ImageCollector(_AnalysisHTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.count = 0
+            self.in_style = False
+            self.in_script = False
+
+        def add_css(self, value):
+            without_comments = re.sub(r'/\*.*?\*/', '', value, flags=re.DOTALL)
+            normalized = _unescape_css(without_comments)
+            self.count = min(20, self.count + len(css_image.findall(normalized)))
+
+        def handle_starttag(self, tag, attrs):
+            if tag == 'script':
+                self.in_script = True
+                return
+            if self.in_script:
+                return
+            if tag == 'style':
+                self.in_style = True
+            for name, value in attrs:
+                if not value:
+                    continue
+                if tag in {'img', 'source'}:
+                    if name == 'src' and data_image.match(value):
+                        self.count = min(20, self.count + 1)
+                    elif name == 'srcset':
+                        self.count = min(20, self.count + len(srcset_image.findall(value)))
+                if name == 'style':
+                    self.add_css(value)
+
+        def handle_endtag(self, tag):
+            if tag == 'style':
+                self.in_style = False
+            elif tag == 'script':
+                self.in_script = False
+
+        def handle_data(self, data):
+            if self.in_style and not self.in_script:
+                self.add_css(data)
+
+    return _collect_html(ImageCollector, text, parse_warnings).count
+
+
 def _has_password_form(text: str, parse_warnings=None) -> bool:
     class FormCollector(_AnalysisHTMLParser):
         def __init__(self):
@@ -2307,7 +2385,8 @@ def _has_pressured_credential_request(text: str) -> bool:
     return False
 
 
-def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] | None = None) -> dict:
+def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] | None = None,
+                          _model_view: dict | None = None) -> dict:
     """Rule-based heuristic phishing analysis of email subject + body text."""
     analysis_warnings = []
     if content_parts is None:
@@ -2324,8 +2403,20 @@ def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] 
             for part in content_parts
         ]
     raw_parts = [_strip_invisible_format_controls(part) for part in raw_parts]
-    raw_text = '\n'.join(raw_parts)
-    links = [link for part, is_html in zip(raw_parts, html_parts)
+    if _model_view is not None:
+        # The model and rule checks consume the same MIME-aware visible text.
+        model_parts = [re.sub(r'\s+', ' ', _strip_invisible_format_controls(part)).strip()
+                       for part in visible_parts]
+        _model_view['subject'] = model_parts[0]
+        _model_view['body'] = '\n'.join(model_parts[1:]).strip()
+    image_count = min(20, sum(_inline_data_image_count(part, analysis_warnings)
+                              for part, is_html in zip(raw_parts[1:], html_parts[1:]) if is_html))
+    if image_count:
+        analysis_warnings.append(_INLINE_IMAGE_WARNING)
+    url_parts = [_mask_inline_data_payloads(part) if is_html else part
+                 for part, is_html in zip(raw_parts, html_parts)]
+    raw_text = '\n'.join(url_parts)
+    links = [link for part, is_html in zip(url_parts, html_parts)
              for link in _extract_links(part, parse_html=is_html, parse_warnings=analysis_warnings)]
     full_orig = re.sub(r'\s+', ' ', '\n'.join(visible_parts)).strip()
     analysis_text = _strip_invisible_format_controls(full_orig)
@@ -2495,6 +2586,10 @@ def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] 
     extra_indicators.extend({'level': 'info', 'msg': warning} for warning in analysis_warnings)
     return {
         "analysis_warnings": analysis_warnings,
+        "inline_image_coverage": {
+            "count": image_count,
+            "inspection_status": "metadata_only" if image_count else "not_applicable",
+        },
         "risk_level":        risk_level,
         "risk_label":        risk_label,
         "total_score":       total_score,
@@ -2604,7 +2699,9 @@ async def _analyze_content(
         raise HTTPException(status_code=400, detail="Subject, body, or message structure is required")
 
     # 1. Rule-based heuristic scan (explainable categories + extra indicators)
-    result = analyze_email_content(subject, body, content_parts=structure['content_parts'] if structure else None)
+    model_view = {}
+    result = analyze_email_content(subject, body, content_parts=structure['content_parts'] if structure else None,
+                                   _model_view=model_view)
     result["input_mode"] = "raw-email" if structure else "subject-body"
     result["structure_score"] = structure["structure_score"] if structure else 0
     if structure:
@@ -2685,13 +2782,19 @@ async def _analyze_content(
                 ContentRequest(), nested, observe_sender_history=False,
             )).body)
             result['analysis_warnings'].extend('Attached message: ' + warning
-                                                for warning in nested_result['analysis_warnings'])
+                                                for warning in nested_result['analysis_warnings']
+                                                if warning != _INLINE_IMAGE_WARNING)
+            coverage = result['inline_image_coverage']
+            coverage['count'] = min(20, coverage['count'] + nested_result['inline_image_coverage']['count'])
+            if coverage['count']:
+                coverage['inspection_status'] = 'metadata_only'
             result['total_score'] = max(result['total_score'], nested_result['total_score'])
             nested_floor = 'safe' if nested_result['risk_level'] == 'unknown' else nested_result['risk_level']
             result['risk_floor'] = max((result['risk_floor'], nested_floor), key=floor_rank.get)
             result['extra_indicators'].extend(
                 {'level': item['level'], 'msg': 'Attached message: ' + item['msg']}
-                for item in nested_result['extra_indicators'])
+                for item in nested_result['extra_indicators']
+                if item['msg'] != _INLINE_IMAGE_WARNING)
             # Categories are not parent-body matches; expose their provenance.
             result['extra_indicators'].extend(
                 {'level': cat['level'], 'msg': 'Attached message: ' + cat['label'] + ' — ' + ', '.join(cat['matched'])}
@@ -2705,9 +2808,14 @@ async def _analyze_content(
             })
         result['message_structure']['nested_messages'] = nested_summaries
 
+    if result['inline_image_coverage']['count'] and _INLINE_IMAGE_WARNING not in result['analysis_warnings']:
+        result['analysis_warnings'].append(_INLINE_IMAGE_WARNING)
+        result['extra_indicators'].append({'level': 'info', 'msg': _INLINE_IMAGE_WARNING})
+
     # 2. Optional ML text classifier (TF-IDF + selected linear model)
     if _content_pipeline is not None:
-        ml = predict_content(_content_pipeline, subject, body)
+        ml = predict_content(_content_pipeline, model_view['subject'], model_view['body'],
+                             canonical_text=True)
         result.update(ml)
         result["ml_metrics"] = _content_pipeline["metrics"]
 
