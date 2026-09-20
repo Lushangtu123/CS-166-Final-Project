@@ -22,6 +22,125 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-19 13:07 PT] — Reduce text-model false positives and expose uncertainty
+
+### Why
+- The committed classifier labeled short ordinary messages such as trip-photo
+  replies and project updates as phishing, while zero-vocabulary multilingual
+  input still received a model verdict.
+- The UI described classifier output as probability/confidence, and evaluation
+  rates lacked uncertainty intervals despite small legitimate validation slices.
+- Deployment smoke testing exercised only a phishing positive control.
+
+### Files changed
+- `website/content_model.py` and `website/model/content_model_artifact.pkl`: add
+  1,044 unique grouped training-only legitimate hard negatives from 87 template
+  families, including personal correspondence and workplace updates; exclude
+  normalized overlap with reserved data, remove mislabeled threat filler from
+  legitimate synthetic mail, share family IDs with the base synthetic corpus so
+  held-out template variants cannot be reintroduced after splitting, add build
+  provenance and Wilson 95% intervals, and mark the 2025 temporal set as a
+  post-selection regression slice.
+- `website/content_inference.py`, `website/app.py`, `website/static/app.js`, and
+  `website/static/index.html`: abstain when TF-IDF has zero usable features,
+  preserve rule/structure results, and label supported output as a model risk
+  score rather than a calibrated probability or confidence.
+- `website/email_structure.py`: retain parsed `To`/`Cc` candidates, add a bounded
+  self-addressed-message signal, and treat a missing visible recipient as
+  informational because Bcc is legitimate.
+- `website/tools/post_deploy_smoke.py`, `website/tests/vercel_runtime_smoke.py`,
+  and their tests: require both phishing-positive and legitimate-negative
+  controls, read Vercel's deployment `environment_url`, and compare the full
+  model SHA-256. Regression tests cover abstention, personal/workplace hard
+  negatives, held-out-family exclusion, recipient handling, terminology,
+  intervals, and artifact provenance.
+- `.github/workflows/ci.yml`: keep source tests on Python 3.12 and 3.13 while
+  loading the Python-3.12 serialized deployment artifact only on its matching
+  runtime.
+- `vercel.json`, `README.md`, and `phishing-detection/README.md`: pin the rebuilt
+  artifact and document its scope, metrics, limitations, and uncertainty.
+
+### Effect
+- The exact observed photo-message regression scores 15.9%, two differently
+  worded monthly-report controls score 5.1% and 9.4%, and the Outlook planning-
+  note fixture scores 22.4%, all below the 37.36% threshold; the local Vercel
+  runtime phishing positive control scores 99.8%.
+  Unsupported Chinese, Japanese, and unknown-Unicode text now returns
+  `ml_status=insufficient_feature_coverage` with nullable model scores.
+- The 6,000-row original group-isolated test reports 99.32% phishing recall and
+  98.13% precision. The 2025 SpaPhish regression slice reports 96.65% recall and
+  18.75% false-positive rate, with Wilson 95% intervals.
+- The rebuilt 26,052-row Logistic Regression artifact is pinned as
+  `a0a503a0cd6122e722933add91f49cc72e3fa74abaf1129c4df3fe0450401746`.
+
+## [2026-09-19 10:07 PT] — Add dated Spanish corpus and cross-language model validation
+
+### Why
+- The committed English-heavy model classified every legitimate message in an
+  initial 2024–2025 SpaPhish check as phishing (87/87 false positives), despite
+  high phishing recall.
+- The previous mixed-corpus holdout was group-isolated but not chronological or
+  multilingual, so it did not expose this cross-language calibration failure.
+
+### Files changed
+- `website/content_model.py`: add the CC-BY-4.0 SpaPhish v1 source with a pinned
+  SHA-256 download, normalized-family isolation, 2024 threshold validation,
+  2025 evaluation-only holdout, and explicit partial-temporal metadata.
+- `website/tests/test_content_corpus.py`: cover checksum failure, atomic
+  preservation of an existing dataset, temporal partition boundaries, family
+  isolation, false-positive-constrained threshold selection, and holdout metrics.
+- `website/model/content_model_artifact.pkl` and `vercel.json`: rebuild the
+  Logistic Regression artifact and pin SHA-256
+  `50bc0b1a9e694b12521f8f3fe0131348f91746a1d9dce0a82c62ac2b7b56ec00`.
+- `README.md` and `phishing-detection/README.md`: document source, license,
+  observed file counts, evaluation protocol, metrics, and limitations.
+
+### Effect
+- Training uses 1,008 SpaPhish samples in addition to the 30,000-row capped
+  base corpus; 128 dated 2024 messages select a maximum-recall threshold under
+  a 20% legitimate-message false-positive cap.
+- The untouched 2025 holdout contains 211 normalized families and reports
+  96.65% phishing recall, 97.19% precision, 15.62% false-positive rate, and
+  0.9940 PR AUC with zero training-family overlap.
+- The original 6,000-row mixed-corpus holdout remains at 99.50% phishing recall
+  and 0.9994 PR AUC. This is not a Gmail/Outlook claim: 791 training rows are
+  undated, and no provider-specific private inbox corpus was available.
+
+## [2026-09-18 21:19 PT] — Fix sender lookalikes and accelerate deployed inference
+
+### Why
+- Standalone digit-substitution domains such as `paypa1.com` normalized to an
+  official brand and were then incorrectly excluded from the spoofing rule.
+- Last-two-label domain parsing treated `co.uk` as a registrable domain and
+  produced both missed lookalikes and false subdomain warnings.
+- Privacy-alias coverage omitted official SimpleLogin domains, while content
+  explanations rebuilt and densified 80,000 model features on every request.
+- Source-level CI did not verify the completed Vercel deployment.
+
+### Files changed
+- `website/app.py`, `requirements.txt`, and `website/requirements.txt`: offline
+  Public Suffix parsing, corrected brand-spoof semantics, and a decisive sender
+  risk floor for verified character-substitution lookalikes.
+- `website/data/privacy_relay_domains.json` and
+  `website/disposable_registry.py`: a validated, versioned privacy-relay list
+  with provider provenance, including official SimpleLogin alias domains.
+- `website/content_inference.py`: cached explanation metadata and sparse-only
+  contributor computation.
+- `.github/workflows/post-deploy-smoke.yml` and
+  `website/tools/post_deploy_smoke.py`: revision-matched public deployment
+  health, configuration, model-ID, and positive-control checks.
+- Backend regressions, GitHub Action runtime upgrades, and README guidance.
+
+### Effect
+- Isolated `paypa1`, `g00gle`, `app1e`, `n3tflix`, `micro5oft`, `6oogle`, and
+  `p4ypal` sender domains now reach at least High risk, including under
+  multi-label suffixes such as `.co.uk`.
+- Ordinary multi-label domains no longer inherit false `co.uk`/`com.au`
+  subdomain or uncommon-TLD findings, and SimpleLogin aliases remain neutral.
+- The deployed model preserves its probability and contributor contract while
+  avoiding per-request dense explanation arrays; completed Vercel deployments
+  receive an independent HTTP smoke test.
+
 ## [2026-09-18 18:28 PT] — Harden custom-domain and model deployment maintenance
 
 ### Why

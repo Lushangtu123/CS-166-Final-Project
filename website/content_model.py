@@ -62,6 +62,26 @@ _DEFAULT_DATA_DIR = (Path(__file__).resolve().parent.parent
                      / "phishing-detection" / "data")
 _ARTIFACT_SCHEMA = "phishguard-content-model-v1"
 _PIPELINE_KEYS = {"vectorizer", "clf", "decision_threshold", "metrics", "top_terms"}
+_SPAPHISH_FILENAME = "SpaPhish.csv"
+_SPAPHISH_URL = (
+    "https://data.mendeley.com/public-files/datasets/hz2d6gz7pc/files/"
+    "c08c152f-108d-4e46-bd99-052e41be4e60/file_downloaded"
+)
+_SPAPHISH_SHA256 = (
+    "fdd74842d0a19fd4332bd91f90b0bcb06e045ceb2b599051b4598b65055a9cc5"
+)
+_SPAPHISH_CUTOFF = "2024-01-01"
+_SPAPHISH_HOLDOUT_START = "2025-01-01"
+_SPAPHISH_VALIDATION_MAX_FPR = 0.20
+_HARD_NEGATIVE_VARIANTS = 24
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _major_minor(version: str) -> str:
@@ -154,17 +174,30 @@ _DATASETS = [
 ]
 
 
-def _download(url: str, dest: Path) -> bool:
+def _download(
+    url: str,
+    dest: Path,
+    *,
+    expected_sha256: str | None = None,
+) -> bool:
     print(f"Downloading {dest.name} from {url} …")
+    temporary = dest.with_suffix(dest.suffix + ".part")
     try:
-        urllib.request.urlretrieve(url, dest)
+        temporary.unlink(missing_ok=True)
+        urllib.request.urlretrieve(url, temporary)
+        if expected_sha256:
+            actual = _file_sha256(temporary)
+            if not hmac.compare_digest(actual, expected_sha256.lower()):
+                raise ValueError(
+                    f"SHA-256 mismatch for {dest.name}: expected published digest"
+                )
+        temporary.replace(dest)
         size_mb = dest.stat().st_size / 1e6
         print(f"  ✓ Downloaded {size_mb:.1f} MB")
         return True
     except Exception as exc:
         print(f"  ✗ Download failed: {exc}")
-        if dest.exists():
-            dest.unlink(missing_ok=True)
+        temporary.unlink(missing_ok=True)
         return False
 
 
@@ -187,6 +220,17 @@ def ensure_real_dataset(data_dir: Path | None = None,
         if url and _download(url, path):
             if name == "Phishing_Email.csv":
                 primary_path = path
+    spaphish_path = data_dir / _SPAPHISH_FILENAME
+    spaphish_valid = (
+        spaphish_path.exists()
+        and hmac.compare_digest(_file_sha256(spaphish_path), _SPAPHISH_SHA256)
+    )
+    if force or not spaphish_valid:
+        _download(
+            _SPAPHISH_URL,
+            spaphish_path,
+            expected_sha256=_SPAPHISH_SHA256,
+        )
     return primary_path
 
 
@@ -203,6 +247,170 @@ def _text_group(text: str, _source: str) -> str:
     normalized = _normalized_text_family(text)
     digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:20]
     return f"content:{digest}"
+
+
+def _load_spaphish_partitions(
+    path: Path,
+    *,
+    verify_sha256: bool = True,
+) -> dict:
+    """Load SpaPhish without allowing dated future families into training.
+
+    Messages dated on or after the fixed cutoff are evaluation-only. Undated
+    messages may augment training, so the resulting temporal assurance is
+    explicitly partial rather than being presented as a strict time split.
+    """
+    empty = ([], [], [])
+    if not path.exists():
+        return {
+            "train": empty,
+            "validation": empty,
+            "holdout": empty,
+            "metadata": {
+                "cutoff": _SPAPHISH_CUTOFF,
+                "holdout_start": _SPAPHISH_HOLDOUT_START,
+                "temporal_assurance": "unavailable",
+                "excluded_family_overlap": 0,
+            },
+        }
+
+    if verify_sha256 and not hmac.compare_digest(
+        _file_sha256(path), _SPAPHISH_SHA256,
+    ):
+        raise ValueError("SpaPhish SHA-256 does not match the published dataset")
+
+    frame = pd.read_csv(path, sep=";", encoding="utf-8-sig")
+    required = {"hash", "subject", "body", "date", "Label"}
+    if not required.issubset(frame.columns):
+        missing = ", ".join(sorted(required - set(frame.columns)))
+        raise ValueError(f"SpaPhish is missing required columns: {missing}")
+
+    frame = frame.copy()
+    frame["label"] = pd.to_numeric(frame["Label"], errors="coerce")
+    frame["text"] = (
+        frame["subject"].fillna("").astype(str)
+        + "\n\n"
+        + frame["body"].fillna("").astype(str)
+    ).str.strip()
+    frame["observed_at"] = pd.to_datetime(
+        frame["date"], errors="coerce", utc=True,
+    )
+    frame = frame[
+        frame["label"].isin([0, 1])
+        & frame["text"].str.len().gt(20)
+        & frame["hash"].fillna("").astype(str).str.strip().astype(bool)
+    ].copy()
+    frame["label"] = frame["label"].astype(int)
+    frame["group"] = frame["text"].map(lambda text: _text_group(text, "global"))
+
+    cutoff = pd.Timestamp(_SPAPHISH_CUTOFF, tz="UTC")
+    holdout_start = pd.Timestamp(_SPAPHISH_HOLDOUT_START, tz="UTC")
+    holdout = frame[frame["observed_at"].ge(holdout_start)].copy()
+    validation = frame[
+        frame["observed_at"].ge(cutoff)
+        & frame["observed_at"].lt(holdout_start)
+    ].copy()
+    training = frame[
+        frame["observed_at"].lt(cutoff) | frame["observed_at"].isna()
+    ].copy()
+    holdout_families = set(holdout["group"])
+    validation_overlap = validation["group"].isin(holdout_families)
+    validation = validation[~validation_overlap]
+    reserved_families = holdout_families | set(validation["group"])
+    training_overlap = training["group"].isin(reserved_families)
+    excluded_family_overlap = int(
+        validation_overlap.sum() + training_overlap.sum()
+    )
+    training = training[~training_overlap]
+
+    def partition_values(partition: pd.DataFrame) -> tuple[list, list, list]:
+        partition = partition.drop_duplicates(subset=["group"], keep="first")
+        return (
+            partition["text"].tolist(),
+            partition["label"].astype(int).tolist(),
+            partition["group"].tolist(),
+        )
+
+    return {
+        "train": partition_values(training),
+        "validation": partition_values(validation),
+        "holdout": partition_values(holdout),
+        "metadata": {
+            "cutoff": _SPAPHISH_CUTOFF,
+            "holdout_start": _SPAPHISH_HOLDOUT_START,
+            "temporal_assurance": "partial",
+            "undated_training_rows": int(training["observed_at"].isna().sum()),
+            "excluded_family_overlap": excluded_family_overlap,
+            "published_sha256": _SPAPHISH_SHA256,
+        },
+    }
+
+
+def _select_threshold_at_fpr(
+    labels,
+    probabilities,
+    *,
+    max_false_positive_rate: float,
+) -> float:
+    """Maximize phishing recall while enforcing a validation false-positive cap."""
+    y_true = np.asarray(labels, dtype=int)
+    y_proba = np.asarray(probabilities, dtype=float)
+    if len(y_true) == 0 or len(set(y_true.tolist())) < 2:
+        raise ValueError("Threshold validation requires both classes")
+    candidates = sorted(set(y_proba.tolist()))
+    candidates.append(float(np.nextafter(max(candidates), np.inf)))
+    eligible = []
+    for threshold in candidates:
+        prediction = (y_proba >= threshold).astype(int)
+        false_positives = int(np.sum((prediction == 1) & (y_true == 0)))
+        true_negatives = int(np.sum((prediction == 0) & (y_true == 0)))
+        true_positives = int(np.sum((prediction == 1) & (y_true == 1)))
+        false_negatives = int(np.sum((prediction == 0) & (y_true == 1)))
+        false_positive_rate = false_positives / max(
+            false_positives + true_negatives, 1,
+        )
+        if false_positive_rate > max_false_positive_rate:
+            continue
+        recall = true_positives / max(true_positives + false_negatives, 1)
+        eligible.append((recall, -false_positive_rate, -threshold, threshold))
+    return float(max(eligible)[-1])
+
+
+def _wilson_interval(successes: int, total: int) -> tuple[float, float]:
+    """Return a two-sided 95% Wilson score interval for a binomial rate."""
+    if total <= 0 or successes < 0 or successes > total:
+        raise ValueError("Wilson interval requires 0 <= successes <= total")
+    z = 1.959963984540054
+    rate = successes / total
+    denominator = 1 + (z * z / total)
+    center = (rate + (z * z / (2 * total))) / denominator
+    margin = z * np.sqrt(
+        (rate * (1 - rate) + z * z / (4 * total)) / total
+    ) / denominator
+    lower = 0.0 if successes == 0 else float(max(0.0, center - margin))
+    upper = 1.0 if successes == total else float(min(1.0, center + margin))
+    return lower, upper
+
+
+def _effective_decision_threshold(
+    *,
+    oof_threshold: float,
+    validation_threshold: float | None = None,
+) -> float:
+    """Use held-out validation calibration when it is available.
+
+    The validation threshold already encodes the false-positive constraint.
+    Taking a lower threshold from another policy would invalidate that bound.
+    """
+    selected = (
+        validation_threshold
+        if validation_threshold is not None
+        else oof_threshold
+    )
+    # A selector can deliberately return nextafter(1.0, +inf) to represent
+    # "predict no positives" when every score is 1.0 and the FPR cap is zero.
+    # Clamping that sentinel back to 1.0 would make score == 1.0 positive again.
+    return float(max(0.05, selected))
 
 
 def _deduplicate_corpus(
@@ -262,6 +470,31 @@ def _deduplicate_corpus(
         removed_count,
         conflict_count,
     )
+
+
+def _exclude_reserved_families(
+    texts: list[str],
+    labels: list[int],
+    groups: list[str],
+    *,
+    reserved_texts: list[str],
+) -> tuple[list[str], list[int], list[str], int]:
+    """Exclude normalized families already present in training or evaluation."""
+    reserved = {_normalized_text_family(text) for text in reserved_texts}
+    kept_texts: list[str] = []
+    kept_labels: list[int] = []
+    kept_groups: list[str] = []
+    excluded = 0
+    for text, label, group in zip(texts, labels, groups):
+        family = _normalized_text_family(text)
+        if family in reserved:
+            excluded += 1
+            continue
+        reserved.add(family)
+        kept_texts.append(text)
+        kept_labels.append(label)
+        kept_groups.append(group)
+    return kept_texts, kept_labels, kept_groups, excluded
 
 
 def _load_one_corpus(path: Path, schema: str
@@ -1191,8 +1424,97 @@ _LEGIT_TEMPLATES: List[Tuple[str, str]] = [
      "AutoPay.\n\nJPMorgan Chase Bank, N.A., Equal Housing Lender"),
 ]
 
+# Ordinary person-to-person messages are intentionally kept separate from the
+# broad synthetic corpus.  They are training-only hard negatives used to keep
+# short, informal mail from inheriting a phishing label merely because a
+# greeting such as "Hey" was common in the source datasets' phishing class.
+_PERSONAL_HARD_NEGATIVE_TEMPLATES: List[Tuple[str, str]] = [
+    (
+        "Photos from the holiday",
+        "Hey {name},\n\nThanks for sharing the vacation pictures. Everyone "
+        "looked happy. Let's catch up next weekend.\n\n{name2}",
+    ),
+    (
+        "Trip pictures",
+        "Hi {name},\n\nThe travel pictures were wonderful. I hope you had a "
+        "relaxing break. Let's get lunch soon.\n\n{name2}",
+    ),
+    (
+        "Family photos",
+        "Hey {name},\n\nThese family photos turned out great. Thanks for "
+        "sending them. Talk soon!\n\n{name2}",
+    ),
+    (
+        "Re: your vacation",
+        "Hey {name},\n\nIt looks like everyone had a relaxing holiday. I "
+        "enjoyed seeing the beach pictures. Hope to catch up soon.\n\n{name2}",
+    ),
+    (
+        "Dinner this weekend?",
+        "Hey {name},\n\nAre you free for dinner this weekend? We could meet "
+        "at the usual place around seven.\n\n{name2}",
+    ),
+    (
+        "Great seeing you",
+        "Hi {name},\n\nIt was great seeing you yesterday. Thanks for sharing "
+        "the pictures, and have a good rest of the week.\n\n{name2}",
+    ),
+]
 
-def _instantiate(template: Tuple[str, str], rng: random.Random) -> str:
+_WORKPLACE_HARD_NEGATIVE_TEMPLATES: List[Tuple[str, str]] = [
+    (
+        "Design review follow-up",
+        "Hi {name},\n\nHere are the notes from our planning call. We shifted "
+        "the design review to Friday and left the current task owners unchanged."
+        "\n\n{name2}",
+    ),
+    (
+        "Meeting notes and action owners",
+        "Hello team,\n\nThe session notes are attached. The schedule was updated, "
+        "and each project owner will continue with the assigned action items.",
+    ),
+    (
+        "Agenda for next week's review",
+        "Hi all,\n\nPlease read the agenda before next week's project review. "
+        "There are no urgent actions or account changes.\n\nThanks,\n{name}",
+    ),
+    (
+        "Routine operations summary",
+        "Hello {name},\n\nThe team completed the planned maintenance and posted "
+        "the routine operations summary. No response is required.\n\n{name2}",
+    ),
+    (
+        "Monthly performance report",
+        "Hi {name},\n\nThe monthly report is attached for reference. Revenue "
+        "increased compared with last month, and no action is required.\n\n{name2}",
+    ),
+    (
+        "Monthly reporting package",
+        "Hello team,\n\nThe finance group published the monthly reporting "
+        "package with revenue, expenses, and forecast notes. We will discuss "
+        "it during the regular review.",
+    ),
+    (
+        "Scheduled maintenance completed",
+        "Hi all,\n\nThe scheduled maintenance completed successfully. "
+        "Systems are operating normally, and the operations report is "
+        "available in the internal portal.\n\nThanks,\n{name}",
+    ),
+    (
+        "Revenue dashboard update",
+        "Hello {name},\n\nThe monthly revenue dashboard has been refreshed with "
+        "the latest figures. This is a routine update and no response is "
+        "needed.\n\n{name2}",
+    ),
+]
+
+
+def _instantiate(
+    template: Tuple[str, str],
+    rng: random.Random,
+    *,
+    include_filler: bool = True,
+) -> str:
     """Fill placeholders in a (subject, body) template and return a combined text."""
     subject, body = template
     brand   = rng.choice(_BRANDS)
@@ -1206,9 +1528,49 @@ def _instantiate(template: Tuple[str, str], rng: random.Random) -> str:
     )
 
     # Occasionally splice in filler text to diversify wording (phishing & legit alike)
-    if rng.random() < 0.35:
+    if include_filler and rng.random() < 0.35:
         text += "\n\n" + rng.choice(_FILLER_FRAGMENTS)
     return text
+
+
+def _instantiate_without_filler(
+    template: Tuple[str, str], rng: random.Random
+) -> str:
+    """Instantiate a clean hard negative without synthetic threat language."""
+    return _instantiate(template, rng, include_filler=False)
+
+
+def generate_hard_negative_corpus(
+    seed: int = 42,
+    *,
+    variants_per_template: int = _HARD_NEGATIVE_VARIANTS,
+) -> tuple[list[str], list[int], list[str]]:
+    """Generate grouped legitimate-only examples for false-positive control."""
+    if variants_per_template < 1:
+        raise ValueError("variants_per_template must be positive")
+    rng = random.Random(seed)
+    texts: list[str] = []
+    groups: list[str] = []
+    seen_texts: set[str] = set()
+
+    def add_variants(template: Tuple[str, str], group: str) -> None:
+        for _ in range(variants_per_template):
+            text = _instantiate_without_filler(template, rng)
+            if text in seen_texts:
+                continue
+            seen_texts.add(text)
+            texts.append(text)
+            groups.append(group)
+
+    for template_index, template in enumerate(_LEGIT_TEMPLATES):
+        # Reuse the base synthetic family so held-out template variants can be
+        # excluded from training after the outer group split.
+        add_variants(template, f"synthetic:legitimate:{template_index}")
+    for template_index, template in enumerate(_PERSONAL_HARD_NEGATIVE_TEMPLATES):
+        add_variants(template, f"hard-negative:personal-social:{template_index}")
+    for template_index, template in enumerate(_WORKPLACE_HARD_NEGATIVE_TEMPLATES):
+        add_variants(template, f"hard-negative:workplace:{template_index}")
+    return texts, [0] * len(texts), groups
 
 
 def generate_content_corpus(
@@ -1238,7 +1600,7 @@ def generate_content_corpus(
     per_legit  = max(1, n_phishing // len(_LEGIT_TEMPLATES))
     for template_index, tmpl in enumerate(_LEGIT_TEMPLATES):
         for _ in range(per_legit):
-            texts.append(_instantiate(tmpl, rng))
+            texts.append(_instantiate(tmpl, rng, include_filler=False))
             labels.append(0)
             groups.append(f"synthetic:legitimate:{template_index}")
 
@@ -1278,24 +1640,47 @@ def _build_vectorizer() -> FeatureUnion:
     return FeatureUnion([("word", word_tfidf), ("char", char_tfidf)])
 
 
-_CACHE_VERSION = "v5.3-global-dedup-pr-auc-f2"  # bump to invalidate stale caches
+_CACHE_VERSION = "v5.8-heldout-family-isolation"
 
 
 def _cache_path() -> Path:
     return _DEFAULT_DATA_DIR / "content_model_cache.pkl"
 
 
+def _source_sha256s() -> dict[str, str]:
+    """Return content digests for every local corpus considered by the build."""
+    names = [name for name, _url, _schema in _DATASETS]
+    names.append(_SPAPHISH_FILENAME)
+    return {
+        name: _file_sha256(_DEFAULT_DATA_DIR / name)
+        for name in names
+        if (_DEFAULT_DATA_DIR / name).is_file()
+    }
+
+
 def _cache_key(*, use_real, augment_synthetic, n_variants, max_real_rows,
                fast_mode, seed) -> str:
     """A stable key that captures all training-relevant options + dataset fingerprint."""
     sigs = []
+    source_digests = _source_sha256s()
     for name, _url, _schema in _DATASETS:
         p = _DEFAULT_DATA_DIR / name
         if p.exists():
-            st = p.stat()
-            sigs.append(f"{name}:{st.st_size}:{int(st.st_mtime)}")
+            sigs.append(f"{name}:{source_digests[name]}")
         else:
             sigs.append(f"{name}:absent")
+    spaphish_path = _DEFAULT_DATA_DIR / _SPAPHISH_FILENAME
+    if spaphish_path.exists():
+        sigs.append(
+            f"{_SPAPHISH_FILENAME}:{source_digests[_SPAPHISH_FILENAME]}:"
+            f"{_SPAPHISH_SHA256}:{_SPAPHISH_CUTOFF}:"
+            f"{_SPAPHISH_HOLDOUT_START}:{_SPAPHISH_VALIDATION_MAX_FPR}"
+        )
+    else:
+        sigs.append(
+            f"{_SPAPHISH_FILENAME}:absent:{_SPAPHISH_CUTOFF}:"
+            f"{_SPAPHISH_HOLDOUT_START}:{_SPAPHISH_VALIDATION_MAX_FPR}"
+        )
     ds_sig = "|".join(sigs)
     raw = (f"{_CACHE_VERSION}|{ds_sig}|use_real={use_real}|"
            f"augment={augment_synthetic}|n_variants={n_variants}|"
@@ -1386,6 +1771,16 @@ def build_content_pipeline(
     if not texts:
         raise RuntimeError("No training data could be assembled.")
 
+    texts, labels, groups, build_duplicates, build_conflicts = _deduplicate_corpus(
+        texts,
+        labels,
+        groups,
+    )
+    sources.append(
+        "Final cross-source normalization removed "
+        f"{build_duplicates} duplicates and {build_conflicts} label-conflicting rows"
+    )
+
     # Keep every campaign/template family in exactly one side of the split.
     # This prevents paraphrases of a single seed from inflating test metrics.
     outer_cv = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=seed)
@@ -1396,6 +1791,72 @@ def build_content_pipeline(
     y_test = np.asarray([labels[i] for i in test_idx])
     train_groups = [groups[i] for i in train_idx]
     test_groups = [groups[i] for i in test_idx]
+
+    spaphish_partitions = None
+    temporal_evaluation_texts: list[str] = []
+    if use_real:
+        spaphish_partitions = _load_spaphish_partitions(
+            _DEFAULT_DATA_DIR / _SPAPHISH_FILENAME,
+        )
+        temporal_evaluation_texts = (
+            list(spaphish_partitions["validation"][0])
+            + list(spaphish_partitions["holdout"][0])
+        )
+        spa_texts, spa_labels, spa_groups = spaphish_partitions["train"]
+        spa_texts, spa_labels, spa_groups, spa_excluded = _exclude_reserved_families(
+            spa_texts,
+            spa_labels,
+            spa_groups,
+            reserved_texts=(
+                list(X_train_txt) + list(X_test_txt) + temporal_evaluation_texts
+            ),
+        )
+        if spa_texts:
+            X_train_txt.extend(spa_texts)
+            y_train.extend(spa_labels)
+            train_groups.extend(spa_groups)
+            sample_sources.extend(["SpaPhish-training"] * len(spa_texts))
+            sources.append(
+                f"SpaPhish training partition (n={len(spa_texts)}: "
+                f"{sum(spa_labels)} phishing / {len(spa_labels)-sum(spa_labels)} "
+                f"legitimate; cutoff {_SPAPHISH_CUTOFF}; "
+                f"{spaphish_partitions['metadata'].get('undated_training_rows', 0)} "
+                f"undated; {spa_excluded} cross-source families excluded)"
+            )
+
+    hard_texts, hard_labels, hard_groups = generate_hard_negative_corpus(
+        seed=seed,
+    )
+    held_out_groups = set(test_groups)
+    hard_group_excluded = sum(
+        group in held_out_groups for group in hard_groups
+    )
+    hard_rows = [
+        (text, label, group)
+        for text, label, group in zip(hard_texts, hard_labels, hard_groups)
+        if group not in held_out_groups
+    ]
+    hard_texts = [row[0] for row in hard_rows]
+    hard_labels = [row[1] for row in hard_rows]
+    hard_groups = [row[2] for row in hard_rows]
+    hard_texts, hard_labels, hard_groups, hard_excluded = _exclude_reserved_families(
+        hard_texts,
+        hard_labels,
+        hard_groups,
+        reserved_texts=(
+            list(X_train_txt) + list(X_test_txt) + temporal_evaluation_texts
+        ),
+    )
+    X_train_txt.extend(hard_texts)
+    y_train.extend(hard_labels)
+    train_groups.extend(hard_groups)
+    sample_sources.extend(["hard-negative-synthetic"] * len(hard_texts))
+    sources.append(
+        f"Grouped legitimate hard negatives (n={len(hard_texts)}; "
+        f"templates={len(_LEGIT_TEMPLATES) + len(_PERSONAL_HARD_NEGATIVE_TEMPLATES) + len(_WORKPLACE_HARD_NEGATIVE_TEMPLATES)}; "
+        f"{hard_group_excluded} held-out template variants and "
+        f"{hard_excluded} duplicate families excluded; synthetic)"
+    )
 
     # ── Model selection ──────────────────────────────────────────────────────
     # Try three competitive linear models on the training fold and pick the best
@@ -1471,9 +1932,80 @@ def build_content_pipeline(
         decision_threshold = float(thresholds[int(np.argmax(f2))])
     else:
         decision_threshold = 0.5
-    decision_threshold = min(0.95, max(0.05, decision_threshold))
+    decision_threshold = _effective_decision_threshold(
+        oof_threshold=decision_threshold,
+    )
+    oof_decision_threshold = decision_threshold
 
     best_estimator.fit(X_train_txt, y_train)
+
+    temporal_validation_metrics = {
+        "dataset": "SpaPhish v1",
+        "period": f"{_SPAPHISH_CUTOFF} through 2024-12-31",
+        "n_validation": 0,
+        "status": "unavailable",
+        "max_false_positive_rate": _SPAPHISH_VALIDATION_MAX_FPR,
+    }
+    if spaphish_partitions is not None:
+        validation_texts, validation_labels, _ = spaphish_partitions["validation"]
+        if validation_texts and len(set(validation_labels)) == 2:
+            validation_y = np.asarray(validation_labels)
+            validation_proba = best_estimator.predict_proba(validation_texts)[:, 1]
+            validation_threshold = _select_threshold_at_fpr(
+                validation_y,
+                validation_proba,
+                max_false_positive_rate=_SPAPHISH_VALIDATION_MAX_FPR,
+            )
+            validation_threshold = _effective_decision_threshold(
+                oof_threshold=oof_decision_threshold,
+                validation_threshold=validation_threshold,
+            )
+            decision_threshold = validation_threshold
+            validation_pred = (
+                validation_proba >= decision_threshold
+            ).astype(int)
+            validation_false_positives = int(np.sum(
+                (validation_pred == 1) & (validation_y == 0)
+            ))
+            validation_false_negatives = int(np.sum(
+                (validation_pred == 0) & (validation_y == 1)
+            ))
+            validation_legitimate = int(np.sum(validation_y == 0))
+            validation_phishing = int(np.sum(validation_y == 1))
+            validation_fpr_interval = _wilson_interval(
+                validation_false_positives,
+                validation_legitimate,
+            )
+            validation_recall_interval = _wilson_interval(
+                validation_phishing - validation_false_negatives,
+                validation_phishing,
+            )
+            temporal_validation_metrics = {
+                "dataset": "SpaPhish v1",
+                "period": f"{_SPAPHISH_CUTOFF} through 2024-12-31",
+                "n_validation": int(len(validation_y)),
+                "n_phishing": validation_phishing,
+                "n_legitimate": validation_legitimate,
+                "selected_threshold": round(validation_threshold, 4),
+                "effective_threshold": round(decision_threshold, 4),
+                "Phishing_Recall": round(float(recall_score(
+                    validation_y, validation_pred, zero_division=0,
+                )), 4),
+                "False_Positive_Rate": round(
+                    validation_false_positives / max(validation_legitimate, 1), 4,
+                ),
+                "False_Positive_Rate_95_CI": [
+                    round(bound, 4) for bound in validation_fpr_interval
+                ],
+                "Phishing_Recall_95_CI": [
+                    round(bound, 4) for bound in validation_recall_interval
+                ],
+                "false_positives": validation_false_positives,
+                "false_negatives": validation_false_negatives,
+                "status": "used-for-threshold-selection",
+                "max_false_positive_rate": _SPAPHISH_VALIDATION_MAX_FPR,
+            }
+
     y_proba = best_estimator.predict_proba(X_test_txt)[:, 1]
     y_pred = (y_proba >= decision_threshold).astype(int)
     default_y_pred = (y_proba >= 0.5).astype(int)
@@ -1483,6 +2015,81 @@ def build_content_pipeline(
     default_phishing_recall = float(recall_score(
         y_test, default_y_pred, pos_label=1, zero_division=0,
     ))
+
+    temporal_metrics = {
+        "dataset": "SpaPhish v1",
+        "cutoff": _SPAPHISH_HOLDOUT_START,
+        "evaluation_role": "regression-slice",
+        "n_test": 0,
+        "status": "unavailable",
+        "temporal_assurance": "unavailable",
+        "group_overlap": 0,
+    }
+    if use_real:
+        temporal = spaphish_partitions or _load_spaphish_partitions(
+            _DEFAULT_DATA_DIR / _SPAPHISH_FILENAME,
+        )
+        holdout_texts, holdout_labels, holdout_groups = temporal["holdout"]
+        if holdout_texts and len(set(holdout_labels)) == 2:
+            holdout_y = np.asarray(holdout_labels)
+            holdout_proba = best_estimator.predict_proba(holdout_texts)[:, 1]
+            holdout_pred = (holdout_proba >= decision_threshold).astype(int)
+            false_positives = int(np.sum((holdout_pred == 1) & (holdout_y == 0)))
+            false_negatives = int(np.sum((holdout_pred == 0) & (holdout_y == 1)))
+            legitimate_count = int(np.sum(holdout_y == 0))
+            phishing_count = int(np.sum(holdout_y == 1))
+            holdout_fpr_interval = _wilson_interval(
+                false_positives,
+                legitimate_count,
+            )
+            holdout_recall_interval = _wilson_interval(
+                phishing_count - false_negatives,
+                phishing_count,
+            )
+            temporal_metrics = {
+                "dataset": "SpaPhish v1",
+                "cutoff": temporal["metadata"]["holdout_start"],
+                "evaluation_role": "regression-slice",
+                "n_test": int(len(holdout_y)),
+                "n_phishing": phishing_count,
+                "n_legitimate": legitimate_count,
+                "Accuracy": round(float(accuracy_score(holdout_y, holdout_pred)), 4),
+                "Precision": round(float(precision_score(
+                    holdout_y, holdout_pred, zero_division=0,
+                )), 4),
+                "Phishing_Recall": round(float(recall_score(
+                    holdout_y, holdout_pred, zero_division=0,
+                )), 4),
+                "False_Negative_Rate": round(
+                    false_negatives / max(phishing_count, 1), 4,
+                ),
+                "False_Positive_Rate": round(
+                    false_positives / max(legitimate_count, 1), 4,
+                ),
+                "False_Positive_Rate_95_CI": [
+                    round(bound, 4) for bound in holdout_fpr_interval
+                ],
+                "Phishing_Recall_95_CI": [
+                    round(bound, 4) for bound in holdout_recall_interval
+                ],
+                "F1": round(float(f1_score(
+                    holdout_y, holdout_pred, zero_division=0,
+                )), 4),
+                "PR_AUC": round(float(average_precision_score(
+                    holdout_y, holdout_proba,
+                )), 4),
+                "Brier": round(float(brier_score_loss(
+                    holdout_y, holdout_proba,
+                )), 4),
+                "false_positives": false_positives,
+                "false_negatives": false_negatives,
+                "status": "evaluated",
+                "temporal_assurance": temporal["metadata"]["temporal_assurance"],
+                "undated_training_rows": temporal["metadata"].get(
+                    "undated_training_rows", 0,
+                ),
+                "group_overlap": len(set(train_groups) & set(holdout_groups)),
+            }
     vectorizer = best_estimator.named_steps["vectorizer"]
     clf = best_estimator.named_steps["classifier"]
 
@@ -1499,6 +2106,11 @@ def build_content_pipeline(
         "Default_Threshold_Phishing_Recall": round(default_phishing_recall, 4),
         "Recall_Gain_vs_0_5": round(phishing_recall - default_phishing_recall, 4),
         "decision_threshold": round(decision_threshold, 4),
+        "oof_decision_threshold": round(oof_decision_threshold, 4),
+        "threshold_policy": (
+            "SpaPhish 2024 maximum-recall threshold at <=20% validation "
+            "false-positive rate when available; otherwise training-fold F2"
+        ),
         "n_train":    int(len(y_train)),
         "n_test":     int(len(y_test)),
         "split_strategy": "stratified-group-5-fold",
@@ -1508,11 +2120,31 @@ def build_content_pipeline(
             "addresses, and volatile numeric tokens collapsed"
         ),
         "group_overlap": len(set(train_groups) & set(test_groups)),
+        "normalized_family_overlap": len(
+            {_normalized_text_family(text) for text in X_train_txt}
+            & {
+                _normalized_text_family(text)
+                for text in list(X_test_txt) + temporal_evaluation_texts
+            }
+        ),
         "source_sample_counts": dict(sorted(Counter(sample_sources).items())),
         "data_source": " + ".join(sources),
+        "build_provenance": {
+            "seed": seed,
+            "cache_version": _CACHE_VERSION,
+            "use_real": use_real,
+            "augment_synthetic": augment_synthetic,
+            "n_variants": n_variants,
+            "max_real_rows": max_real_rows,
+            "fast_mode": fast_mode,
+            "hard_negative_variants": _HARD_NEGATIVE_VARIANTS,
+            "source_sha256": _source_sha256s(),
+        },
         "model":      best_name,
         "model_selection_metric": "average_precision",
         "model_selection": cv_results,
+        "temporal_validation": temporal_validation_metrics,
+        "temporal_holdout": temporal_metrics,
     }
 
     # Top phishing-indicative terms across the feature space.
@@ -1631,72 +2263,8 @@ def _extract_coefficients(clf) -> np.ndarray | None:
     return None
 
 
-def _flat_feature_names(vectorizer) -> np.ndarray:
-    """Return per-feature names from a single TfidfVectorizer or a FeatureUnion."""
-    if hasattr(vectorizer, "transformer_list"):  # FeatureUnion
-        names: List[str] = []
-        for name, vec in vectorizer.transformer_list:
-            if hasattr(vec, "get_feature_names_out"):
-                names.extend(f"{name}:{t}" for t in vec.get_feature_names_out())
-        return np.array(names)
-    return np.array(vectorizer.get_feature_names_out())
-
-
 def predict_content(pipeline: dict, subject: str, body: str) -> dict:
-    """Score one (subject, body) pair. Returns probabilities and feature contributions."""
-    text = (subject or "") + "\n" + (body or "")
-    X = pipeline["vectorizer"].transform([text])
-    proba = pipeline["clf"].predict_proba(X)[0]
-    phishing_prob   = float(proba[1])
-    legitimate_prob = float(proba[0])
-    threshold = float(pipeline.get("decision_threshold", 0.5))
-    prediction = int(phishing_prob >= threshold)  # 1 = phishing, 0 = legitimate
+    """Use the same sparse, abstention-aware inference contract as production."""
+    from content_inference import predict_content as runtime_predict_content
 
-    # Per-token contribution for this email (for explainability)
-    feature_names = _flat_feature_names(pipeline["vectorizer"])
-    coefs = _extract_coefficients(pipeline["clf"])
-    if coefs is None or len(coefs) != len(feature_names):
-        return {
-            "ml_phishing_probability":   round(phishing_prob * 100, 1),
-            "ml_legitimate_probability": round(legitimate_prob * 100, 1),
-            "ml_label":  "Likely Phishing" if prediction == 1 else "Likely Legitimate",
-            "ml_prediction":       prediction,
-            "ml_decision_threshold": round(threshold * 100, 1),
-            "ml_top_contributors": [],
-        }
-    x_dense = X.toarray()[0]
-    contribs = x_dense * coefs
-
-    # Top phishing-indicative features present in this email.
-    # Only show word-level features in the UI (char n-grams are noisy fragments).
-    nz_idx = np.nonzero(x_dense)[0]
-    pairs = []
-    for i in nz_idx:
-        if contribs[i] <= 0:
-            continue
-        name = str(feature_names[i])
-        kind, _, term = name.partition(":")
-        if kind == "word":
-            pairs.append((term, float(contribs[i])))
-    pairs.sort(key=lambda p: p[1], reverse=True)
-
-    # De-duplicate (sub-strings like "verify" and "verify account" are kept
-    # only if both add meaningful unique signal — i.e. drop pure substrings)
-    seen = set()
-    top_contribs = []
-    for term, c in pairs:
-        if any(term in s and term != s for s in seen):
-            continue
-        seen.add(term)
-        top_contribs.append({"term": term, "contribution": round(c, 4)})
-        if len(top_contribs) >= 8:
-            break
-
-    return {
-        "ml_phishing_probability":   round(phishing_prob * 100, 1),
-        "ml_legitimate_probability": round(legitimate_prob * 100, 1),
-        "ml_label":                  "Likely Phishing" if prediction == 1 else "Likely Legitimate",
-        "ml_prediction":             prediction,
-        "ml_decision_threshold":     round(threshold * 100, 1),
-        "ml_top_contributors":       top_contribs,
-    }
+    return runtime_predict_content(pipeline, subject, body)

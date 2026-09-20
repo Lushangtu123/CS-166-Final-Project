@@ -92,9 +92,9 @@ the pipeline still runs end-to-end.
 
 ### 2. Email-text datasets (`website/` content classifier)
 
-Three classic public corpora and an optional modern synthetic benchmark are
-merged at training time. PhishFuzzer exports are supported when supplied
-locally but are not auto-downloaded from an unaudited mirror.
+Three classic public corpora, an optional modern synthetic benchmark, and the
+dated Spanish SpaPhish corpus are supported. PhishFuzzer exports are supported
+when supplied locally but are not auto-downloaded from an unaudited mirror.
 
 | File | Era | Rows | Phishing/Legit | Source | License |
 |------|-----|-----:|----------------|--------|---------|
@@ -102,6 +102,7 @@ locally but are not auto-downloaded from an unaudited mirror.
 | `CEAS_08.csv` | 2008 | 39 127 | 21 841 / 17 286 | [Zenodo 8339691 (Champa et al. 2024)](https://zenodo.org/records/8339691) | CC-BY-4.0 |
 | `Nazario.csv` | 2005-2008 | 1 562 | 1 562 / 0 | [Zenodo 8339691 (Champa et al. 2024)](https://zenodo.org/records/8339691) | CC-BY-4.0 |
 | `phishnchips_*.csv` (3 files) | modern | varies | binary | [HF: AreLit/PhishNChips v5.2](https://huggingface.co/datasets/AreLit/PhishNChips) — synthetic email benchmark | See source card |
+| `SpaPhish.csv` | 2014-2025 when dated | 1 395 parseable | 731 / 664 | [Mendeley Data v1](https://data.mendeley.com/datasets/hz2d6gz7pc/1) | CC-BY-4.0 |
 | `phishfuzzer_*.csv` (3 files) | optional | varies | Phishing/Valid; Spam dropped | Local files only; verify provenance and license before use | Verify source |
 
 Plus ~5 600 template-generated synthetic samples in `content_model.py`
@@ -111,12 +112,22 @@ scams) **and** modern brand-issued transactional emails (Amazon shipping
 × 3, Stripe payout × 3, DocuSign envelope × 3, Chase mortgage, 2FA
 backup codes) that no single public corpus represents well.
 
+The committed web artifact also adds 1,044 unique training-only legitimate hard
+negatives from 87 grouped template families after the original train/test split.
+These include ordinary workplace updates and personal photo/travel messages;
+37 normalized families already found in reserved data are excluded. These are
+false-positive controls, not real Gmail/Outlook inbox evidence.
+
 Synthetic data broadens tactic coverage but does not establish real-world
 performance. The content pipeline therefore keeps campaign/template families
 within a single split, removes normalized duplicates and label conflicts across
-all sources, fits TF-IDF inside cross-validation, selects the candidate model by
-PR AUC, learns an F2-optimized threshold from training folds, and reports
-phishing recall, false-negative rate, PR AUC, Brier score, and group overlap.
+all sources, fits TF-IDF inside cross-validation, and selects the candidate
+model by PR AUC. SpaPhish rows before 2024 plus undated rows may augment
+training; 2024 is threshold validation, and 2025 is a post-selection regression
+slice. The latter is a partial rather than strict temporal guarantee because
+some training rows lack dates and the slice has been repeatedly inspected.
+Reported recall and false-positive rates include Wilson 95% intervals. SpaPhish
+is not provider-specific Gmail or Outlook evidence.
 
 ---
 

@@ -1036,7 +1036,7 @@ function renderContentResult(data) {
     subParts.push('Analysis incomplete: some message content could not be reliably parsed. Review the warnings below.');
   }
   if (data.ml_label != null) {
-    subParts.push(`ML: ${data.ml_label} (${data.ml_phishing_probability}% phishing)`);
+    subParts.push(`ML risk score: ${data.ml_phishing_probability}% — ${data.ml_label}`);
   }
   const categoryCount = data.category_results.length;
   const technicalCount = (data.extra_indicators || []).filter(ind =>
@@ -1066,8 +1066,22 @@ function renderContentResult(data) {
 
   // ── ML Classifier Card ───────────────────────────────────────────────────
   const mlCard = document.getElementById('content-ml-card');
-  if (data.ml_label != null) {
+  const mlProbabilityBars = document.getElementById('content-ml-prob-bars');
+  if (data.ml_status === 'insufficient_feature_coverage') {
     mlCard.style.display = '';
+    mlProbabilityBars.style.display = 'none';
+    document.getElementById('content-phish-bar').style.width = '0%';
+    document.getElementById('content-phish-pct').textContent = '—';
+    document.getElementById('content-legit-bar').style.width = '0%';
+    document.getElementById('content-legit-pct').textContent = '—';
+    document.getElementById('content-ml-sub').textContent =
+      'Text-model coverage was insufficient, so ML classification was not applied.';
+    document.getElementById('content-ml-metrics').innerHTML = '';
+    document.getElementById('content-ml-contribs').innerHTML =
+      '<div class="ml-contribs-title">Rule, sender, link, and message-structure checks still ran.</div>';
+  } else if (data.ml_label != null) {
+    mlCard.style.display = '';
+    mlProbabilityBars.style.display = '';
 
     const phishPct = data.ml_phishing_probability;
     const legitPct = data.ml_legitimate_probability;
@@ -1079,7 +1093,7 @@ function renderContentResult(data) {
 
     const verdict = data.ml_prediction === 1 ? 'Likely phishing' : 'Likely legitimate';
     document.getElementById('content-ml-sub').textContent =
-      `${verdict} — model confidence ${Math.max(phishPct, legitPct).toFixed(1)}%`;
+      `${verdict} — model risk score ${phishPct.toFixed(1)}%`;
 
     // Hold-out evaluation metrics for the content text classifier
     const m = data.ml_metrics || {};

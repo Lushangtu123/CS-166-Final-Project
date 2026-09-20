@@ -1,0 +1,26 @@
+{
+  "schema": "phishguard-privacy-relay-domains-v1",
+  "version": "2026.09.18",
+  "domain_count": 18,
+  "provenance": "Domain facts reviewed from provider documentation, retrieved 2026-09-18: https://simplelogin.io/security/, https://simplelogin.io/docs/report-blocking-website/, https://duckduckgo.com/email/, https://relay.firefox.com/, and https://support.apple.com/guide/icloud/what-you-can-do-with-icloud-and-hide-my-email-mme38e1602db/icloud. Existing project classifications for AnonAddy and Mozilla aliases were preserved pending a dedicated upstream refresh.",
+  "domains": [
+    "8shield.net",
+    "aleeas.com",
+    "anonaddy.com",
+    "anonaddy.me",
+    "dralias.com",
+    "duck.com",
+    "duckmail.sytes.net",
+    "mozmail.com",
+    "private.icloud.com",
+    "privaterelay.appleid.com",
+    "relay.firefox.com",
+    "silomails.com",
+    "simplelogin.co",
+    "simplelogin.com",
+    "simplelogin.fr",
+    "simplelogin.io",
+    "slmail.me",
+    "slmails.com"
+  ]
+}

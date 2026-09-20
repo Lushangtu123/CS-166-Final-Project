@@ -28,6 +28,7 @@ import threading
 import time
 import unicodedata
 import warnings
+import tldextract
 from collections import deque
 from email.utils import getaddresses
 from html.parser import HTMLParser
@@ -43,7 +44,7 @@ from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
 from config import load_settings
 from disposable_registry import REGISTRY_DOMAIN_RE as _REGISTRY_DOMAIN_RE
-from disposable_registry import load_disposable_registry
+from disposable_registry import load_disposable_registry, load_privacy_relay_registry
 from request_limits import RequestBodyLimitMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -117,9 +118,9 @@ FEATURE_INFO = [
      "email_desc":     "Domain does not match the local provider or institutional-domain rules",
      "email_desc_pos": "Domain matches a provider registry or institutional-domain rule; this does not authenticate the sender"},
     {"name": "domain_registration_length",
-     "label": "Common TLD",               "group": "Domain-based",
-     "email_desc":     "TLD is uncommon — phishing emails often use obscure or cheap domain extensions",
-     "email_desc_pos": "TLD (.com / .org / .edu etc.) is common and widely trusted"},
+     "label": "Recognized Public Suffix",  "group": "Domain-based",
+     "email_desc":     "Domain suffix is not recognized by the bundled Public Suffix List",
+     "email_desc_pos": "Domain suffix is recognized; this alone does not establish reputation"},
     {"name": "age_of_domain",
      "label": "Domain Label Length",      "group": "Domain-based",
      "email_desc":     "Domain label is abnormally long — may be disguising a legitimate domain name",
@@ -313,13 +314,12 @@ SHORT_SERVICES = {'bit.ly', 'tinyurl.com', 'goo.gl', 'ow.ly', 't.co', 'short.io'
 
 # ── Versioned disposable / temporary email domain registry ────────────────────
 _DISPOSABLE_DOMAIN_SOURCE, DISPOSABLE_REGISTRY_METADATA = load_disposable_registry()
-
-PRIVACY_RELAY_DOMAINS = frozenset({
-    "anonaddy.com", "anonaddy.me", "duck.com", "duckmail.sytes.net",
-    "mozmail.com", "relay.firefox.com", "simplelogin.co", "simplelogin.fr",
-    "simplelogin.io", "privaterelay.appleid.com", "private.icloud.com",
-})
+PRIVACY_RELAY_DOMAINS, PRIVACY_RELAY_REGISTRY_METADATA = load_privacy_relay_registry()
 DISPOSABLE_DOMAINS = _DISPOSABLE_DOMAIN_SOURCE - PRIVACY_RELAY_DOMAINS
+
+# Always use tldextract's bundled Public Suffix List snapshot. Runtime sender
+# analysis must remain deterministic and must never perform a network refresh.
+_DOMAIN_EXTRACTOR = tldextract.TLDExtract(suffix_list_urls=(), cache_dir=None)
 
 _DISPOSABLE_DOMAIN_PATTERNS = tuple(re.compile(pattern) for pattern in (
     r"^(?:temp|temporary)-?(?:mail|email|inbox|box)\d*$",
@@ -433,16 +433,28 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
 
     # Check for IP address domain before splitting
     is_ip_domain = bool(re.match(r'^\d{1,3}(\.\d{1,3}){3}$', domain))
+    public_suffix = ""
     if is_ip_domain:
         domain_parts = [domain]
         tld = ''
         base_domain = domain
         domain_label = domain
+        subdomain_count = 0
     else:
         domain_parts = domain.split('.') if domain else ['']
-        tld = domain_parts[-1] if len(domain_parts) >= 1 else ''
-        base_domain = '.'.join(domain_parts[-2:]) if len(domain_parts) >= 2 else domain
-        domain_label = domain_parts[-2] if len(domain_parts) >= 2 else domain
+        extracted_domain = _DOMAIN_EXTRACTOR(domain)
+        public_suffix = extracted_domain.suffix
+        tld = public_suffix.rsplit('.', 1)[-1] if public_suffix else domain_parts[-1]
+        if extracted_domain.domain and public_suffix:
+            base_domain = extracted_domain.top_domain_under_public_suffix
+            domain_label = extracted_domain.domain
+            subdomain_count = len([
+                label for label in extracted_domain.subdomain.split('.') if label
+            ])
+        else:
+            base_domain = '.'.join(domain_parts[-2:]) if len(domain_parts) >= 2 else domain
+            domain_label = domain_parts[-2] if len(domain_parts) >= 2 else domain
+            subdomain_count = max(0, len(domain_parts) - 2)
 
     matched_disposable_domain = _match_domain_registry(domain, DISPOSABLE_DOMAINS)
     matched_privacy_relay = _match_domain_registry(domain, PRIVACY_RELAY_DOMAINS)
@@ -486,11 +498,8 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
         risk_indicators.append({"level": "low", "msg": f"Domain contains a hyphen ({base_domain}) — major providers typically do not use hyphens in their domains"})
 
     # 7. having_sub_domain
-    subdomain_count = (
-        0
-        if is_ip_domain or matched_privacy_relay
-        else max(0, len(domain_parts) - 2)
-    )
+    if matched_privacy_relay:
+        subdomain_count = 0
     features['having_sub_domain'] = -1 if subdomain_count > 1 else (0 if subdomain_count == 1 else 1)
     if subdomain_count > 1:
         risk_indicators.append({"level": "medium", "msg": f"Domain has {subdomain_count} subdomain levels — phishing sites commonly use deep subdomains to impersonate brands"})
@@ -514,7 +523,7 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
         risk_indicators.append({"level": "medium", "msg": f"Domain ({base_domain}) is not a recognized legitimate mail provider"})
 
     # 10. domain_registration_length (TLD)
-    has_common_tld = tld in COMMON_TLDS or bool(matched_privacy_relay)
+    has_common_tld = bool(public_suffix) or tld in COMMON_TLDS or bool(matched_privacy_relay)
     features['domain_registration_length'] = 1 if has_common_tld else -1
     if tld and not has_common_tld:
         risk_indicators.append({"level": "medium", "msg": f"TLD '.{tld}' is uncommon — phishing emails often use obscure or cheap TLDs"})
@@ -526,7 +535,7 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
         risk_indicators.append({"level": "low", "msg": f"Domain label is unusually long ({dom_len} characters)"})
 
     # 12. dnsrecord (digits in domain)
-    has_digits_domain = bool(re.search(r'\d', domain_label))
+    has_digits_domain = bool(re.search(r'\d', domain_label)) and not matched_privacy_relay
     features['dnsrecord'] = -1 if has_digits_domain else 1
     if has_digits_domain:
         risk_indicators.append({"level": "low", "msg": f"Domain label contains digits ({domain_label}) — legitimate brand domains are usually letters only"})
@@ -579,28 +588,34 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
 
     # 21. links_in_tags (brand spoofing)
     brand_spoof = None
+    brand_substitution_detected = False
     normalized_domain = normalize_homoglyphs(domain_label)
-    normalized_base = normalize_homoglyphs(base_domain)
 
-    for brand in BRAND_DOMAINS:
+    for brand in (() if matched_privacy_relay else BRAND_DOMAINS):
+        canonical_domains = set(_PROTECTED_BRAND_DOMAINS.get(brand, set()))
+        canonical_domains.update({brand + '.com', brand + '.net', brand + '.org'})
+        is_official_domain = base_domain in canonical_domains
         # Check original domain
-        original_match = (brand in domain_label and 
-                        base_domain not in {brand+'.com', brand+'.net', brand+'.org'})
+        original_match = brand in domain_label and not is_official_domain
         # Check normalized domain (catches paypa1, vvindows, amaz0n etc)
-        normalized_match = (brand in normalized_domain and 
-                        normalized_base not in {brand+'.com', brand+'.net', brand+'.org'} and
-                        base_domain not in {brand+'.com', brand+'.net', brand+'.org'})
+        normalized_match = (
+            normalized_domain != domain_label
+            and brand in normalized_domain
+            and not is_official_domain
+        )
         
         if original_match or normalized_match:
             brand_spoof = brand
             # Show which substitution was used
             if normalized_match and not original_match:
+                brand_substitution_detected = True
                 risk_indicators.append({
                     "level": "high",
                     "msg": f"Homoglyph attack detected — '{domain_label}' uses character substitution to impersonate '{brand}' (e.g. 1→l, 0→o, vv→w)"
                 })
             break
     features['links_in_tags'] = -1 if brand_spoof else 1
+    features['_brand_substitution_detected'] = brand_substitution_detected
     # 22. sfh (noreply address — neutral)
     features['sfh'] = 0 if ('noreply' in local or 'no-reply' in local or 'donotreply' in local) else 1
 
@@ -611,11 +626,17 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
     features['submitting_to_email'] = 1
 
     # 24. abnormal_url (digit-letter mix + homoglyph in domain label)
-    digit_letter_mix = bool(re.search(r'(?<=[a-z])\d|(?<=\d)[a-z]', domain_label))
+    digit_letter_mix = (
+        bool(re.search(r'(?<=[a-z])\d|(?<=\d)[a-z]', domain_label))
+        and not matched_privacy_relay
+    )
     # Also check if normalizing changes the domain significantly (indicates substitution)
     normalized = normalize_homoglyphs(domain_label)
-    homoglyph_detected = (normalized != domain_label and 
-                        any(brand in normalized for brand in BRAND_DOMAINS))
+    homoglyph_detected = (
+        not matched_privacy_relay
+        and normalized != domain_label
+        and any(brand in normalized for brand in BRAND_DOMAINS)
+    )
     features['abnormal_url'] = -1 if (digit_letter_mix or homoglyph_detected) else 1
     if homoglyph_detected and not digit_letter_mix:
         risk_indicators.append({
@@ -1287,6 +1308,8 @@ def _analyze_sender_address(email: str) -> dict:
         + med_risks * 10
         + low_risks * 3
     )
+    if feature_dict.get("_brand_substitution_detected") is True:
+        risk_score = max(risk_score, 60)
     if risk_score >= 80:
         verdict, label = "critical", "Critical Sender Risk"
     elif risk_score >= 60:
@@ -2592,8 +2615,17 @@ async def _analyze_content(request: ContentRequest, structure: dict | None = Non
         result.update(ml)
         result["ml_metrics"] = _content_pipeline["metrics"]
 
+        ml_probability = ml["ml_phishing_probability"]
+        if ml.get("ml_status") == "insufficient_feature_coverage":
+            result["analysis_warnings"].append(
+                "Text model feature coverage is insufficient; ML classification "
+                "was not applied."
+            )
+
         result.update(fuse_content_risk(
-            ml_phishing_probability=ml["ml_phishing_probability"] / 100.0,
+            ml_phishing_probability=(
+                None if ml_probability is None else ml_probability / 100.0
+            ),
             ml_decision_threshold=float(_content_pipeline.get("decision_threshold", 0.5)),
             heuristic_score=result["total_score"],
             minimum_level=result["risk_floor"],

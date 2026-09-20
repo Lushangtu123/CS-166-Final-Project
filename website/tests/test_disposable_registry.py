@@ -9,10 +9,21 @@ import unittest
 WEBSITE_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WEBSITE_DIR))
 
+import disposable_registry
 from disposable_registry import load_disposable_registry
 
 
 class DisposableRegistryBuilderTests(unittest.TestCase):
+    def test_versioned_privacy_relay_registry_has_source_metadata(self):
+        loader = getattr(disposable_registry, "load_privacy_relay_registry", None)
+        self.assertIsNotNone(loader, "privacy-relay registry loader is missing")
+
+        domains, metadata = loader()
+        self.assertEqual(metadata["schema"], "phishguard-privacy-relay-domains-v1")
+        self.assertIn("simplelogin.com", domains)
+        self.assertIn("retrieved", metadata["provenance"].lower())
+        self.assertIn("https://", metadata["provenance"])
+
     def test_loader_rejects_invalid_metadata_types_and_version(self):
         base = {
             "schema": "phishguard-disposable-domains-v1",

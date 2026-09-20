@@ -9,7 +9,9 @@ import re
 
 
 REGISTRY_SCHEMA = "phishguard-disposable-domains-v1"
+PRIVACY_RELAY_SCHEMA = "phishguard-privacy-relay-domains-v1"
 DEFAULT_REGISTRY_PATH = Path(__file__).parent / "data" / "disposable_domains.json"
+DEFAULT_PRIVACY_RELAY_PATH = Path(__file__).parent / "data" / "privacy_relay_domains.json"
 REGISTRY_DOMAIN_RE = re.compile(
     r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
     r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z"
@@ -26,37 +28,60 @@ def normalize_disposable_domain(value: str) -> str:
     return domain
 
 
-def validate_disposable_registry(payload: object) -> tuple[frozenset[str], dict]:
-    """Validate a registry payload before runtime loading or file replacement."""
-    if not isinstance(payload, dict) or payload.get("schema") != REGISTRY_SCHEMA:
-        raise ValueError("Unsupported disposable-domain registry schema")
+def _validate_domain_registry(
+    payload: object,
+    *,
+    expected_schema: str,
+    label: str,
+) -> tuple[frozenset[str], dict]:
+    """Validate a versioned domain registry before it reaches detection logic."""
+    if not isinstance(payload, dict) or payload.get("schema") != expected_schema:
+        raise ValueError(f"Unsupported {label} registry schema")
 
     version = payload.get("version")
     if not isinstance(version, str) or not re.fullmatch(r"\d{4}\.\d{2}\.\d{2}", version):
-        raise ValueError("Disposable-domain registry version must use YYYY.MM.DD")
+        raise ValueError(f"{label.title()} registry version must use YYYY.MM.DD")
     try:
         datetime.strptime(version, "%Y.%m.%d")
     except ValueError as exc:
-        raise ValueError("Disposable-domain registry version is not a valid date") from exc
+        raise ValueError(f"{label.title()} registry version is not a valid date") from exc
 
     provenance = payload.get("provenance")
     if not isinstance(provenance, str) or not provenance.strip():
-        raise ValueError("Disposable-domain registry provenance must be a non-empty string")
+        raise ValueError(f"{label.title()} registry provenance must be a non-empty string")
 
     domains = payload.get("domains")
     if not isinstance(domains, list) or not domains:
-        raise ValueError("Disposable-domain registry must contain a non-empty domain list")
+        raise ValueError(f"{label.title()} registry must contain a non-empty domain list")
     if domains != sorted(set(domains)):
-        raise ValueError("Disposable-domain registry must be sorted and duplicate-free")
+        raise ValueError(f"{label.title()} registry must be sorted and duplicate-free")
     if any(normalize_disposable_domain(domain) != domain for domain in domains):
-        raise ValueError("Disposable-domain registry contains a non-normalized domain")
+        raise ValueError(f"{label.title()} registry contains a non-normalized domain")
 
     domain_count = payload.get("domain_count")
     if type(domain_count) is not int or domain_count != len(domains):
-        raise ValueError("Disposable-domain registry count does not match its contents")
+        raise ValueError(f"{label.title()} registry count does not match its contents")
 
     metadata = {key: value for key, value in payload.items() if key != "domains"}
     return frozenset(domains), metadata
+
+
+def validate_disposable_registry(payload: object) -> tuple[frozenset[str], dict]:
+    """Validate a disposable-provider registry payload."""
+    return _validate_domain_registry(
+        payload,
+        expected_schema=REGISTRY_SCHEMA,
+        label="disposable-domain",
+    )
+
+
+def validate_privacy_relay_registry(payload: object) -> tuple[frozenset[str], dict]:
+    """Validate a privacy-relay registry payload."""
+    return _validate_domain_registry(
+        payload,
+        expected_schema=PRIVACY_RELAY_SCHEMA,
+        label="privacy-relay",
+    )
 
 
 def load_disposable_registry(
@@ -65,3 +90,11 @@ def load_disposable_registry(
     """Load a normalized, duplicate-free registry and its provenance metadata."""
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     return validate_disposable_registry(payload)
+
+
+def load_privacy_relay_registry(
+    path: Path | str = DEFAULT_PRIVACY_RELAY_PATH,
+) -> tuple[frozenset[str], dict]:
+    """Load the versioned privacy-relay registry."""
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    return validate_privacy_relay_registry(payload)

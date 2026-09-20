@@ -76,6 +76,13 @@ class VercelEntrypointTests(unittest.TestCase):
         self.assertTrue(payload["model_loaded"])
         self.assertEqual(payload["verification_mode"], "lite")
         self.assertIn(payload["risk_level"], {"high", "critical"})
+        self.assertEqual(len(payload["legitimate_risk_levels"]), 2)
+        self.assertTrue(
+            all(
+                risk_level not in {"high", "critical"}
+                for risk_level in payload["legitimate_risk_levels"]
+            )
+        )
 
     def test_root_entrypoint_starts_lite_profile_without_training_stack(self):
         environment = os.environ.copy()
@@ -333,6 +340,126 @@ class RateLimitBoundaryTests(unittest.TestCase):
 
 
 class ContentModelArtifactTests(unittest.TestCase):
+    def test_committed_model_abstains_on_unsupported_text_and_passes_hard_negatives(self):
+        deployment_python = (PROJECT_ROOT / ".python-version").read_text().strip()
+        current_python = f"{sys.version_info.major}.{sys.version_info.minor}"
+        if current_python != deployment_python:
+            self.skipTest(
+                f"Committed artifact targets Python {deployment_python}, not "
+                f"{current_python}"
+            )
+        profile = json.loads(
+            (PROJECT_ROOT / "vercel.json").read_text(encoding="utf-8")
+        )
+        from content_inference import load_content_pipeline_artifact, predict_content
+        from content_model import _CACHE_VERSION
+        pipeline = load_content_pipeline_artifact(
+            PROJECT_ROOT / profile["env"]["CONTENT_MODEL_ARTIFACT"],
+            profile["env"]["CONTENT_MODEL_ARTIFACT_SHA256"],
+        )
+        self.assertEqual(
+            pipeline["metrics"]["build_provenance"]["cache_version"],
+            _CACHE_VERSION,
+        )
+
+        unsupported_messages = (
+            ("会议提醒", "大家好，明天下午三点开会，请提前阅读项目文档。"),
+            ("会議のお知らせ", "明日の午後三時にチーム会議を開きます。資料を確認してください。"),
+            ("🪐🧿", "🫧🪻🧬🗿"),
+        )
+        for subject, body in unsupported_messages:
+            with self.subTest(unsupported_subject=subject):
+                unsupported = predict_content(pipeline, subject, body)
+                self.assertEqual(
+                    unsupported["ml_status"],
+                    "insufficient_feature_coverage",
+                )
+
+        hard_negatives = (
+            (
+                "Hi team",
+                "Please review the project notes before our meeting tomorrow.",
+            ),
+            (
+                "Hey",
+                "I loved the photos from the trip. See you this weekend.",
+            ),
+            (
+                "Monthly project update",
+                "Attached is the monthly report. Revenue increased and the team "
+                "completed the scheduled maintenance.",
+            ),
+            (
+                "Project notes for tomorrow",
+                "Hello everyone, please review the agenda before our scheduled meeting.",
+            ),
+            (
+                "Weekend photos",
+                "I really enjoyed the trip photos. See you for lunch this weekend.",
+            ),
+            (
+                "Operations summary",
+                "The team completed scheduled maintenance and the monthly report is attached.",
+            ),
+        )
+        for subject, body in hard_negatives:
+            with self.subTest(subject=subject):
+                result = predict_content(pipeline, subject, body)
+                self.assertEqual(result["ml_status"], "available")
+                self.assertEqual(result["ml_prediction"], 0)
+
+        from email_structure import analyze_raw_email
+
+        provider_fixtures = (
+            b"From: Alice <alice@gmail.com>\r\n"
+            b"To: Bob <bob@outlook.com>\r\n"
+            b"Subject: Dinner plans for Saturday\r\n"
+            b"MIME-Version: 1.0\r\n"
+            b"Content-Type: text/plain; charset=utf-8\r\n\r\n"
+            b"Hi Bob, are we still meeting at the cafe at seven? I can bring "
+            b"the photos from our hike.\r\n",
+            b"From: Project Team <team@outlook.com>\r\n"
+            b"To: member@gmail.com\r\n"
+            b"Subject: Notes from today's planning session\r\n"
+            b"MIME-Version: 1.0\r\n"
+            b"Content-Type: text/plain; charset=utf-8\r\n\r\n"
+            b"Hello, the meeting notes are attached. We moved the design review "
+            b"to Thursday and kept the current owners.\r\n",
+        )
+        for raw_message in provider_fixtures:
+            structure = analyze_raw_email(raw_message)
+            with self.subTest(provider_subject=structure["subject"]):
+                result = predict_content(
+                    pipeline,
+                    structure["subject"],
+                    structure["body"],
+                )
+                self.assertEqual(result["ml_status"], "available")
+                self.assertEqual(result["ml_prediction"], 0)
+
+        phishing_controls = (
+            (
+                "Wire transfer request",
+                "I am in a meeting. Please purchase gift cards for the client "
+                "and send me the codes today.",
+            ),
+            (
+                "Invoice problem - call support",
+                "Your subscription renewal of $499 is complete. If you did not "
+                "authorize this charge, call 1-888-555-0199 immediately.",
+            ),
+            (
+                "Scan to avoid suspension",
+                "Scan the QR code below to verify your Microsoft 365 password "
+                "and keep your mailbox active.",
+            ),
+        )
+        for subject, body in phishing_controls:
+            with self.subTest(phishing_subject=subject):
+                result = predict_content(pipeline, subject, body)
+                self.assertEqual(result["ml_status"], "available")
+                self.assertEqual(result["ml_prediction"], 1)
+
     def test_metrics_identify_the_loaded_artifact(self):
         pipeline = {
             "metrics": {"model": "fixture"},

@@ -80,30 +80,56 @@ def _flat_feature_names(vectorizer) -> np.ndarray:
     return np.array(vectorizer.get_feature_names_out())
 
 
+def _explanation_metadata(pipeline: dict) -> tuple[np.ndarray, np.ndarray | None]:
+    """Cache immutable model metadata used by every explanation request."""
+    names_key = "_runtime_feature_names"
+    coefficients_key = "_runtime_coefficients"
+    if names_key not in pipeline:
+        feature_names = _flat_feature_names(pipeline["vectorizer"])
+        feature_names.setflags(write=False)
+        pipeline[names_key] = feature_names
+    if coefficients_key not in pipeline:
+        coefficients = _extract_coefficients(pipeline["clf"])
+        if coefficients is not None:
+            coefficients = np.asarray(coefficients)
+            coefficients.setflags(write=False)
+        pipeline[coefficients_key] = coefficients
+    return pipeline[names_key], pipeline[coefficients_key]
+
+
 def predict_content(pipeline: dict, subject: str, body: str) -> dict:
     """Score one subject/body pair and return bounded explainability details."""
     text = (subject or "") + "\n" + (body or "")
     features = pipeline["vectorizer"].transform([text])
+    threshold = float(pipeline.get("decision_threshold", 0.5))
+    if features.nnz == 0:
+        return {
+            "ml_status": "insufficient_feature_coverage",
+            "ml_phishing_probability": None,
+            "ml_legitimate_probability": None,
+            "ml_label": None,
+            "ml_prediction": None,
+            "ml_decision_threshold": round(threshold * 100, 1),
+            "ml_top_contributors": [],
+        }
     probabilities = pipeline["clf"].predict_proba(features)[0]
     phishing_probability = float(probabilities[1])
     legitimate_probability = float(probabilities[0])
-    threshold = float(pipeline.get("decision_threshold", 0.5))
     prediction = int(phishing_probability >= threshold)
 
-    feature_names = _flat_feature_names(pipeline["vectorizer"])
-    coefficients = _extract_coefficients(pipeline["clf"])
+    feature_names, coefficients = _explanation_metadata(pipeline)
     contributors = []
     if coefficients is not None and len(coefficients) == len(feature_names):
-        dense_features = features.toarray()[0]
-        contributions = dense_features * coefficients
+        sparse_features = features.getrow(0)
         pairs = []
-        for index in np.nonzero(dense_features)[0]:
-            if contributions[index] <= 0:
+        for index, value in zip(sparse_features.indices, sparse_features.data):
+            contribution = value * coefficients[index]
+            if contribution <= 0:
                 continue
             name = str(feature_names[index])
             kind, _, term = name.partition(":")
             if kind == "word":
-                pairs.append((term, float(contributions[index])))
+                pairs.append((term, float(contribution)))
         pairs.sort(key=lambda pair: pair[1], reverse=True)
         seen = set()
         for term, contribution in pairs:
@@ -115,6 +141,7 @@ def predict_content(pipeline: dict, subject: str, body: str) -> dict:
                 break
 
     return {
+        "ml_status": "available",
         "ml_phishing_probability": round(phishing_probability * 100, 1),
         "ml_legitimate_probability": round(legitimate_probability * 100, 1),
         "ml_label": "Likely Phishing" if prediction == 1 else "Likely Legitimate",

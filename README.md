@@ -38,6 +38,7 @@ the submitted address for display. Unsupported syntax is rejected before DNS.
 probability. Signals include:
 
 - look-alike brand names and phishing keywords in untrusted domains;
+- decisive digit-substitution lookalikes such as `paypa1.com` and `g00gle.com`;
 - risky TLDs, IP-literal domains, excessive subdomains, and unusual syntax;
 - confirmed disposable-provider domains, separated from privacy relays;
 - anchored disposable-domain patterns and multi-factor auto-generated mailbox
@@ -67,6 +68,13 @@ python website/tools/build_disposable_registry.py \
 Review generated changes before committing them. Gmail and Outlook account age
 or intended lifetime cannot be inferred from an address alone; random-looking
 mailboxes remain heuristic suspicion rather than confirmed disposable accounts.
+
+Privacy relays are maintained separately in
+`website/data/privacy_relay_domains.json`, with provider-source URLs and a
+retrieval date. Registrable-domain and subdomain calculations use
+`tldextract`'s bundled Public Suffix List snapshot with runtime downloads and
+cache writes disabled, so domains such as `company.co.uk` are parsed correctly
+and deployment behavior stays deterministic.
 
 Confirmed disposable-provider and privacy-relay matches are informational and
 do not add phishing-risk points on their own. Independent address, domain,
@@ -121,6 +129,9 @@ defects also mark analysis incomplete. All duplicate candidates remain available
 in `message_structure.header_candidates`; sender and identity checks retain the
 highest-risk candidate, subjects are scanned together, and mismatching reply or
 return domains remain visible. Duplicates do not add a phishing score by themselves.
+Visible `To` and `Cc` recipients are also parsed. A sender mailbox repeated in
+`To` or `Cc` adds one bounded low-risk structure point; a missing visible
+recipient is informational because legitimate Bcc delivery is possible.
 Within a single address-list field, each mailbox/display-name pair is checked
 independently; adding another sender cannot hide a detected brand impersonation.
 Quoted commas in display names remain part of that name, not an address separator.
@@ -221,11 +232,17 @@ credential request establishes a high-risk floor. Direct negations and ordinary
 password-reset notices have negative-control tests; this is not full natural-language
 understanding and does not eliminate false positives or false negatives.
 
-The default content rules are English-oriented. Small bilingual smoke checks are
-not a representative evaluation: pure-text credential lures, especially Chinese,
-can still be missed. Do not interpret passing regression tests or a zero score as
-measured phishing recall. A held-out, labeled multilingual corpus is needed before
-claiming a real-world improvement in detection accuracy.
+The default content rules are English-oriented. The optional model now has a
+dated Spanish holdout, but that single corpus is not representative of Gmail,
+Outlook, Chinese-language mail, or organization-specific traffic. Pure-text
+credential lures can still be missed. Do not interpret passing regression tests
+or a zero score as universal measured phishing recall.
+
+If the fitted vectorizer produces no usable feature for a message, the model
+abstains with `ml_status=insufficient_feature_coverage` and nullable model
+scores instead of inventing a prediction. Rules, sender, link, and structure
+checks still run. The UI labels supported outputs as a **model risk score**, not
+a calibrated probability or confidence claim.
 
 Safety-footer phrases such as “unsubscribe” and “privacy policy” are reported
 as context but never subtract risk: an attacker can copy them. Regional English
@@ -248,10 +265,18 @@ risk:
    imbalanced phishing detection than ROC AUC alone.
 5. TF-IDF is fitted inside each cross-validation pipeline, preventing vocabulary
    leakage.
-6. The phishing decision threshold is selected from training-fold out-of-fold
-   predictions by maximizing F2, which weights recall more heavily.
-7. Reports include phishing recall, false-negative rate, PR AUC, ROC AUC, Brier
-   score, threshold, split strategy, and train/test group overlap.
+6. The initial phishing decision threshold is selected from training-fold
+   out-of-fold predictions by maximizing F2, which weights recall more heavily.
+   When available, a separate 2024 SpaPhish validation slice replaces that
+   initial threshold with the maximum-recall point whose legitimate-message
+   false-positive rate is at most 20%. This is an observed validation-sample
+   constraint, not a guarantee about the population false-positive rate.
+7. Dated SpaPhish messages from 2025 form a post-selection regression slice and
+   are scored after model and threshold selection. Reports include phishing recall,
+   false-negative and false-positive rates, PR AUC, Brier score, threshold,
+   split strategy, train/test group overlap, and Wilson 95% intervals for recall
+   and false-positive rate. Repeated inspection means this slice is not claimed
+   as a permanently untouched production lockbox.
 
 Structural/rule evidence and ML evidence are fused conservatively: weak model
 evidence cannot average away a strong authentication or message-structure
@@ -360,6 +385,11 @@ metrics responses expose the loaded artifact digest and a short `model_id`, so
 displayed metrics can be tied to the deployed binary rather than a different
 training run.
 
+Model explanations cache their immutable 80,000-feature name/coefficient arrays
+and calculate contributors directly from the sparse request vector. This keeps
+the displayed terms unchanged without allocating one dense feature array for
+every request.
+
 Before attaching a custom domain, add its apex and optional `www` hostname to
 the Vercel `CUSTOM_DOMAINS` environment variable, for example
 `phishguard.example,www.phishguard.example`, and redeploy. Do not include a URL
@@ -369,6 +399,12 @@ Deploy from the repository root with Vercel CLI 48.1.8 or newer, or import the
 Git repository in the Vercel dashboard. The deployment is intended for a
 personal/course demonstration; its in-memory limiter is per serverless instance,
 not a global abuse-control quota.
+
+Vercel production `deployment_status` events run
+`.github/workflows/post-deploy-smoke.yml`. The workflow checks out the deployed
+revision and validates `/health`, `/api/config`, the exact model ID, a phishing
+positive control, and a legitimate negative control against the HTTPS
+`*.vercel.app` deployment URL.
 
 For local research with the text model, train and package it before starting the
 web service:
@@ -474,45 +510,66 @@ The optional content model can load:
 | `CEAS_08.csv` | CEAS 2008 via Zenodo | Yes |
 | `Nazario.csv` | Nazario corpus via Zenodo | Yes |
 | `phishnchips_*.csv` | Modern synthetic benchmark data | Yes |
+| `SpaPhish.csv` | Human-annotated Spanish email corpus via Mendeley Data | Yes, SHA-256 pinned |
 | `phishfuzzer_{train,val,test}.csv` | Optional local three-class export | No |
 
 Synthetic benchmark and template data can improve coverage but do not establish
 real-world effectiveness. Report metrics only with the exact `data_source`,
 `split_strategy`, threshold, and false-negative rate returned by the trained
-pipeline. A future production evaluation should use a time-separated,
-organization-representative holdout that is never used for threshold tuning.
+pipeline. SpaPhish provides a dated cross-language slice, but it is not a Gmail
+or Outlook inbox sample and 791 training rows lack dates. A future production
+evaluation still needs a strictly dated, organization- and provider-
+representative holdout.
 
-### Observed email-text evaluation — 2026-09-15
+### Observed email-text evaluation — 2026-09-19
 
-The updated Logistic Regression pipeline was evaluated without bundled template
-augmentation on 61,707 raw rows from the six downloaded corpus files listed by
-the runtime. Global normalization retained 53,841 rows after removing 7,333
-duplicate rows and 533 rows from label-conflicting families. The split kept
-normalized message families, source families, and shared PhishNChips campaign
-URLs together. Candidate models were selected by cross-validated PR AUC.
+The committed Logistic Regression artifact sampled 30,000 rows from the globally
+deduplicated legacy and PhishNChips pool, reserved 6,000 group-isolated rows for
+the original mixed-corpus test, and then added 1,008 SpaPhish training rows plus
+1,044 unique grouped synthetic legitimate hard negatives. The hard negatives span 87
+transactional, workplace, and personal-correspondence template families and are
+added only after the original split; 37 normalized families already present in
+reserved data were excluded. SpaPhish normalized families are assigned
+to their latest dated partition: 2024 supplies 128 threshold-validation messages
+and 2025 supplies 211 post-selection regression-slice messages. The published
+CSV is pinned to SHA-256
+`fdd74842d0a19fd4332bd91f90b0bcb06e045ceb2b599051b4598b65055a9cc5`.
 
 | Metric | Result |
 |---|---:|
-| Retained rows after normalization | 53,841 |
-| Held-out rows | 10,768 |
-| Accuracy | 98.89% |
-| Precision | 97.88% |
-| Phishing recall | 99.78% |
-| False-negative rate | 0.22% |
-| F1 | 98.82% |
-| ROC AUC | 0.9996 |
-| PR AUC | 0.9996 |
-| Brier score | 0.0069 |
-| Learned F2 threshold | 0.3515 |
-| Recall at default 0.5 threshold | 99.38% |
-| Recall gain from learned threshold | +0.40 percentage points |
+| Training rows | 26,052 |
+| Original mixed-corpus held-out rows | 6,000 |
+| Original held-out accuracy | 98.80% |
+| Original held-out precision | 98.13% |
+| Original held-out phishing recall | 99.32% |
+| Original held-out false-negative rate | 0.68% |
+| Original held-out PR AUC | 0.9994 |
+| Original held-out Brier score | 0.0095 |
+| Training-fold F2 threshold | 0.4352 |
+| Effective threshold after 2024 validation | 0.3736 |
 | Train/test group overlap | 0 |
+| 2024 validation phishing recall | 86.30% (95% CI 76.59%–92.39%) |
+| 2024 validation false-positive rate | 14.55% (95% CI 7.56%–26.16%) |
+| 2025 SpaPhish holdout rows | 211 (179 phishing / 32 legitimate) |
+| 2025 holdout accuracy | 94.31% |
+| 2025 holdout precision | 96.65% |
+| 2025 holdout phishing recall | 96.65% (95% CI 92.88%–98.45%) |
+| 2025 holdout false-negative rate | 3.35% |
+| 2025 holdout false-positive rate | 18.75% (95% CI 8.89%–35.31%) |
+| 2025 holdout PR AUC | 0.9942 |
+| 2025 holdout family overlap | 0 |
 
-These are offline corpus results, not a production claim. PhishNChips is
-synthetic, the older corpora lack campaign identifiers beyond normalized
-content-family grouping, and the holdout is not time-separated. Live-email drift,
-organization-specific false positives, image-only lures, QR codes, and
-attachment contents remain outside this evaluation.
+The 2025 labels are not used for model selection or threshold tuning, but the
+slice has now been repeatedly inspected and is described as a regression slice,
+not a permanently untouched holdout. The temporal guarantee remains partial
+because 791 SpaPhish training rows have no usable date. These are offline corpus
+results, not Gmail/Outlook production claims. PhishNChips and the added hard
+negatives are synthetic, provider-specific drift remains unmeasured, and
+image-only lures, QR codes, and attachment contents remain outside this
+evaluation. The committed artifact is identified by SHA-256
+`a0a503a0cd6122e722933add91f49cc72e3fa74abaf1129c4df3fe0450401746`.
+Its metrics include the build seed, cache-policy version, training options, and
+SHA-256 digest of every local source corpus used for reproducibility checks.
 
 The included public Render profile still keeps the optional text model disabled
 until a representative, versioned artifact is supplied through a trusted build
@@ -524,7 +581,10 @@ GitHub Actions runs the development suite on both Python 3.12 and 3.13,
 including HTML recovery regressions that must not depend on standard-library
 exceptions. A separate Python 3.12 job installs the root Vercel dependencies,
 checks their consistency, verifies the committed model digest, starts the real
-Lite profile with ML enabled, and performs a high-risk prediction smoke test.
+Lite profile with ML enabled, and performs phishing-positive and legitimate-
+negative prediction smoke tests.
+A separate deployment-status workflow checks the completed public Vercel
+deployment rather than assuming that the source checkout represents its bundle.
 
 ```bash
 # From repository root, after installing website dependencies
@@ -536,13 +596,14 @@ git diff --check
 ```
 
 The regression suite covers sender-score semantics, authentication-service
-trust, protected-brand/IDN impersonation, SMTP public-address enforcement,
+trust, protected-brand/IDN and digit-substitution impersonation, Public Suffix
+registrable-domain parsing, SMTP public-address enforcement,
 bounded rate limiting, verified model artifacts, HTML destination mismatch,
 ASCII brand lookalikes, URL userinfo, attachment MIME types, raw-message sender
 fusion, footer spoofing, regional-language neutrality, conservative evidence
 fusion, group isolation, deployment flags, and frontend payload/rendering
 behavior. Disposable-address regressions cover multi-label provider domains,
-random-looking Gmail and Outlook mailboxes, privacy relays, plus aliases, Gmail
+random-looking Gmail and Outlook mailboxes, versioned privacy relays, plus aliases, Gmail
 dot variants, and collision domains that must remain unclassified.
 
 ## Historical benchmark results

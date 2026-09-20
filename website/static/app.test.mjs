@@ -168,6 +168,51 @@ test('incomplete analysis is not displayed as zero risk and cancels old animatio
   assert.match(elements.get('crb-sub').textContent, /incomplete/i);
 });
 
+test('content model abstention is shown without probability bars', () => {
+  const { context, elements } = loadFrontend();
+  context.renderContentResult({
+    risk_level: 'unknown', risk_label: 'Analysis Incomplete — Risk Undetermined',
+    analysis_complete: false, combined_phishing_score: null, total_score: 0,
+    category_results: [], extra_indicators: [], safety_signals: [],
+    ml_status: 'insufficient_feature_coverage', ml_label: null,
+    ml_phishing_probability: null, ml_legitimate_probability: null,
+    ml_prediction: null, ml_top_contributors: [],
+  });
+
+  assert.equal(elements.get('content-ml-card').style.display, '');
+  assert.equal(elements.get('content-ml-prob-bars').style.display, 'none');
+  assert.match(elements.get('content-ml-sub').textContent, /coverage.*not applied/i);
+  assert.equal(elements.get('content-phish-bar').style.width, '0%');
+  assert.equal(elements.get('content-legit-bar').style.width, '0%');
+  assert.equal(elements.get('content-phish-pct').textContent, '—');
+  assert.equal(elements.get('content-legit-pct').textContent, '—');
+});
+
+test('available content model output is labelled a risk score not confidence', () => {
+  const { context, elements } = loadFrontend();
+  context.renderContentResult({
+    risk_level: 'high', risk_label: 'High', analysis_complete: true,
+    combined_phishing_score: 72, total_score: 0,
+    category_results: [], extra_indicators: [], safety_signals: [],
+    ml_status: 'available', ml_label: 'Likely Phishing',
+    ml_phishing_probability: 72, ml_legitimate_probability: 28,
+    ml_prediction: 1, ml_top_contributors: [], ml_metrics: {},
+  });
+
+  assert.match(elements.get('content-ml-sub').textContent, /model risk score 72\.0%/i);
+  assert.equal(elements.get('content-ml-prob-bars').style.display, '');
+  assert.doesNotMatch(elements.get('content-ml-sub').textContent, /confidence/i);
+  assert.match(elements.get('crb-sub').textContent, /ML risk score: 72%/i);
+  assert.doesNotMatch(elements.get('crb-sub').textContent, /% phishing/i);
+});
+
+test('content analysis copy does not describe model output as probability', () => {
+  const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+
+  assert.doesNotMatch(html, /group-isolated probability/i);
+  assert.match(html, /group-isolated model score/i);
+});
+
 const senderResult = email => ({
   email, verdict: 'low', label: 'Low Sender Risk', risk_score: 0,
   risk_indicators: [], feature_breakdown: [], high_risk_count: 0, med_risk_count: 0,

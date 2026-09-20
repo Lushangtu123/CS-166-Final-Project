@@ -344,7 +344,10 @@ def _authentication_results(value: str) -> tuple[str, dict[str, str], bool]:
 
 def _analyze_message(message, *, unicode_source, trusted_authserv_ids, depth, budget):
     plain, html, attachments, parse_warnings, content_parts = _message_text(message, unicode_source=unicode_source)
-    header_candidates = {name: [] for name in ('From', 'Subject', 'Reply-To', 'Return-Path')}
+    header_candidates = {
+        name: []
+        for name in ('From', 'To', 'Cc', 'Subject', 'Reply-To', 'Return-Path')
+    }
     canonical_names = {name.lower(): name for name in header_candidates}
     # headerregistry can itself raise for malformed address headers. Parse one
     # field at a time, preserving raw candidates and other evidence on failure.
@@ -413,6 +416,27 @@ def _analyze_message(message, *, unicode_source, trusted_authserv_ids, depth, bu
     from_mailboxes = [mailbox for value in header_candidates['From']
                       for mailbox in getaddresses([value])]
     from_domains = {_domain(address) for _, address in from_mailboxes} - {''}
+    from_addresses = {
+        address.strip().lower() for _, address in from_mailboxes if address.strip()
+    }
+    recipient_addresses = {
+        address.strip().lower()
+        for name in ('To', 'Cc')
+        for value in header_candidates[name]
+        for _, address in getaddresses([value])
+        if address.strip()
+    }
+    if not recipient_addresses:
+        indicators.append({
+            'level': 'info',
+            'msg': 'No visible To or Cc recipient is present; the message may have used Bcc.',
+        })
+    elif from_addresses & recipient_addresses:
+        score += 1
+        indicators.append({
+            'level': 'low',
+            'msg': 'Self-addressed message: a From mailbox also appears in To or Cc.',
+        })
     brand_score, brand_indicators = max(
         (_brand_identity_signals(name, _domain(address)) for name, address in from_mailboxes),
         key=lambda pair: pair[0], default=(0, []),

@@ -55,6 +55,49 @@ class SenderRiskAnalysisTests(unittest.TestCase):
         self.assertLess(result["risk_score"], 20)
         self.assertEqual(result["verdict"], "low")
 
+    def test_digit_substitution_brand_domains_are_high_risk_by_themselves(self):
+        for domain in (
+            "paypa1.com",
+            "g00gle.com",
+            "app1e.com",
+            "n3tflix.com",
+            "micro5oft.com",
+            "6oogle.com",
+            "p4ypal.com",
+        ):
+            with self.subTest(domain=domain):
+                result = self.analyze(f"alice@{domain}")
+                self.assertIn(result["verdict"], {"high", "critical"})
+                self.assertTrue(any(
+                    "impersonate" in indicator["msg"].lower()
+                    for indicator in result["risk_indicators"]
+                ))
+
+    def test_plain_brand_substring_keeps_its_existing_non_decisive_score(self):
+        result = self.analyze("alice@paypalcommunity.com")
+
+        self.assertNotIn(result["verdict"], {"high", "critical"})
+        self.assertLess(result["risk_score"], 60)
+        self.assertFalse(any(
+            "character substitution" in indicator["msg"].lower()
+            for indicator in result["risk_indicators"]
+        ))
+
+    def test_public_suffix_parsing_uses_the_registrable_domain(self):
+        ordinary = self.analyze("alice@mail.company.co.uk")
+        ordinary_messages = [item["msg"] for item in ordinary["risk_indicators"]]
+        self.assertTrue(any("company.co.uk" in message for message in ordinary_messages))
+        self.assertFalse(any("Domain (co.uk)" in message for message in ordinary_messages))
+        self.assertFalse(any("subdomain levels" in message for message in ordinary_messages))
+        self.assertFalse(any("TLD '.uk' is uncommon" in message for message in ordinary_messages))
+
+        lookalike = self.analyze("alice@paypa1.co.uk")
+        self.assertIn(lookalike["verdict"], {"high", "critical"})
+        self.assertTrue(any(
+            "impersonate 'paypal'" in indicator["msg"].lower()
+            for indicator in lookalike["risk_indicators"]
+        ))
+
 
 class DisposableEmailClassificationTests(unittest.TestCase):
     def analyze(self, address: str) -> dict:
@@ -152,6 +195,23 @@ class DisposableEmailClassificationTests(unittest.TestCase):
                 self.assertEqual(result["risk_score"], 0)
                 self.assertEqual(result["phish_feature_count"], 0)
 
+    def test_simplelogin_alias_domains_are_privacy_relays(self):
+        for domain in (
+            "simplelogin.com",
+            "simplelogin.co",
+            "simplelogin.fr",
+            "simplelogin.io",
+            "aleeas.com",
+            "slmails.com",
+            "silomails.com",
+            "slmail.me",
+        ):
+            with self.subTest(domain=domain):
+                result = self.analyze(f"user@{domain}")
+                self.assert_status(result, "privacy_relay")
+                self.assertEqual(result["matched_provider_domain"], domain)
+                self.assertEqual(result["risk_score"], 0)
+
     def test_subaddressing_does_not_increase_sender_risk(self):
         base = self.analyze("alice.smith@outlook.com")
         for address in (
@@ -243,6 +303,33 @@ class DisposableEmailClassificationTests(unittest.TestCase):
 
 
 class ContentRuleRobustnessTests(unittest.TestCase):
+    def test_ml_abstention_keeps_rules_and_marks_clean_result_incomplete(self):
+        abstention = {
+            "ml_status": "insufficient_feature_coverage",
+            "ml_phishing_probability": None,
+            "ml_legitimate_probability": None,
+            "ml_label": None,
+            "ml_prediction": None,
+            "ml_decision_threshold": 35.1,
+            "ml_top_contributors": [],
+        }
+        with patch.object(app, "_content_pipeline", {
+            "decision_threshold": 0.351,
+            "metrics": {},
+        }), patch.object(app, "predict_content", return_value=abstention):
+            result = json.loads(asyncio.run(app.analyze_content_endpoint(
+                app.ContentRequest(subject="会议提醒", body="明天下午三点开会。")
+            )).body)
+
+        self.assertEqual(result["ml_status"], "insufficient_feature_coverage")
+        self.assertFalse(result["analysis_complete"])
+        self.assertEqual(result["risk_level"], "unknown")
+        self.assertIsNone(result["combined_phishing_score"])
+        self.assertTrue(any(
+            "coverage" in warning.lower()
+            for warning in result["analysis_warnings"]
+        ))
+
     def test_malformed_link_retains_medium_floor_without_lowering_high_evidence(self):
         malformed = '<a href="https://[broken">Continue</a>'
         for body, expected in ((malformed, 'medium'),
@@ -612,6 +699,63 @@ class ContentRuleRobustnessTests(unittest.TestCase):
 
 
 class RawEmailAnalysisTests(unittest.TestCase):
+    def test_recipient_headers_are_preserved_and_self_addressing_is_low_risk(self):
+        raw_email = """From: Alice <alice@gmail.com>
+To: Alice <alice@gmail.com>
+Cc: Bob <bob@outlook.com>
+Subject: Project update
+
+Here is the requested update.
+"""
+
+        result = json.loads(asyncio.run(app.analyze_content_endpoint(
+            app.ContentRequest(raw_email=raw_email)
+        )).body)
+
+        headers = result["message_structure"]["header_candidates"]
+        self.assertEqual(headers["To"], ["Alice <alice@gmail.com>"])
+        self.assertEqual(headers["Cc"], ["Bob <bob@outlook.com>"])
+        self.assertEqual(result["structure_score"], 1)
+        self.assertNotIn(result["risk_level"], {"high", "critical"})
+        self.assertTrue(any(
+            "self-addressed" in item["msg"].lower()
+            for item in result["extra_indicators"]
+        ))
+
+    def test_missing_visible_recipient_is_informational_only(self):
+        raw_email = """From: Alice <alice@gmail.com>
+Subject: Project update
+
+Here is the requested update.
+"""
+
+        result = json.loads(asyncio.run(app.analyze_content_endpoint(
+            app.ContentRequest(raw_email=raw_email)
+        )).body)
+
+        self.assertEqual(result["structure_score"], 0)
+        self.assertNotIn(result["risk_level"], {"high", "critical"})
+        self.assertTrue(any(
+            "no visible to or cc" in item["msg"].lower()
+            for item in result["extra_indicators"]
+        ))
+
+    def test_missing_visible_recipient_is_reported_without_a_from_header(self):
+        raw_email = """Subject: Project update
+
+Here is the requested update.
+"""
+
+        result = json.loads(asyncio.run(app.analyze_content_endpoint(
+            app.ContentRequest(raw_email=raw_email)
+        )).body)
+
+        self.assertEqual(result["structure_score"], 0)
+        self.assertTrue(any(
+            "no visible to or cc" in item["msg"].lower()
+            for item in result["extra_indicators"]
+        ))
+
     def test_transfer_encoded_attached_email_is_not_silently_marked_complete(self):
         import base64
         import quopri
