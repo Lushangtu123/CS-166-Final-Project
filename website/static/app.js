@@ -1093,12 +1093,15 @@ function renderContentResult(data) {
       (data.analysis_warnings || []).some(warning => warning.includes('Attachment content was not inspected;'));
     const inlineImageCoverage = data.inline_image_coverage?.inspection_status === 'metadata_only' ||
       (data.analysis_warnings || []).some(warning => warning.includes('Embedded image content was not inspected;'));
+    const remoteImageCoverage = data.remote_image_coverage?.inspection_status === 'metadata_only' ||
+      (data.analysis_warnings || []).some(warning => warning.includes('Remote image content was not inspected;'));
     const parseIssues = (data.message_structure?.parse_warnings || []).length > 0;
     subParts.push('Analysis incomplete. Review the warnings below.');
     if (attachmentCoverage) {
       subParts.push('Attachment contents were not inspected; only filenames and MIME types were checked.');
     }
     if (inlineImageCoverage) subParts.push('Embedded image content was not inspected.');
+    if (remoteImageCoverage) subParts.push('Remote image content was not inspected.');
     if (parseIssues) subParts.push('Some message content could not be reliably parsed.');
     if (data.ml_status === 'insufficient_context' || data.ml_status === 'insufficient_feature_coverage') {
       subParts.push('The text model could not score this message.');
@@ -1107,12 +1110,18 @@ function renderContentResult(data) {
   if (data.ml_label != null) {
     subParts.push(`ML risk score: ${data.ml_phishing_probability}% — ${data.ml_label}`);
   }
+  if (data.fusion_basis === 'model_only') {
+    subParts.push('Model-only risk signal; no independent rule, sender, or link evidence was found.');
+  } else if (data.fusion_basis === 'model_led') {
+    subParts.push('Model-led risk signal; no strong independent rule, sender, or link evidence was found.');
+  }
   const categoryCount = data.category_results.length;
   const technicalCount = (data.extra_indicators || []).filter(ind =>
     ['low', 'medium', 'high', 'critical'].includes(ind.level)).length;
   if (categoryCount) subParts.push(`${categoryCount} suspicious ${categoryCount === 1 ? 'category' : 'categories'} detected.`);
   if (technicalCount) subParts.push(`${technicalCount} technical risk ${technicalCount === 1 ? 'indicator' : 'indicators'} detected.`);
-  if (!categoryCount && !technicalCount && data.analysis_complete !== false) {
+  if (!categoryCount && !technicalCount && data.analysis_complete !== false &&
+      !['model_only', 'model_led'].includes(data.fusion_basis)) {
     subParts.push(data.risk_level === 'safe'
       ? 'No indicators detected by the available checks. This does not prove the message is safe.'
       : 'Risk detected by the combined analysis. Review the evidence below.');

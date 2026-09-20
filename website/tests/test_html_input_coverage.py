@@ -163,6 +163,168 @@ class HTMLInputCoverageTests(unittest.TestCase):
         self.assertEqual(result['risk_level'], 'unknown')
         self.assertFalse(result['analysis_complete'])
 
+    def test_remote_image_is_disclosed_without_turning_text_rich_mail_unknown(self):
+        body = ('<p>Hello team, the project meeting is Thursday morning. '
+                'Please bring your current progress notes and use the normal calendar invitation.</p>'
+                '<img src="https://images.example.org/logo.png" alt="Company logo">')
+        with patch.object(app, '_content_pipeline', None):
+            result = self.analyze(body=body)
+        self.assertEqual(result['remote_image_coverage'], {
+            'count': 1, 'inspection_status': 'metadata_only',
+        })
+        self.assertEqual(result['total_score'], 0)
+        self.assertEqual(result['risk_level'], 'safe')
+        self.assertFalse(result['analysis_complete'])
+        self.assertTrue(any('remote image content was not inspected' in warning.lower()
+                            for warning in result['analysis_warnings']))
+
+    def test_image_dominant_remote_mail_cannot_be_called_safe(self):
+        message = EmailMessage()
+        message['Subject'] = 'Message for you'
+        message.set_content('<p>Please see the image below.</p>'
+                            '<img src="https://images.example.org/notice.png" alt="">', subtype='html')
+        with patch.object(app, '_content_pipeline', None):
+            result = self.analyze(raw_email=message.as_string())
+        self.assertEqual(result['remote_image_coverage']['count'], 1)
+        self.assertEqual(result['risk_level'], 'unknown')
+        self.assertIsNone(result['combined_phishing_score'])
+        self.assertFalse(result['analysis_complete'])
+
+    def test_plain_alternative_cannot_hide_image_dominant_html(self):
+        message = EmailMessage()
+        message['Subject'] = 'Meeting notes'
+        message.set_content('Hello team, the project meeting is Thursday morning. '
+                            'Please bring your current progress notes and use the normal calendar invitation.')
+        message.add_alternative('<p>Please see the image.</p>'
+                                '<img src="https://images.example.org/notice.png">', subtype='html')
+        with patch.object(app, '_content_pipeline', None):
+            result = self.analyze(raw_email=message.as_string())
+        self.assertEqual(result['remote_image_coverage']['count'], 1)
+        self.assertEqual(result['risk_level'], 'unknown')
+        self.assertFalse(result['analysis_complete'])
+
+    def test_invisible_format_controls_cannot_pad_image_dominant_text(self):
+        body = '<p>See image</p>' + '\u200b' * 100 + '<img src="https://images.example.org/notice.png">'
+        with patch.object(app, '_content_pipeline', None):
+            result = self.analyze(body=body)
+        self.assertEqual(result['remote_image_coverage']['count'], 1)
+        self.assertEqual(result['risk_level'], 'unknown')
+
+    def test_text_rich_nested_remote_image_does_not_force_unknown(self):
+        inner = EmailMessage()
+        inner['Subject'] = 'Project update'
+        inner.set_content('<p>Hello team, the project meeting is Thursday morning. '
+                          'Please bring your current progress notes and use the normal calendar invitation.</p>'
+                          '<img src="https://images.example.org/logo.png">', subtype='html')
+        outer = EmailMessage()
+        outer['Subject'] = 'Forwarded notes'
+        outer.set_content('Hello team, the project meeting is Thursday morning. '
+                          'Please bring your current progress notes and use the normal calendar invitation.')
+        outer.add_attachment(inner, filename='forwarded.eml')
+        with patch.object(app, '_content_pipeline', None):
+            result = self.analyze(raw_email=outer.as_string())
+        self.assertEqual(result['remote_image_coverage']['count'], 1)
+        self.assertEqual(result['risk_level'], 'safe')
+        self.assertFalse(result['analysis_complete'])
+
+    def test_remote_image_references_in_srcset_and_css_are_bounded(self):
+        body = ('<p>Hello team, please review the detailed project notes for our next meeting.</p>'
+                '<source srcset="https://images.example.org/a.png 1x, '
+                '//images.example.org/b.png 2x">'
+                '<div style="background:url(https://images.example.org/c.png)"></div>'
+                + '<img src="https://images.example.org/d.png">' * 25)
+        with patch.object(app, '_content_pipeline', None):
+            result = self.analyze(body=body)
+        self.assertEqual(result['remote_image_coverage']['count'], 20)
+        self.assertEqual(result['inline_image_coverage']['count'], 0)
+
+    def test_data_srcset_payload_does_not_create_a_remote_image(self):
+        body = ('<p>Hello team, please review the detailed project notes for our next meeting.</p>'
+                '<source srcset="data:image/png;base64,//8= 1x, '
+                'https://images.example.org/notice.png 2x">')
+        with patch.object(app, '_content_pipeline', None):
+            result = self.analyze(body=body)
+        self.assertEqual(result['inline_image_coverage']['count'], 1)
+        self.assertEqual(result['remote_image_coverage']['count'], 1)
+
+    def test_relative_image_with_remote_base_is_uninspected(self):
+        body = ('<base href="https://images.example.org/assets/">'
+                '<p>Please see the image below.</p><img src="notice.png">')
+        with patch.object(app, '_content_pipeline', None):
+            result = self.analyze(body=body)
+        self.assertEqual(result['remote_image_coverage']['count'], 1)
+        self.assertEqual(result['risk_level'], 'unknown')
+
+    def test_relative_css_image_with_remote_base_is_uninspected(self):
+        body = ('<base href="https://images.example.org/assets/">'
+                '<p>Please see the image below.</p>'
+                '<div style="background:url(logo.png)"></div>')
+        with patch.object(app, '_content_pipeline', None):
+            result = self.analyze(body=body)
+        self.assertEqual(result['remote_image_coverage']['count'], 1)
+        self.assertEqual(result['risk_level'], 'unknown')
+
+    def test_video_source_is_not_counted_as_an_image(self):
+        body = ('<p>Hello team, please review the detailed project notes for our next meeting.</p>'
+                '<video><source src="https://media.example.org/demo.mp4" type="video/mp4"></video>')
+        with patch.object(app, '_content_pipeline', None):
+            result = self.analyze(body=body)
+        self.assertEqual(result['remote_image_coverage']['count'], 0)
+        self.assertFalse(any('remote image content' in warning.lower()
+                             for warning in result['analysis_warnings']))
+
+    def test_explicit_data_image_source_keeps_existing_coverage(self):
+        body = '<p>Please see the image below.</p><source src="data:image/png;base64,eA==">'
+        with patch.object(app, '_content_pipeline', None):
+            result = self.analyze(body=body)
+        self.assertEqual(result['inline_image_coverage']['count'], 1)
+        self.assertEqual(result['risk_level'], 'unknown')
+
+    def test_html_background_attribute_is_counted_as_image_content(self):
+        body = ('<p>Please see the image below.</p>'
+                '<table background="https://images.example.org/notice.png"><tr><td></td></tr></table>')
+        with patch.object(app, '_content_pipeline', None):
+            result = self.analyze(body=body)
+        self.assertEqual(result['remote_image_coverage']['count'], 1)
+        self.assertEqual(result['risk_level'], 'unknown')
+
+    def test_hidden_remote_image_literals_are_not_counted(self):
+        body = ('<!-- <img src="https://images.example.org/a.png"> -->'
+                '<script>const image = "https://images.example.org/b.png";</script>'
+                '<p>Hello team, please review the detailed project notes.</p>')
+        with patch.object(app, '_content_pipeline', None):
+            result = self.analyze(body=body)
+        self.assertEqual(result['remote_image_coverage'], {
+            'count': 0, 'inspection_status': 'not_applicable',
+        })
+        self.assertTrue(result['analysis_complete'])
+
+    def test_substantial_han_text_warns_that_language_coverage_is_limited(self):
+        body = ('本月发票的收款银行账户已经变更，请将未结款项汇入附件所列的新账户。'
+                '旧账户已停用，请今天完成转账并回复确认。')
+        with patch.object(app, '_content_pipeline', None):
+            result = self.analyze(subject='付款账户变更', body=body)
+        self.assertEqual(result['risk_level'], 'unknown')
+        self.assertFalse(result['analysis_complete'])
+        self.assertTrue(any('han-script' in warning.lower() and 'limited' in warning.lower()
+                            for warning in result['analysis_warnings']))
+
+    def test_english_padding_cannot_hide_substantial_han_text(self):
+        body = ('Hello team, these are routine project meeting notes for everyone. '
+                'Please review the ordinary planning details and calendar invitation. ' * 4
+                + '本月发票的收款银行账户已经变更，请将未结款项汇入新账户并回复确认。')
+        with patch.object(app, '_content_pipeline', None):
+            result = self.analyze(subject='Project update', body=body)
+        self.assertEqual(result['risk_level'], 'unknown')
+        self.assertTrue(any('han-script' in warning.lower()
+                            for warning in result['analysis_warnings']))
+
+    def test_single_han_character_in_english_text_does_not_trigger_language_warning(self):
+        with patch.object(app, '_content_pipeline', None):
+            result = self.analyze(body='Hello team, the project meeting is on Thursday. Thanks, 李')
+        self.assertFalse(any('han-script' in warning.lower()
+                             for warning in result['analysis_warnings']))
+
     def test_urls_inside_opaque_image_payload_do_not_add_link_risk(self):
         payload = '%3Csvg%3Ehttps://paypal.com.login.example/%3C/svg%3E'
         images = (
@@ -231,6 +393,32 @@ class HTMLInputCoverageTests(unittest.TestCase):
                         self.assertIn(result['risk_level'], {'high', 'critical'})
                     else:
                         self.assertNotIn(result['risk_level'], {'high', 'critical'})
+
+    def test_committed_model_routine_invoice_is_not_critical_without_independent_evidence(self):
+        pipeline = self.deployment_pipeline()
+        with patch.object(app, '_content_pipeline', pipeline):
+            result = self.analyze(
+                subject='September invoice',
+                body=('Your September invoice is attached for your records. Payment was completed '
+                      'last week through our usual billing process; no further action is required.'),
+            )
+        self.assertEqual(result['ml_status'], 'available')
+        self.assertEqual(result['total_score'], 0)
+        self.assertEqual(result['fusion_basis'], 'model_only')
+        self.assertEqual(result['risk_level'], 'high')
+        self.assertGreaterEqual(result['ml_phishing_probability'], 80)
+
+    def test_committed_model_payment_change_still_triggers_review(self):
+        pipeline = self.deployment_pipeline()
+        with patch.object(app, '_content_pipeline', pipeline):
+            result = self.analyze(
+                subject='Invoice update',
+                body=('We changed the bank account for your invoice. Send payment today '
+                      'to the new account and keep this confidential.'),
+            )
+        self.assertEqual(result['ml_status'], 'available')
+        self.assertIn(result['risk_level'], {'high', 'critical'})
+        self.assertGreater(result['ml_phishing_probability'], result['ml_decision_threshold'])
 
     def test_malformed_html_stays_incomplete_and_preserves_link(self):
         with patch.object(app, '_content_pipeline', None):

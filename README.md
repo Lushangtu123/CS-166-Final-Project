@@ -176,8 +176,8 @@ type were checked but attachment bytes were not inspected;
 the existing detector limits. Non-text inline parts without filenames are also
 reported as `metadata_only`. Opaque attachment content adds one bounded
 top-level `analysis_warnings` entry, separate from MIME `parse_warnings`, but no
-phishing points. If there is no detected risk and analysis is incomplete,
-`risk_level` is `unknown` and
+phishing points. If there is no detected risk and analysis is incomplete
+(except the text-rich remote-image case below), `risk_level` is `unknown` and
 `combined_phishing_score` is `null`. The UI shows “Analysis Incomplete” and a dash
 instead of a green zero. Detected risks remain visible alongside the warning.
 API consumers must accept this additional risk level and nullable score.
@@ -189,6 +189,16 @@ not inspected. These references add no phishing points, but add one analysis
 warning and prevent a complete Safe verdict. An otherwise Safe result becomes
 Unknown with a null combined score; independent high-risk evidence stays
 visible. MIME image attachments remain in `message_structure.attachments`.
+Remote `img`, `srcset`, CSS, and HTML table/background image references,
+including relative references under a remote `<base>`, have a separate top-level
+`remote_image_coverage` count (also capped at 20) and a distinct warning: the
+image bytes were not inspected. A short visible HTML part (under 80
+non-whitespace characters) with a remote image cannot receive a complete Safe
+verdict, even if another MIME alternative contains longer text, and
+becomes Unknown if no other risk was found. Text-rich mail with ordinary remote
+imagery keeps the verdict from the inspected text but is explicitly marked
+incomplete; a Safe label then says it applies only to inspected text. This
+exception avoids treating every decorative logo as an undetermined message.
 The detector does not decode embedded images, scan QR codes, perform OCR, or
 fetch remote images; remote destinations still receive the existing URL checks.
 
@@ -285,6 +295,9 @@ dated Spanish holdout, but that single corpus is not representative of Gmail,
 Outlook, Chinese-language mail, or organization-specific traffic. Pure-text
 credential lures can still be missed. Do not interpret passing regression tests
 or a zero score as universal measured phishing recall.
+Substantial visible Han-script text now adds a language-coverage warning and
+prevents an unqualified complete Safe result. It does not add phishing points or
+pretend that an English-oriented model has learned Chinese phishing patterns.
 
 If the fitted vectorizer produces no usable feature for a message, the model
 abstains with `ml_status=insufficient_feature_coverage` and nullable model
@@ -303,6 +316,12 @@ recall.
 With no independent evidence, either abstention produces an incomplete
 `unknown` result rather than claiming the email is safe. The UI labels supported
 outputs as a **model risk score**, not a calibrated probability or confidence claim.
+An uncorroborated model score can still raise a message to High for review, but
+cannot by itself produce Critical. Critical requires corroborating rule,
+sender, or structure evidence, or a sufficiently strong heuristic score. The
+result exposes `fusion_basis=model_only` when no other evidence exists, or
+`model_led` when only weak rule evidence exists. This does not lower the model's
+score or claim a validated reduction in Gmail/Outlook false positives.
 
 Safety-footer phrases such as “unsubscribe” and “privacy policy” are reported
 as context but never subtract risk: an attacker can copy them. Regional English

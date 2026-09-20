@@ -22,6 +22,25 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-20 14:57 PT] — Disclose image and language gaps and qualify model-only risk
+
+### Why
+- Remote HTML images could be left uninspected while the API still reported a complete Safe analysis; short image-led messages and MIME alternatives made that especially misleading.
+- The committed text model alone could label an ordinary invoice message Critical (84.2% model score, zero heuristic points), and substantial Chinese text lacked a specific coverage warning.
+
+### Files changed
+- `website/app.py` — count remote image references without fetching them, preserve per-HTML-part and nested-message coverage, warn on substantial Han-script text, and require strong independent evidence before model output can raise a verdict to Critical.
+- `website/static/app.js` — distinguish remote-image incompleteness and model-only/model-led results in the risk banner.
+- `website/tests/test_html_input_coverage.py` and `website/tests/test_detection_behavior.py` — cover remote images, data-URI `srcset`, MIME alternatives, nested messages, zero-width padding, mixed-language text, evidence fusion, and a paired committed-model invoice/payment-change regression.
+- `website/static/app.test.mjs` — verify the new browser-facing explanations.
+- `README.md` — document coverage fields, verdict behavior, and the remaining lack of provider-specific validation.
+- `CHANGELOG.md` — record the change and its limits.
+
+### Effect
+- A remote-image-only short HTML part now yields Unknown when no independent risk is found; text-rich mail with a decorative remote image keeps the inspected-text verdict but is explicitly incomplete. Image bytes are still not decoded, fetched, OCR-scanned, or QR-scanned.
+- The constructed ordinary invoice control changes from Critical to High — Model Signal Needs Review while retaining its 84.2% model score. The model artifact and threshold are unchanged; real Gmail/Outlook false-positive and phishing-recall changes remain unmeasured.
+- Substantial Han-script text now produces a language-coverage warning instead of an unqualified complete Safe result; this is disclosure, not a trained Chinese detector.
+
 ## [2026-09-20 14:20 PT] — Add Vercel page and performance collectors
 
 ### Why

@@ -2268,6 +2268,11 @@ def _visible_content_text(text: str, parse_warnings=None) -> str:
 
 
 _INLINE_IMAGE_WARNING = 'Embedded image content was not inspected; analysis is incomplete.'
+_REMOTE_IMAGE_WARNING = 'Remote image content was not inspected; analysis is incomplete.'
+_HAN_TEXT_WARNING = ('Substantial Han-script text detected; language-specific phishing checks '
+                     'are limited and this content may not be fully evaluated.')
+_REMOTE_IMAGE_MIN_VISIBLE_CHARS = 80
+_MIN_HAN_CHARS_FOR_LIMITED_COVERAGE = 12
 
 
 def _unescape_css(value: str) -> str:
@@ -2295,23 +2300,68 @@ def _mask_inline_data_payloads(text: str) -> str:
     return re.sub(r'data:image/[^\s\'"<>)]*', 'data:image/opaque', text, flags=re.IGNORECASE)
 
 
-def _inline_data_image_count(text: str, parse_warnings=None) -> int:
-    """Count HTML-embedded image references without decoding their content."""
+def _image_reference_counts(text: str, parse_warnings=None) -> tuple[int, int]:
+    """Count embedded and remote HTML image references without inspecting pixels."""
     data_image = re.compile(r'^\s*data:image/[a-z0-9.+-]+', re.IGNORECASE)
-    srcset_image = re.compile(r'(?:^|[\s,])data:image/[a-z0-9.+-]+', re.IGNORECASE)
-    css_image = re.compile(r'url\(\s*[\'\"]?\s*data:image/[a-z0-9.+-]+', re.IGNORECASE)
+    data_css = re.compile(r'url\(\s*[\'\"]?\s*data:image/[a-z0-9.+-]+', re.IGNORECASE)
+    remote_image = re.compile(r'^\s*(?:https?:)?//', re.IGNORECASE)
+    remote_css = re.compile(r'url\(\s*[\'\"]?\s*(?:https?:)?//', re.IGNORECASE)
+    css_url = re.compile(r'url\(\s*[\'\"]?([^\'\")\s]+)', re.IGNORECASE)
+
+    def srcset_urls(value):
+        """Read URL tokens without treating a data URI's comma as a separator."""
+        position = 0
+        while position < len(value):
+            while position < len(value) and value[position] in ' \t\n\r\f,':
+                position += 1
+            start = position
+            while position < len(value) and not value[position].isspace():
+                position += 1
+            token = value[start:position]
+            if token.rstrip(','):
+                yield token.rstrip(',')
+            if not token.endswith(','):
+                depth = 0
+                while position < len(value):
+                    character = value[position]
+                    position += 1
+                    if character == '(':
+                        depth += 1
+                    elif character == ')':
+                        depth = max(0, depth - 1)
+                    elif character == ',' and depth == 0:
+                        break
 
     class ImageCollector(_AnalysisHTMLParser):
         def __init__(self):
             super().__init__(convert_charrefs=True)
-            self.count = 0
+            self.data_count = 0
+            self.remote_count = 0
             self.in_style = False
             self.in_script = False
+            self.remote_base = None
+
+        def is_remote(self, value):
+            if remote_image.match(value):
+                return True
+            if not self.remote_base or data_image.match(value) or value.lstrip().startswith('#'):
+                return False
+            try:
+                return bool(remote_image.match(urljoin(self.remote_base, value)))
+            except ValueError:
+                return False
 
         def add_css(self, value):
             without_comments = re.sub(r'/\*.*?\*/', '', value, flags=re.DOTALL)
             normalized = _unescape_css(without_comments)
-            self.count = min(20, self.count + len(css_image.findall(normalized)))
+            self.data_count = min(20, self.data_count + len(data_css.findall(normalized)))
+            self.remote_count = min(20, self.remote_count + len(remote_css.findall(normalized)))
+            if self.remote_base:
+                self.remote_count = min(20, self.remote_count + sum(
+                    self.is_remote(match.group(1))
+                    for match in css_url.finditer(normalized)
+                    if not remote_image.match(match.group(1))
+                ))
 
         def handle_starttag(self, tag, attrs):
             if tag == 'script':
@@ -2321,14 +2371,30 @@ def _inline_data_image_count(text: str, parse_warnings=None) -> int:
                 return
             if tag == 'style':
                 self.in_style = True
+            if tag == 'base':
+                href = dict(attrs).get('href') or ''
+                if remote_image.match(href):
+                    self.remote_base = href
             for name, value in attrs:
                 if not value:
                     continue
                 if tag in {'img', 'source'}:
-                    if name == 'src' and data_image.match(value):
-                        self.count = min(20, self.count + 1)
+                    if name == 'src':
+                        if data_image.match(value):
+                            self.data_count = min(20, self.data_count + 1)
+                        elif tag == 'img' and self.is_remote(value):
+                            self.remote_count = min(20, self.remote_count + 1)
                     elif name == 'srcset':
-                        self.count = min(20, self.count + len(srcset_image.findall(value)))
+                        for url in srcset_urls(value):
+                            if data_image.match(url):
+                                self.data_count = min(20, self.data_count + 1)
+                            elif self.is_remote(url):
+                                self.remote_count = min(20, self.remote_count + 1)
+                if name == 'background' and tag in {'body', 'table', 'td', 'th'}:
+                    if data_image.match(value):
+                        self.data_count = min(20, self.data_count + 1)
+                    elif self.is_remote(value):
+                        self.remote_count = min(20, self.remote_count + 1)
                 if name == 'style':
                     self.add_css(value)
 
@@ -2342,7 +2408,14 @@ def _inline_data_image_count(text: str, parse_warnings=None) -> int:
             if self.in_style and not self.in_script:
                 self.add_css(data)
 
-    return _collect_html(ImageCollector, text, parse_warnings).count
+    collector = _collect_html(ImageCollector, text, parse_warnings)
+    return collector.data_count, collector.remote_count
+
+
+def _has_substantial_han_text(text: str) -> bool:
+    """Flag text for which English-oriented checks have unvalidated coverage."""
+    han_count = sum('\u3400' <= char <= '\u9fff' for char in text)
+    return han_count >= _MIN_HAN_CHARS_FOR_LIMITED_COVERAGE
 
 
 def _has_password_form(text: str, parse_warnings=None) -> bool:
@@ -2409,10 +2482,22 @@ def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] 
                        for part in visible_parts]
         _model_view['subject'] = model_parts[0]
         _model_view['body'] = '\n'.join(model_parts[1:]).strip()
-    image_count = min(20, sum(_inline_data_image_count(part, analysis_warnings)
-                              for part, is_html in zip(raw_parts[1:], html_parts[1:]) if is_html))
+    html_image_parts = [(part, visible) for part, visible, is_html
+                        in zip(raw_parts[1:], visible_parts[1:], html_parts[1:]) if is_html]
+    image_counts = [_image_reference_counts(part, analysis_warnings)
+                    for part, _visible in html_image_parts]
+    image_count = min(20, sum(counts[0] for counts in image_counts))
+    remote_image_count = min(20, sum(counts[1] for counts in image_counts))
+    if _model_view is not None:
+        _model_view['remote_image_dominant'] = any(
+            counts[1] > 0 and sum(not char.isspace() for char in _strip_invisible_format_controls(visible))
+            < _REMOTE_IMAGE_MIN_VISIBLE_CHARS
+            for counts, (_part, visible) in zip(image_counts, html_image_parts)
+        )
     if image_count:
         analysis_warnings.append(_INLINE_IMAGE_WARNING)
+    if remote_image_count:
+        analysis_warnings.append(_REMOTE_IMAGE_WARNING)
     url_parts = [_mask_inline_data_payloads(part) if is_html else part
                  for part, is_html in zip(raw_parts, html_parts)]
     raw_text = '\n'.join(url_parts)
@@ -2421,6 +2506,8 @@ def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] 
     full_orig = re.sub(r'\s+', ' ', '\n'.join(visible_parts)).strip()
     analysis_text = _strip_invisible_format_controls(full_orig)
     full_lower = analysis_text.lower()
+    if _has_substantial_han_text(analysis_text):
+        analysis_warnings.append(_HAN_TEXT_WARNING)
 
     category_results = []
     total_score = 0
@@ -2590,6 +2677,10 @@ def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] 
             "count": image_count,
             "inspection_status": "metadata_only" if image_count else "not_applicable",
         },
+        "remote_image_coverage": {
+            "count": remote_image_count,
+            "inspection_status": "metadata_only" if remote_image_count else "not_applicable",
+        },
         "risk_level":        risk_level,
         "risk_label":        risk_label,
         "total_score":       total_score,
@@ -2630,13 +2721,18 @@ def fuse_content_risk(
     }
     floor_score = max(floor_scores.get(minimum_level, 0.0), 0.10 if heuristic_score > 0 else 0.0)
     combined = max(heuristic_risk, ml_risk, floor_score)
+    model_signal = ml_phishing_probability is not None and ml_risk >= ml_decision_threshold
+    # A high model score alone is not enough to justify a Critical label.
+    independent_support = heuristic_score >= 9 or minimum_level in {"high", "critical"}
+    model_only = model_signal and heuristic_score == 0 and minimum_level == "safe"
+    model_led = model_signal and not independent_support and not model_only
 
-    if minimum_level == "critical" or combined >= 0.80:
+    if minimum_level == "critical" or heuristic_risk >= 0.80 or (ml_risk >= 0.80 and independent_support):
         level, label = "critical", "Critical Risk — Very Likely Phishing"
-    elif minimum_level == "high" or heuristic_risk >= 0.55 or (
-        ml_phishing_probability is not None and ml_risk >= ml_decision_threshold
-    ):
-        level, label = "high", "High Risk — Likely Phishing"
+    elif minimum_level == "high" or heuristic_risk >= 0.55 or model_signal:
+        level = "high"
+        label = ("High Risk — Model Signal Needs Review" if model_only or model_led
+                 else "High Risk — Likely Phishing")
     elif combined >= 0.30:
         level, label = "medium", "Medium Risk — Suspicious Content"
     elif combined >= 0.10:
@@ -2648,6 +2744,8 @@ def fuse_content_risk(
         "risk_level": level,
         "risk_label": label,
         "fusion_method": "conservative-evidence-max",
+        "fusion_basis": ("model_only" if model_only else "model_led" if model_led else
+                         "corroborated" if model_signal and independent_support else "other"),
     }
 
 
@@ -2702,6 +2800,7 @@ async def _analyze_content(
     model_view = {}
     result = analyze_email_content(subject, body, content_parts=structure['content_parts'] if structure else None,
                                    _model_view=model_view)
+    remote_image_dominant = model_view['remote_image_dominant']
     result["input_mode"] = "raw-email" if structure else "subject-body"
     result["structure_score"] = structure["structure_score"] if structure else 0
     if structure:
@@ -2783,18 +2882,26 @@ async def _analyze_content(
             )).body)
             result['analysis_warnings'].extend('Attached message: ' + warning
                                                 for warning in nested_result['analysis_warnings']
-                                                if warning != _INLINE_IMAGE_WARNING)
+                                                if warning not in {_INLINE_IMAGE_WARNING, _REMOTE_IMAGE_WARNING})
             coverage = result['inline_image_coverage']
             coverage['count'] = min(20, coverage['count'] + nested_result['inline_image_coverage']['count'])
             if coverage['count']:
                 coverage['inspection_status'] = 'metadata_only'
+            remote_coverage = result['remote_image_coverage']
+            remote_coverage['count'] = min(20, remote_coverage['count']
+                                          + nested_result['remote_image_coverage']['count'])
+            if remote_coverage['count']:
+                remote_coverage['inspection_status'] = 'metadata_only'
+            if (nested_result['remote_image_coverage']['count']
+                    and nested_result['risk_level'] == 'unknown'):
+                remote_image_dominant = True
             result['total_score'] = max(result['total_score'], nested_result['total_score'])
             nested_floor = 'safe' if nested_result['risk_level'] == 'unknown' else nested_result['risk_level']
             result['risk_floor'] = max((result['risk_floor'], nested_floor), key=floor_rank.get)
             result['extra_indicators'].extend(
                 {'level': item['level'], 'msg': 'Attached message: ' + item['msg']}
                 for item in nested_result['extra_indicators']
-                if item['msg'] != _INLINE_IMAGE_WARNING)
+                if item['msg'] not in {_INLINE_IMAGE_WARNING, _REMOTE_IMAGE_WARNING})
             # Categories are not parent-body matches; expose their provenance.
             result['extra_indicators'].extend(
                 {'level': cat['level'], 'msg': 'Attached message: ' + cat['label'] + ' — ' + ', '.join(cat['matched'])}
@@ -2811,6 +2918,9 @@ async def _analyze_content(
     if result['inline_image_coverage']['count'] and _INLINE_IMAGE_WARNING not in result['analysis_warnings']:
         result['analysis_warnings'].append(_INLINE_IMAGE_WARNING)
         result['extra_indicators'].append({'level': 'info', 'msg': _INLINE_IMAGE_WARNING})
+    if result['remote_image_coverage']['count'] and _REMOTE_IMAGE_WARNING not in result['analysis_warnings']:
+        result['analysis_warnings'].append(_REMOTE_IMAGE_WARNING)
+        result['extra_indicators'].append({'level': 'info', 'msg': _REMOTE_IMAGE_WARNING})
 
     # 2. Optional ML text classifier (TF-IDF + selected linear model)
     if _content_pipeline is not None:
@@ -2858,9 +2968,12 @@ async def _analyze_content(
         + (structure['parse_warnings'] if structure else [])))
     result['analysis_complete'] = not bool(result['analysis_warnings'])
     if not result['analysis_complete'] and result['risk_level'] == 'safe':
-        result['risk_level'] = 'unknown'
-        result['risk_label'] = 'Analysis Incomplete — Risk Undetermined'
-        result['combined_phishing_score'] = None
+        if result['analysis_warnings'] == [_REMOTE_IMAGE_WARNING] and not remote_image_dominant:
+            result['risk_label'] = 'No Indicators in Inspected Text — Remote Image Unchecked'
+        else:
+            result['risk_level'] = 'unknown'
+            result['risk_label'] = 'Analysis Incomplete — Risk Undetermined'
+            result['combined_phishing_score'] = None
     return JSONResponse(result)
 
 

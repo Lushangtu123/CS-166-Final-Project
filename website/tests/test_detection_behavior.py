@@ -750,6 +750,44 @@ class ContentRuleRobustnessTests(unittest.TestCase):
         self.assertEqual(fused["risk_level"], "critical")
         self.assertGreaterEqual(fused["combined_phishing_score"], 80)
 
+    def test_model_only_high_score_is_not_labeled_critical(self):
+        fused = app.fuse_content_risk(
+            ml_phishing_probability=0.842,
+            ml_decision_threshold=0.3736,
+            heuristic_score=0,
+        )
+        self.assertEqual(fused['risk_level'], 'high')
+        self.assertEqual(fused['fusion_basis'], 'model_only')
+        self.assertEqual(fused['combined_phishing_score'], 84.2)
+
+    def test_high_model_score_with_independent_evidence_can_be_critical(self):
+        fused = app.fuse_content_risk(
+            ml_phishing_probability=0.90,
+            ml_decision_threshold=0.3736,
+            heuristic_score=9,
+        )
+        self.assertEqual(fused['risk_level'], 'critical')
+        self.assertEqual(fused['fusion_basis'], 'corroborated')
+
+    def test_four_weak_rule_points_do_not_corroborate_critical_model_verdict(self):
+        fused = app.fuse_content_risk(
+            ml_phishing_probability=0.90,
+            ml_decision_threshold=0.3736,
+            heuristic_score=4,
+        )
+        self.assertEqual(fused['risk_level'], 'high')
+        self.assertEqual(fused['fusion_basis'], 'model_led')
+
+    def test_one_weak_rule_does_not_claim_model_is_corroborated(self):
+        fused = app.fuse_content_risk(
+            ml_phishing_probability=0.958,
+            ml_decision_threshold=0.3736,
+            heuristic_score=1,
+        )
+        self.assertEqual(fused['risk_level'], 'high')
+        self.assertEqual(fused['fusion_basis'], 'model_led')
+        self.assertIn('Model Signal Needs Review', fused['risk_label'])
+
     def test_regional_english_phrasing_is_not_scored_as_phishing(self):
         result = app.analyze_email_content("Follow up", "Kindly revert at the earliest.")
 

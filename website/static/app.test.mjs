@@ -211,6 +211,36 @@ test('embedded image coverage has distinct incomplete-analysis wording', () => {
   assert.equal(elements.get('crb-score').textContent, '—');
 });
 
+test('remote image coverage explains that image content was not inspected', () => {
+  const { context, elements } = loadFrontend();
+  context.renderContentResult({ total_score: 0, category_results: [], extra_indicators: [], safety_signals: [],
+    analysis_complete: false, risk_level: 'unknown', risk_label: 'Analysis Incomplete — Risk Undetermined',
+    combined_phishing_score: null, remote_image_coverage: { count: 1, inspection_status: 'metadata_only' } });
+  assert.match(elements.get('crb-sub').textContent, /remote image content was not inspected/i);
+  assert.doesNotMatch(elements.get('crb-sub').textContent, /embedded image content was not inspected/i);
+});
+
+test('model-only high result explains that independent evidence is absent', () => {
+  const { context, elements } = loadFrontend();
+  context.renderContentResult({ total_score: 0, category_results: [], extra_indicators: [], safety_signals: [],
+    analysis_complete: true, risk_level: 'high', risk_label: 'High Risk — Model Signal Needs Review',
+    combined_phishing_score: 84.2, fusion_basis: 'model_only',
+    ml_status: 'available', ml_label: 'Likely Phishing', ml_phishing_probability: 84.2,
+    ml_legitimate_probability: 15.8, ml_prediction: 1, ml_top_contributors: [], ml_metrics: {} });
+  assert.match(elements.get('crb-sub').textContent, /model-only.*no independent/i);
+});
+
+test('model-led high result distinguishes weak rules from strong corroboration', () => {
+  const { context, elements } = loadFrontend();
+  context.renderContentResult({ total_score: 1, category_results: [], extra_indicators: [], safety_signals: [],
+    analysis_complete: true, risk_level: 'high', risk_label: 'High Risk — Model Signal Needs Review',
+    combined_phishing_score: 95.8, fusion_basis: 'model_led',
+    ml_status: 'available', ml_label: 'Likely Phishing', ml_phishing_probability: 95.8,
+    ml_legitimate_probability: 4.2, ml_prediction: 1, ml_top_contributors: [], ml_metrics: {} });
+  assert.match(elements.get('crb-sub').textContent, /model-led.*no strong independent/i);
+  assert.doesNotMatch(elements.get('crb-sub').textContent, /combined analysis/i);
+});
+
 test('content model abstention is shown without probability bars', () => {
   const { context, elements } = loadFrontend();
   context.renderContentResult({
