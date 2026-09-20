@@ -22,6 +22,27 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-20 14:20 PT] — Add Vercel page and performance collectors
+
+### Why
+- The Hobby project's Web Analytics and Speed Insights dashboards were enabled
+  but showed zero events because the FastAPI-served HTML page loaded neither
+  browser collector. The dashboard's default Next.js instructions do not match
+  this repository's plain HTML frontend.
+
+### Files changed
+- `website/static/index.html` — initialize the Vercel page-view and web-vitals
+  queues and load their deferred same-origin scripts before `</body>`.
+- `website/static/app.test.mjs` — verify the rendered HTML includes both
+  collectors without Next.js imports.
+- `CHANGELOG.md` — record the integration and its verification limits.
+
+### Effect
+- Both collector scripts are now included in the HTML served by FastAPI. The
+  existing production script routes each returned HTTP 200 before this change;
+  browser event delivery and dashboard counts still require deployment and
+  post-deploy verification. No email input is submitted as a custom event.
+
 ## [2026-09-20 12:57 PT] — Abstain on low-context email text
 
 ### Why

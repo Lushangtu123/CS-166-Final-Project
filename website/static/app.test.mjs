@@ -274,6 +274,15 @@ test('content analysis copy does not describe model output as probability', () =
   assert.match(html, /group-isolated model score/i);
 });
 
+test('HTML page loads enabled Vercel observability scripts from this site', () => {
+  const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+  assert.match(html, /window\.va\s*=\s*window\.va\s*\|\|/);
+  assert.match(html, /src="\/_vercel\/insights\/script\.js"/);
+  assert.match(html, /window\.si\s*=\s*window\.si\s*\|\|/);
+  assert.match(html, /src="\/_vercel\/speed-insights\/script\.js"/);
+  assert.doesNotMatch(html, /@vercel\/(analytics|speed-insights)\/next/);
+});
+
 test('content input explains server processing and pseudonymous sender retention', () => {
   const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
 
