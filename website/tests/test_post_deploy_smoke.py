@@ -54,6 +54,7 @@ class PostDeploySmokeTests(unittest.TestCase):
             if request.full_url.endswith("/health"):
                 return _Response({
                     "status": "ok",
+                    "commit_sha": "c" * 40,
                     "content_model_loaded": True,
                     "content_model_id": "sha256:abc123",
                     "content_model_artifact_sha256": "a" * 64,
@@ -68,6 +69,13 @@ class PostDeploySmokeTests(unittest.TestCase):
                     "sender_history_enabled": True,
                     "sender_history_available": True,
                     "sender_history_configured": True,
+                })
+            if request.full_url.endswith("/api/analyze-eml"):
+                self.assertEqual(request.headers["Content-type"], "message/rfc822")
+                self.assertIn(b"multipart/alternative", request.data)
+                return _Response({
+                    "risk_level": "critical", "ml_prediction": 1,
+                    "ml_status": "available",
                 })
             if request.full_url.endswith("/api/analyze-content"):
                 body = json.loads(request.data.decode("utf-8"))
@@ -103,6 +111,7 @@ class PostDeploySmokeTests(unittest.TestCase):
         result = post_deploy_smoke.validate_deployment(
             "https://project.vercel.app",
             expected_model_sha256="a" * 64,
+            expected_commit_sha="c" * 40,
             opener=opener,
             require_sender_history=True,
             history_probe_id="test-probe",
@@ -112,9 +121,11 @@ class PostDeploySmokeTests(unittest.TestCase):
         self.assertEqual(result["legitimate_risk_level"], "safe")
         self.assertEqual(result["legitimate_control_count"], 2)
         self.assertEqual(result["sender_history_probe"], "previously_seen")
+        self.assertEqual(result["commit_sha"], "c" * 40)
+        self.assertEqual(result["mime_phishing_risk_level"], "critical")
         self.assertEqual(
             [method for _, method, _ in requests],
-            ["GET", "GET", "POST", "POST", "POST", "POST", "POST"],
+            ["GET", "GET", "POST", "POST", "POST", "POST", "POST", "POST"],
         )
         self.assertTrue(all(timeout == 20 for _, _, timeout in requests))
 
@@ -131,6 +142,7 @@ class PostDeploySmokeTests(unittest.TestCase):
                 health_attempts += 1
                 return _Response({
                     "status": "ok",
+                    "commit_sha": "c" * 40,
                     "content_model_loaded": True,
                     "content_model_id": "sha256:abc123",
                     "content_model_artifact_sha256": (
@@ -147,6 +159,11 @@ class PostDeploySmokeTests(unittest.TestCase):
                     "sender_history_enabled": True,
                     "sender_history_available": True,
                     "sender_history_configured": True,
+                })
+            if request.full_url.endswith("/api/analyze-eml"):
+                return _Response({
+                    "risk_level": "critical", "ml_prediction": 1,
+                    "ml_status": "available",
                 })
             body = json.loads(request.data.decode("utf-8"))
             if body.get("raw_email"):
@@ -179,6 +196,7 @@ class PostDeploySmokeTests(unittest.TestCase):
         result = post_deploy_smoke.validate_deployment(
             "https://project.vercel.app",
             expected_model_sha256="a" * 64,
+            expected_commit_sha="c" * 40,
             opener=opener,
             require_sender_history=True,
             history_probe_id="retry-probe",
@@ -191,7 +209,7 @@ class PostDeploySmokeTests(unittest.TestCase):
         self.assertEqual(sleeps, [3])
         self.assertEqual(
             sum(method == "POST" for _, method in requests),
-            5,
+            6,
         )
         self.assertEqual(
             [method for _, method in requests[:3]],
@@ -204,6 +222,7 @@ class PostDeploySmokeTests(unittest.TestCase):
             post_deploy_smoke.validate_deployment(
                 "https://internal.example",
                 expected_model_sha256="a" * 64,
+                expected_commit_sha="c" * 40,
                 opener=lambda *_args, **_kwargs: self.fail("network should not run"),
             )
 
@@ -214,12 +233,35 @@ class PostDeploySmokeTests(unittest.TestCase):
             post_deploy_smoke.validate_deployment(
                 "https://project.vercel.app",
                 expected_model_sha256="a" * 64,
+                expected_commit_sha="c" * 40,
                 opener=lambda *_args, **_kwargs: _Response(
                     b"<html>Log in to Vercel</html>",
                     content_type="text/html; charset=utf-8",
                     final_url="https://vercel.com/login",
                 ),
             )
+
+    def test_smoke_rejects_stale_alias_before_sending_controls(self):
+        for deployed_commit in ("b" * 40, None):
+            with self.subTest(deployed_commit=deployed_commit):
+                requests = []
+
+                def opener(request, timeout):
+                    requests.append(request.get_method())
+                    return _Response({
+                        "status": "ok", "content_model_loaded": True,
+                        "content_model_artifact_sha256": "a" * 64,
+                        "commit_sha": deployed_commit,
+                    })
+
+                with self.assertRaisesRegex(RuntimeError, "commit"):
+                    post_deploy_smoke.validate_deployment(
+                        "https://project.vercel.app",
+                        expected_model_sha256="a" * 64,
+                        expected_commit_sha="c" * 40,
+                        opener=opener,
+                    )
+                self.assertEqual(requests, ["GET"])
 
     def test_deployment_status_workflow_runs_the_smoke(self):
         workflow = PROJECT_ROOT / ".github" / "workflows" / "post-deploy-smoke.yml"
@@ -228,6 +270,8 @@ class PostDeploySmokeTests(unittest.TestCase):
         self.assertIn("deployment_status:", source)
         self.assertIn("website/tools/post_deploy_smoke.py", source)
         self.assertIn("github.event.deployment.sha", source)
+        self.assertIn("EXPECTED_COMMIT_SHA: ${{ github.event.deployment.sha }}", source)
+        self.assertIn('--expected-commit-sha "$EXPECTED_COMMIT_SHA"', source)
         self.assertIn(
             "DEPLOYMENT_URL: https://phishguard-email-analyzer.vercel.app",
             source,

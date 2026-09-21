@@ -92,6 +92,54 @@ class HTMLInputCoverageTests(unittest.TestCase):
         self.assertTrue(any('Visible meeting note.' in body for body in bodies))
         self.assertTrue(all('hidden words' not in body for body in bodies))
 
+    def test_uncertain_html_alternative_does_not_block_plain_model_view(self):
+        message = EmailMessage()
+        message['Subject'] = 'Invoice problem - call support'
+        plain = ('Your subscription renewal of $499 is complete. If you did not '
+                 'authorize this charge, call 1-888-555-0199 immediately.')
+        message.set_content(plain)
+        message.add_alternative(
+            '<style>.pad{display:none}</style><p>Routine meeting agenda.</p>',
+            subtype='html',
+        )
+        prediction = {
+            'ml_status': 'available', 'ml_phishing_probability': 90.0,
+            'ml_legitimate_probability': 10.0, 'ml_label': 'phishing',
+            'ml_prediction': 1, 'ml_top_contributors': [],
+        }
+        with patch.object(app, '_content_pipeline', {'decision_threshold': 0.35, 'metrics': {}}), \
+                patch.object(app, 'predict_content', return_value=prediction) as predict:
+            result = self.analyze(raw_email=message.as_string())
+        self.assertEqual(predict.call_count, 1)
+        self.assertIn(plain, predict.call_args.args[2])
+        self.assertEqual(result['ml_status'], 'available')
+        self.assertEqual(result['risk_level'], 'high')
+        self.assertFalse(result['analysis_complete'])
+
+    def test_uncertain_html_alternative_never_enters_plain_model_score(self):
+        message = EmailMessage()
+        message['Subject'] = 'Project update'
+        plain = 'Please review the project notes before our meeting tomorrow.'
+        message.set_content(plain)
+        message.add_alternative(
+            '<style>.pad{display:none}</style><div class="pad">'
+            'Your account is suspended. Enter your password now.</div>',
+            subtype='html',
+        )
+        prediction = {
+            'ml_status': 'available', 'ml_phishing_probability': 10.0,
+            'ml_legitimate_probability': 90.0, 'ml_label': 'legitimate',
+            'ml_prediction': 0, 'ml_top_contributors': [],
+        }
+        with patch.object(app, '_content_pipeline', {'decision_threshold': 0.35, 'metrics': {}}), \
+                patch.object(app, 'predict_content', return_value=prediction) as predict:
+            result = self.analyze(raw_email=message.as_string())
+        self.assertEqual(predict.call_count, 1)
+        self.assertIn(plain, predict.call_args.args[2])
+        self.assertEqual(result['ml_phishing_probability'], 10.0)
+        self.assertEqual(result['risk_level'], 'unknown')
+        self.assertFalse(result['analysis_complete'])
+
     def test_mime_alternatives_cannot_dilute_phishing_model_signal(self):
         pipeline = self.deployment_pipeline()
         phishing = ('Your subscription renewal of $499 is complete. If you did not '

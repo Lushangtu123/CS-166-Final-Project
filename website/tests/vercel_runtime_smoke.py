@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from email.message import EmailMessage
 import hashlib
 import json
 import os
@@ -25,6 +26,19 @@ import app as root_entrypoint  # noqa: E402
 
 async def main() -> None:
     backend = sys.modules["website.app"]
+
+    async def upload_eml(message: EmailMessage) -> dict:
+        raw = message.as_bytes()
+
+        async def receive() -> dict:
+            return {'type': 'http.request', 'body': raw, 'more_body': False}
+
+        request = backend.Request({
+            'type': 'http',
+            'headers': [(b'content-type', b'message/rfc822')],
+        }, receive)
+        return json.loads((await backend.analyze_eml_endpoint(request)).body)
+
     async with backend.lifespan(root_entrypoint.app):
         health = json.loads((await backend.health()).body)
         config = json.loads((await backend.get_public_config()).body)
@@ -53,6 +67,30 @@ async def main() -> None:
                 backend.ContentRequest(subject=subject, body=body)
             )
             legitimate_controls.append(json.loads(legitimate_response.body))
+
+        mime_phishing = EmailMessage()
+        mime_phishing['Subject'] = 'Urgent: verify your account'
+        mime_phishing.set_content(
+            'Your account will be suspended. Sign in now at '
+            'http://paypa1-secure.example/login'
+        )
+        mime_phishing.add_alternative(
+            '<p>Please review the project notes before our meeting tomorrow.</p>',
+            subtype='html',
+        )
+        mime_phishing_analysis = await upload_eml(mime_phishing)
+
+        mime_uncertain = EmailMessage()
+        mime_uncertain['Subject'] = 'Monthly project update'
+        mime_uncertain.set_content(
+            'Attached is the monthly report. Revenue increased and the '
+            'team completed the scheduled maintenance.'
+        )
+        mime_uncertain.add_alternative(
+            '<style>.pad{display:none}</style><p>Routine meeting agenda.</p>',
+            subtype='html',
+        )
+        mime_uncertain_analysis = await upload_eml(mime_uncertain)
         if not health["content_model_loaded"]:
             raise SystemExit(f"Vercel content model did not load: {health['content_model_error']}")
         if analysis["risk_level"] not in {"high", "critical"}:
@@ -75,6 +113,14 @@ async def main() -> None:
                 raise SystemExit(
                     "Content model flagged the legitimate negative control"
                 )
+        if (mime_phishing_analysis['risk_level'] not in {'high', 'critical'}
+                or mime_phishing_analysis.get('ml_status') != 'available'
+                or mime_phishing_analysis.get('ml_prediction') != 1):
+            raise SystemExit('Raw MIME phishing positive control was missed')
+        if (mime_uncertain_analysis['risk_level'] != 'unknown'
+                or mime_uncertain_analysis['analysis_complete']
+                or mime_uncertain_analysis.get('ml_status') != 'available'):
+            raise SystemExit('Raw MIME uncertain-rendering control was misclassified')
         print(json.dumps({
             "model_loaded": health["content_model_loaded"],
             "model_id": f"sha256:{health['content_model_artifact_sha256'][:12]}",
@@ -83,6 +129,11 @@ async def main() -> None:
             "legitimate_risk_levels": [
                 item["risk_level"] for item in legitimate_controls
             ],
+            "mime_phishing_risk_level": mime_phishing_analysis['risk_level'],
+            "mime_phishing_ml_prediction": mime_phishing_analysis['ml_prediction'],
+            "mime_uncertain_risk_level": mime_uncertain_analysis['risk_level'],
+            "mime_uncertain_ml_status": mime_uncertain_analysis['ml_status'],
+            "mime_uncertain_analysis_complete": mime_uncertain_analysis['analysis_complete'],
         }))
 
 

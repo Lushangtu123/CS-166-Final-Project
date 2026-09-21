@@ -296,12 +296,13 @@ conservatively, including inside media-rule blocks. Inline zero `font-size` and
 transparent text color also mark rendering uncertain. Other `calc(...)` opacity
 expressions are left unscored when their visible result cannot be established.
 Because selector matching and CSS cascade are not fully rendered, the API sets
-`ml_status=unverified_rendering`, leaves model scores null, and marks analysis
-incomplete instead of allowing hidden CSS padding to produce a complete Low or
-Safe verdict. Prose from only the CSS-uncertain HTML part is withheld from text
-rules, including bare URLs and displayed link labels; unambiguous MIME parts
-still contribute text rules. Explicit link destinations, forms, sender, and
-message-structure checks still run.
+`ml_status=unverified_rendering` and leaves model scores null when every MIME
+view is uncertain. A separate trustworthy text/plain alternative may still be
+model-scored, but the whole-message analysis remains incomplete and cannot
+produce a complete Low or Safe verdict. Prose from only the CSS-uncertain HTML
+part is withheld from text rules, including bare URLs and displayed link labels;
+unambiguous MIME parts still contribute text rules. Explicit link destinations,
+forms, sender, and message-structure checks still run.
 This is not a browser renderer: external CSS and other visual-hiding methods
 are not fully resolved, so even a complete result does not establish pixel-level
 visibility. MIME `text/plain` remains literal. HTML
@@ -323,8 +324,10 @@ its replacement text to rule and model input, unless the image is hidden. For
 images that may load, a substantive `alt` (at least three words and 12
 non-whitespace characters, or a substantial no-space non-Latin passage) is
 conditional fallback content: its presence
-produces `ml_status=unverified_rendering` and an incomplete-analysis warning,
-without assuming the image fails or treating that alternative as always visible.
+prevents model scoring of the affected MIME view and produces an incomplete-
+analysis warning, without assuming the image fails or treating that alternative
+as always visible. When no other trustworthy view can be scored,
+`ml_status=unverified_rendering`.
 Short instructions requesting credentials, such as “Enter password,” are also
 treated as conditional fallback content.
 Short decorative labels such as “Company logo” do not disable the text model;
@@ -521,15 +524,33 @@ and best-effort WHOIS checks. It never opens an SMTP connection and returns
 verified. The response separates `domain_verification` from
 `mailbox_verification`; the latter is `unavailable` on this profile.
 
-The Vercel runtime installs NumPy and scikit-learn for inference but not pandas.
-Training remains local-only. When `website/model/content_model_artifact.pkl` is
-present, `vercel.json` must contain its exact SHA-256 digest and enables the
-model. Startup verifies the digest plus Python/scikit-learn compatibility before
-deserializing. A rejected or missing artifact leaves rule and structure analysis
-available and reports the model error through `/health`. Successful health and
-metrics responses expose the loaded artifact digest and a short `model_id`, so
-displayed metrics can be tied to the deployed binary rather than a different
-training run.
+The Vercel runtime installs pinned NumPy, SciPy, scikit-learn, joblib, and
+threadpoolctl versions for inference but not pandas. These are the versions
+validated by the current serving smoke test; the committed model predates
+dependency-version recording, so they do not prove its original training
+environment. Training remains local-only. When the artifact at
+`website/model/content_model_artifact.pkl` is present, `vercel.json` must
+contain its exact SHA-256 digest and enable the model. The committed artifact
+was saved with scikit-learn 1.9.0. Both the Vercel runtime and local
+evaluation requirements pin that exact version.
+Startup verifies the digest before deserializing and rejects scikit-learn
+estimator version warnings, including patch-version mismatches. New artifacts
+record the full scikit-learn version, Python version, and exact versions of the
+core numerical dependencies. The loaders reject a recorded runtime dependency
+mismatch before serving predictions. Legacy artifacts without this metadata
+remain loadable, but cannot establish numerical-dependency parity with their
+training run. A rejected or missing artifact leaves rule and structure
+analysis available and reports the model error through
+`/health`. Successful health and metrics responses expose the loaded artifact
+digest and a short `model_id`, so displayed metrics can be tied to the
+deployed binary rather than a different training run.
+
+The `/health` response also exposes the full Git commit SHA from Vercel's
+`VERCEL_GIT_COMMIT_SHA` system environment variable. Enable System Environment
+Variables in the Vercel project settings if that field is null. The production
+deployment smoke check requires this SHA to match the deployment event before
+it sends analysis controls; an alias still serving older code will fail the
+check even when the model artifact has not changed.
 
 Model explanations cache their immutable 80,000-feature name/coefficient arrays
 and calculate contributors directly from the sparse request vector. This keeps
@@ -592,6 +613,10 @@ so Vercel SSO pages cannot be mistaken for application health output.
 Read-only health/config readiness checks retry briefly while a deployment alias
 converges; phishing, legitimate, and sender-history POST controls run exactly
 once after the expected model and configuration are ready.
+Feature-branch pushes run CI, but the production smoke job only runs after a
+successful Production deployment event. After merging a reviewed PR, check
+that `/health` reports the merged commit SHA and that the production smoke job
+completed successfully; a skipped branch run is not production verification.
 
 For local research with the text model, train and package it before starting the
 web service:
@@ -611,7 +636,11 @@ APP_ENV=development CONTENT_MODEL_ENABLED=true \
 
 Only load artifacts produced and stored by a trusted build process. The digest
 is checked before deserialization, and Python/scikit-learn compatibility metadata
-is validated afterward.
+is validated afterward. New builds record the training environment in
+`build_provenance` and the serving dependencies in the artifact envelope. Keep
+the pinned runtime requirements aligned with those recorded versions when
+publishing a newly built artifact; a saved artifact is rejected if its core
+packages changed between training and packaging.
 
 To opt into network-based mailbox verification locally, additionally set
 `ENABLE_EMAIL_VERIFICATION=true`. Do not expose that endpoint anonymously.
@@ -762,7 +791,10 @@ To measure the **current serving pipeline** on consented, labeled inbox mail,
 use `website/tools/evaluate_serving_pipeline.py` with a local JSONL file kept
 outside version control. Each line must provide `provider` (`gmail` or
 `outlook`), `received_at` (`YYYY-MM-DD`), `label` (`phishing` or `legitimate`),
-and either `raw_email` or `subject`/`body`. Run from the repository root with
+and either `raw_email` or `subject`/`body`. An optional, manually verified
+`language` field accepts a lowercase two- or three-letter code such as `en`,
+`es`, or `zh`; omitted language is reported as `unlabeled`. Do not infer the
+language from the model prediction. Run from the repository root with
 the pinned Python 3.12 environment:
 
 ```bash
@@ -772,14 +804,26 @@ the pinned Python 3.12 environment:
 The command loads the digest-verified committed artifact and uses the same
 local analysis path as the API, with external sender-history observation
 disabled. It prints only aggregate counts and rates overall, by provider, by
-received month, and by provider×month; message bodies and sender addresses are
-not included in the report. Medium, High, and Critical are counted as alerts,
-while Unknown is undetermined and remains in the phishing-recall denominator.
-Keep the output local: a provider×month cell with only one or two messages can
+language, by received month, by provider×language, and by provider×month;
+message bodies and sender addresses are not included in the report. Medium,
+High, and Critical are counted as alerts, while Unknown is undetermined and
+remains in the phishing-recall denominator. Each group reports phishing and
+legitimate denominators alongside two-sided Wilson 95% intervals for recall,
+false-alert rate, unknown rate, complete rate, and model-available rate. A
+label-specific rate and interval are null when that group has no examples of
+the label. Small groups produce wide intervals, so avoid interpreting a point
+estimate alone as provider or language performance.
+Keep the output local: a small provider×month or provider×language cell can
 still disclose sensitive cohort information if published. The report marks
 temporal isolation `not_verified`: dates alone do not prove training-family
 separation. No real Gmail/Outlook cohort is committed or measured here, so the
 offline table above must not be presented as provider-specific serving recall.
+For a future independent cohort, obtain consent and labels before inspecting
+model outputs. Keep a private campaign/family identifier and labeling record
+outside the repository, exclude training-family overlap, and reserve a later
+campaign-separated sample that is not used for threshold selection. Run this
+tool only after that split is fixed; its Wilson intervals describe message
+counts and do not correct for repeated messages within a campaign.
 
 The included public Render profile still keeps the optional text model disabled
 until a representative, versioned artifact is supplied through a trusted build
@@ -792,9 +836,14 @@ including HTML recovery regressions that must not depend on standard-library
 exceptions. A separate Python 3.12 job installs the root Vercel dependencies,
 checks their consistency, verifies the committed model digest, starts the real
 Lite profile with ML enabled, and performs phishing-positive and legitimate-
-negative prediction smoke tests.
+negative prediction smoke tests. It also uploads original MIME bytes for a
+phishing positive control and an uncertain-rendering control.
 A separate deployment-status workflow checks the completed public Vercel
-deployment rather than assuming that the source checkout represents its bundle.
+deployment's commit SHA, model digest, and JSON and raw `.eml` controls rather
+than assuming that the source checkout represents its bundle. It performs six
+POST requests when sender-history checks are enabled, within the committed
+10-per-minute per-client limit when no other traffic shares the same rate-limit
+bucket.
 
 ```bash
 # From repository root, after installing website dependencies
