@@ -1,0 +1,120 @@
+{
+  "files": {
+    "core/tesseract-core-lstm.wasm": {
+      "bytes": 2871085,
+      "sha256": "220e2e87551edccb85519796a170469f8ab2a8055216789e3b8b1ada18b7bc2b"
+    },
+    "core/tesseract-core-lstm.wasm.js": {
+      "bytes": 3954181,
+      "sha256": "775a35df6f2ae100e02609443e6bd5cafcd07983dd6175454ca4a432a7730687"
+    },
+    "core/tesseract-core-simd-lstm.wasm": {
+      "bytes": 2871377,
+      "sha256": "187d76742dfc0d8929f0b49a619f145bb6370730776c7bd0d3e20c6b2098808d"
+    },
+    "core/tesseract-core-simd-lstm.wasm.js": {
+      "bytes": 3954569,
+      "sha256": "9d7c43fb206dc9f48475228b46bf35f888fa9e6259da2e67d5a75c77049f2dc7"
+    },
+    "jsQR.js": {
+      "bytes": 256885,
+      "sha256": "bc40c8a15196236b2314db0856f72ca0b49980cd5413b8c852a7349f5fee0859"
+    },
+    "lang/chi_sim.traineddata.gz": {
+      "bytes": 1718768,
+      "sha256": "b8a23f10c7de500891eb458a8adc9cc58ab7f242f08b7d149f5e9aea4ad5db7c"
+    },
+    "lang/eng.traineddata.gz": {
+      "bytes": 2952873,
+      "sha256": "45b4cb346724ac1774f1c36f42f182b887bcdb28ebe63e6fff90ac41f3fcff91"
+    },
+    "licenses/chi_sim-package.json": {
+      "bytes": 534,
+      "sha256": "cc520ba9b3ced7b1fb69d7d4c0cea43b3dc9eb5e0814662e9be028c8a5cc36c6"
+    },
+    "licenses/eng-package.json": {
+      "bytes": 530,
+      "sha256": "b603509212196b5d09e10519bf252c1e344b79704d065e0d62886846f8554c80"
+    },
+    "licenses/jsqr.txt": {
+      "bytes": 11358,
+      "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08"
+    },
+    "licenses/postal-mime.txt": {
+      "bytes": 935,
+      "sha256": "831ad54932cb62a1fe0827ae7218a213875f1ddbd629c6432860928ba1c5234d"
+    },
+    "licenses/tessdata.txt": {
+      "bytes": 11357,
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    "licenses/tesseract-core.txt": {
+      "bytes": 11358,
+      "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08"
+    },
+    "licenses/tesseract-js.txt": {
+      "bytes": 11357,
+      "sha256": "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1"
+    },
+    "postal-mime/address-parser.js": {
+      "bytes": 15096,
+      "sha256": "893f32e8d45a9c571a403eb83bb7896e78bdd08996a2fad5ee7cf77c89517f74"
+    },
+    "postal-mime/base64-decoder.js": {
+      "bytes": 1670,
+      "sha256": "a4dc92b730d7917eaab7057c680e7297007371ce914231b8239262e0fd9ea358"
+    },
+    "postal-mime/base64-encoder.js": {
+      "bytes": 3256,
+      "sha256": "71161ff0ab6bedf58a047d3fc5631b50d5f60655938a418d9f49cac75bc01251"
+    },
+    "postal-mime/decode-strings.js": {
+      "bytes": 16179,
+      "sha256": "71e2890cd6c7ff8142eba5b1f7d400415a62791a26388820892573a35ecb814f"
+    },
+    "postal-mime/html-entities.js": {
+      "bytes": 60555,
+      "sha256": "9a81283d735d6c150b0f363d661458a8f15a225d46c48a54b74bae8f5ed61c28"
+    },
+    "postal-mime/mime-node.js": {
+      "bytes": 20904,
+      "sha256": "ceb3c4f9b6b42bb5b754c5b380df2aefa8edb566138da28b883ff6a5d89afe1e"
+    },
+    "postal-mime/package.json": {
+      "bytes": 18,
+      "sha256": "1239d4d885dcad42201a27ed9324f8f0f760b78700d8db9ced39a511cffe7eae"
+    },
+    "postal-mime/pass-through-decoder.js": {
+      "bytes": 459,
+      "sha256": "f4634372883fae15571f79b16f13ded743006fb3fc9c8d4e68e785f36c72dc44"
+    },
+    "postal-mime/postal-mime.js": {
+      "bytes": 24733,
+      "sha256": "e87743ef76b041fc7245074b304cc5d22b527f058cd6bb08df4622479ca76b6c"
+    },
+    "postal-mime/qp-decoder.js": {
+      "bytes": 2773,
+      "sha256": "680c6278d36287773cae17720a9af902ea0f8764233733a8c9b767cfd6eadbb7"
+    },
+    "postal-mime/text-format.js": {
+      "bytes": 10413,
+      "sha256": "88de6ee6bde6cb5ce170197acd7af3090d0ddfd6eab01a6e8ae670564e5e3d7d"
+    },
+    "tesseract.esm.min.js": {
+      "bytes": 63220,
+      "sha256": "da6267cfe5036ae718a59eece3b5744a4655b0b8faa9f16259362b783d74c9bb"
+    },
+    "tesseract.min.js.LICENSE.txt": {
+      "bytes": 149,
+      "sha256": "cdf963ced7d25a0f98901a547647b4d6e2dbe0197fd78c87a059a87b0e542fe2"
+    },
+    "worker.min.js": {
+      "bytes": 111162,
+      "sha256": "38645599043239c0eb6db08a6504a92dcdc292200535f3e9339cd77c4443b842"
+    },
+    "worker.min.js.LICENSE.txt": {
+      "bytes": 466,
+      "sha256": "45f54171aeaa1d10c0c1a66f374b7bba1f02472b1487fbe892eec04f840002ac"
+    }
+  }
+}

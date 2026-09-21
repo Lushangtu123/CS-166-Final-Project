@@ -1,0 +1,13 @@
+{
+  "name": "phishguard-vision-assets",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "tesseract.js": "6.0.1",
+    "tesseract.js-core": "6.0.0",
+    "jsqr": "1.4.0",
+    "postal-mime": "3.0.0",
+    "@tesseract.js-data/eng": "1.0.0",
+    "@tesseract.js-data/chi_sim": "1.0.0"
+  }
+}

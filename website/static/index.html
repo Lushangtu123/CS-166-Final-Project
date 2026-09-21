@@ -17,7 +17,7 @@
       document.documentElement.dataset.themeMode = stored || 'auto';
     })();
   </script>
-  <link rel="stylesheet" href="/static/style.css?v=25" />
+  <link rel="stylesheet" href="/static/style.css?v=26" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -423,9 +423,9 @@
 
       <div class="content-input-card">
         <div class="raw-email-upload-row">
-          <label class="content-label" for="raw-email-file">Full email file (recommended)</label>
-          <input id="raw-email-file" class="raw-email-file" type="file" accept=".eml,message/rfc822,text/plain" />
-          <div id="raw-email-status" class="raw-email-status" role="status">Upload the original .eml file (maximum 60,000 bytes) to preserve MIME encodings and analyze its headers, body, links, and attachment metadata. Manual fields are ignored while a file is selected.</div>
+          <label class="content-label" for="raw-email-file">Email or image file</label>
+          <input id="raw-email-file" class="raw-email-file" type="file" accept=".eml,.png,.jpg,.jpeg,.webp,message/rfc822,image/png,image/jpeg,image/webp" />
+          <div id="raw-email-status" class="raw-email-status" role="status">Upload an .eml email or PNG/JPEG/WebP image, up to 2 MiB. QR and English/Chinese text recognition runs in your browser (up to four images). Email images are extracted locally; remote images are not loaded. Manual fields are ignored while a file is selected.</div>
         </div>
         <div class="content-input-subject-row">
           <label class="content-label" for="content-subject">Subject</label>
@@ -463,6 +463,7 @@
           </button>
           <button class="btn-ghost" onclick="clearContent()">Clear</button>
         </div>
+        <p id="visual-progress" class="raw-email-status" role="status"></p><button id="cancel-content-scan" type="button" class="btn btn-ghost">Cancel scan</button>
         <p id="content-error" class="request-error hidden" role="alert"></p>
 
         <div class="quick-examples">
@@ -475,6 +476,7 @@
 
       <!-- Content Result Area -->
       <div id="content-result-area" class="content-result-area hidden">
+        <section id="visual-evidence" class="visual-evidence" hidden></section>
 
         <!-- Risk Banner -->
         <div class="content-risk-banner" id="content-risk-banner">
@@ -803,7 +805,8 @@
   </div>
 </footer>
 
-<script src="/static/app.js?v=26"></script>
+<script src="/static/vision.js?v=1"></script>
+<script src="/static/app.js?v=27"></script>
 <!-- Vercel's same-origin page-view and web-vitals collectors. No email input is sent as a custom event. -->
 <script>
   window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };

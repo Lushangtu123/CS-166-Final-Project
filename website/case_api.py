@@ -15,6 +15,7 @@ from starlette.concurrency import run_in_threadpool
 
 from case_store import CaseStore, CaseConflict, CaseInvalid, CaseNotFound, RISKS, STATUSES
 from case_cloud import UpstashCaseStore, CaseUnavailable
+from visual_evidence import VisualRequest
 
 
 @dataclass
@@ -153,6 +154,10 @@ def make_case_router(analyze):
         if not raw.strip():
             raise HTTPException(400, 'Email file is empty')
         return await create(request, access, CaseInput(), bytes(raw))
+
+    @router.post('/visual', status_code=201)
+    async def create_visual(request: Request, payload: VisualRequest, access=Depends(identity)):
+        return await create(request, access, payload, None)
 
     @router.get('/{case_id}')
     async def get(case_id: str, access=Depends(identity)):

@@ -16,11 +16,11 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 const caseValue = () => ({id: 'case-1', title: '<img src=x onerror=alert(1)>', risk: 'high', status: 'pending', verdict: null, version: 1,
   created_by: 'alice', created_at: '2026-09-20T00:00:00Z', source: {subject: 'Synthetic', body: '<script>bad()</script>'},
   analysis: {extra_indicators: ['<iframe src=x>']}, provenance: {}, events: [{actor: 'alice', action: 'created', happened_at: '2026-09-20T00:00:00Z', changes: {}, note: '<svg onload=bad()>'}]});
-function setup(handler) {
+function setup(handler, vision = {cancel() {}, render() {}}) {
   const elements = new Map(), calls = [];
   const el = id => { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); };
   const source = readFileSync(new URL('./cases.js', import.meta.url), 'utf8');
-  vm.runInNewContext(source, {document: {getElementById: el, createElement: () => new Element()}, window: {addEventListener() {}},
+  vm.runInNewContext(source, {document: {getElementById: el, createElement: () => new Element()}, window: {addEventListener() {}, PhishGuardVision: vision},
     URLSearchParams, crypto: {randomUUID: () => 'synthetic-uuid'}, fetch: async (url, options) => { calls.push({url, options}); const result = await handler(url, options); return {ok: result.status < 400, status: result.status, json: async () => result.data}; }});
   const fire = async (id, name = 'click') => { el(id).listeners[name]({preventDefault() {}, submitter: el(id + '-submit'), currentTarget: el(id)}); await tick(); };
   const login = async () => { el('token').value = 'synthetic-access-token-at-least-32-characters'; await fire('login-form', 'submit'); };
@@ -81,4 +81,26 @@ test('selected case stays visibly selected after switching cases and refreshing 
   assert.equal(ui.el('case-list').children[1].attrs['aria-pressed'], 'true');
   await ui.fire('refresh');
   assert.equal(ui.el('case-list').children[1].attrs['aria-pressed'], 'true');
+});
+
+
+test('image case retry reuses extracted evidence and its idempotency key', async () => {
+  let scans=0;
+  const vision={cancel(){},render(){},async recognize(){scans++;return {observations:[{ocr_text:'Synthetic OCR'}],warnings:[]};}};
+  const ui=setup(async(url,opts)=>opts.method==='POST'?{status:503,data:{detail:'Unavailable'}}:standard(url),vision);
+  await ui.login(); ui.el('eml').files=[{name:'synthetic.png',size:100}];
+  await ui.fire('create-form','submit'); await ui.fire('create-form','submit');
+  const posts=ui.calls.filter(c=>c.options.method==='POST');
+  assert.equal(scans,1);assert.equal(posts.length,2);assert.equal(posts[0].url,'/api/cases/visual');
+  assert.equal(posts[0].options.body,posts[1].options.body);
+  assert.equal(posts[0].options.headers['Idempotency-Key'],posts[1].options.headers['Idempotency-Key']);
+});
+test('signout during OCR prevents late extraction from posting a case', async()=>{
+  let release,cancelled=false;
+  const ui=setup(standard,{render(){},cancel(){cancelled=true;},recognize:()=>new Promise(resolve=>{release=resolve;})});
+  await ui.login();ui.el('eml').files=[{name:'synthetic.png',size:100}];
+  await ui.fire('create-form','submit');await ui.fire('logout');
+  release({observations:[],warnings:[]});await tick();
+  assert.equal(cancelled,true);assert.equal(ui.el('workspace').hidden,true);
+  assert.equal(ui.calls.filter(c=>c.options.method==='POST').length,0);
 });

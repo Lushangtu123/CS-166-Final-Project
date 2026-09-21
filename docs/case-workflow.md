@@ -4,7 +4,7 @@ Use the homepage **Case login** button (also visible on mobile) to open
 `https://phishguard-email-analyzer.vercel.app/cases` and sign in with your
 individual analyst token. Bookmark this stable address, not a deployment-specific
 Vercel URL. For local development, open `/cases` on the local server. Create a case from
-subject/body or an original `.eml` file. Creation saves extracted text and detection
+subject/body, an original `.eml` file, or a PNG/JPEG/WebP image. Creation saves extracted text and detection
 evidence; the public analyzer does not automatically create cases. Everyone
 configured for this workspace can read and review its cases.
 
@@ -89,3 +89,22 @@ It creates only synthetic records under a unique one-hour namespace. For end-to-
 Vercel validation, use an individual test analyst and synthetic mail, verify
 creation/reload across invocations, second-analyst review, stale-version rejection,
 closure/reopening and unauthenticated denial. Keep test data out of real cases.
+
+## Visual evidence
+
+Email/image uploads up to 2 MiB run QR and English/Simplified Chinese OCR in the
+browser (four images maximum). The server recomputes risk from extracted strings.
+The **Image & QR evidence** section shows payloads, OCR text/confidence, statuses
+and warnings; all links remain plain text. Original EML bytes remain authoritative
+for headers/body. Recognition cannot lower risk from the original message.
+
+Client extraction is marked `browser_extracted_unverified`: the server has not
+independently verified pixels or OCR output, and an image digest is not proof of
+correct recognition. Saved cases include extracted text and provenance, never
+original image attachments. For visual submissions, saved HTML bodies are converted
+to visible text and inline image data URIs are removed after analysis. Original
+EML bytes are sent to the server for message parsing but are not retained.
+OCR/QR does not certify image safety or inspect malware,
+all animation frames or remote images. Review limitations before closing a case.
+Refreshing/signing out clears the current scan and token. Retrying a failed save
+uses the same idempotency key and recognized evidence until the input changes.

@@ -37,3 +37,6 @@ build/
 *.sqlite3
 *.sqlite3-wal
 *.sqlite3-shm
+
+# Browser recognition asset tooling (served artifacts are checked in)
+node_modules/

@@ -4,6 +4,7 @@
 
 let metricsChart = null;
 let _rawEmailSource = '';
+let _visualFile = null;
 let _rawReadId = 0;
 let _rawReadPending = false;
 let _senderRequestId = 0;
@@ -63,6 +64,10 @@ function invalidateSender() {
 }
 
 function invalidateContent() {
+  window.PhishGuardVision?.cancel();
+  window.PhishGuardVision?.render(document.getElementById('visual-evidence'), null);
+  const progress = document.getElementById('visual-progress');
+  if (progress) progress.textContent = '';
   _contentRequestId++;
   document.getElementById('content-result-area').classList.add('hidden');
   document.getElementById('content-loading-area').classList.add('hidden');
@@ -75,6 +80,8 @@ function clearRawEmail() {
   _rawReadId++;
   _rawReadPending = false;
   _rawEmailSource = '';
+  _visualFile = null;
+  window.PhishGuardVision?.cancel();
   document.getElementById('raw-email-file').value = '';
   document.getElementById('raw-email-status').textContent = '';
   ['content-subject', 'content-body'].forEach(id => {
@@ -310,6 +317,7 @@ function setupInputEvents() {
   ['content-subject', 'content-body'].forEach(id => {
     document.getElementById(id).addEventListener('input', invalidateContent);
   });
+  document.getElementById('cancel-content-scan')?.addEventListener('click', invalidateContent);
   const rawInput = document.getElementById('raw-email-file');
   if (rawInput) {
     rawInput.addEventListener('change', async event => {
@@ -317,22 +325,23 @@ function setupInputEvents() {
       const readId = ++_rawReadId;
       const file = event.target.files?.[0];
       _rawEmailSource = '';
+      _visualFile = null;
       _rawReadPending = !!file;
       ['content-subject', 'content-body'].forEach(id => {
         document.getElementById(id).disabled = !!file;
       });
       document.getElementById('raw-email-status').textContent = file ? `Reading ${file.name}…` : '';
       try {
-        if (file?.size > 60000) {
+        if (file?.size > 2 * 1024 * 1024) {
           clearRawEmail();
-          setError('content-error', 'Email file exceeds the 60,000-byte limit.');
+          setError('content-error', 'File exceeds the 2 MiB limit.');
           return;
         }
         const source = file ? await file.arrayBuffer() : '';
         if (readId !== _rawReadId) return;
-        if (file && source.byteLength > 60000) {
+        if (file && source.byteLength > 2 * 1024 * 1024) {
           clearRawEmail();
-          setError('content-error', 'Email file exceeds the 60,000-byte limit.');
+          setError('content-error', 'File exceeds the 2 MiB limit.');
           return;
         }
         if (file && new Uint8Array(source).every(byte => [9, 10, 13, 32].includes(byte))) {
@@ -341,8 +350,9 @@ function setupInputEvents() {
           return;
         }
         _rawEmailSource = source;
+        _visualFile = file || null;
         document.getElementById('raw-email-status').textContent = file
-          ? `${file.name} loaded — the complete file will be analyzed; manual subject and body are ignored.` : '';
+          ? `${file.name} loaded — QR and English/Chinese text recognition will run when you analyze. Manual fields are ignored.` : '';
       } catch (_error) {
         if (readId !== _rawReadId) return;
         clearRawEmail();
@@ -1052,17 +1062,29 @@ async function runContentAnalysis() {
   document.getElementById('content-loading-area').classList.remove('hidden');
 
   try {
-    const data = _rawEmailSource
-      ? await postRequest('/api/analyze-eml', _rawEmailSource, 'message/rfc822')
-      : await postJSON('/api/analyze-content', buildContentPayload(subject, body, ''));
+    let data;
+    if (_visualFile) {
+      if (!window.PhishGuardVision) throw new Error('Image recognition is unavailable. Reload the page.');
+      const payload = await window.PhishGuardVision.recognize(_visualFile, message => {
+        if (requestId === _contentRequestId) document.getElementById('visual-progress').textContent = message;
+      });
+      if (requestId !== _contentRequestId) return;
+      data = await postJSON('/api/analyze-visual', payload);
+    } else {
+      data = _rawEmailSource
+        ? await postRequest('/api/analyze-eml', _rawEmailSource, 'message/rfc822')
+        : await postJSON('/api/analyze-content', buildContentPayload(subject, body, ''));
+    }
     if (requestId !== _contentRequestId) return;
     renderContentResult(data);
+    window.PhishGuardVision?.render(document.getElementById('visual-evidence'), data.visual_analysis);
   } catch (e) {
     if (requestId === _contentRequestId) setError('content-error', e.message);
   } finally {
     if (requestId === _contentRequestId) {
       btn.disabled = false;
       btnText.textContent = 'Analyze Content';
+      document.getElementById('visual-progress').textContent = '';
       document.getElementById('content-loading-area').classList.add('hidden');
     }
   }

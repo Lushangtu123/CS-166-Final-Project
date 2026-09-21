@@ -44,7 +44,11 @@ function loadFrontend(overrides = {}) {
     querySelector: () => new FakeElement(),
     querySelectorAll: () => [],
   };
-  const window = { addEventListener() {}, scrollY: 0 };
+  const window = { addEventListener() {}, scrollY: 0,
+    PhishGuardVision: { cancel() {}, render() {}, async recognize(file) {
+      return {eml_base64: Buffer.from(await file.arrayBuffer()).toString('base64'), observations: [], warnings: []};
+    }},
+  };
   const context = vm.createContext({ document, window, console, setTimeout: fn => fn(), ...overrides });
   const source = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
   vm.runInContext(source, context);
@@ -521,7 +525,9 @@ test('upload mode excludes manual fields and restores editing when cleared', asy
   assert.equal(elements.get('content-subject').disabled, true);
   assert.match(elements.get('raw-email-status').textContent, /manual.*ignored/i);
   await context.runContentAnalysis();
-  assert.deepEqual(new Uint8Array(submitted), new Uint8Array(raw));
+  assert.deepEqual(Buffer.from(submitted.eml_base64, 'base64'), Buffer.from(raw));
+  assert.equal(submitted.body, undefined);
+  assert.equal(submitted.subject, undefined);
   context.clearRawEmail();
   assert.equal(elements.get('content-body').disabled, false);
   assert.equal(elements.get('content-subject').disabled, false);
@@ -540,7 +546,7 @@ test('an empty upload restores manual editing and reports an input error', async
   assert.equal(elements.get('raw-email-status').textContent, '');
 });
 
-test('uploaded non-UTF8 bytes reach the binary endpoint unchanged', async () => {
+test('uploaded non-UTF8 bytes survive the visual endpoint base64 envelope', async () => {
   let submitted;
   const { context, elements } = loadFrontend({ fetch: async (url, options) => {
     submitted = { url, ...options };
@@ -554,9 +560,9 @@ test('uploaded non-UTF8 bytes reach the binary endpoint unchanged', async () => 
     text: async () => { throw new Error('Must not decode original bytes'); },
   }] } });
   await context.runContentAnalysis();
-  assert.equal(submitted?.url, '/api/analyze-eml');
-  assert.equal(submitted.headers['Content-Type'], 'message/rfc822');
-  assert.deepEqual(new Uint8Array(submitted.body), bytes);
+  assert.equal(submitted?.url, '/api/analyze-visual');
+  assert.equal(submitted.headers['Content-Type'], 'application/json');
+  assert.deepEqual(Buffer.from(JSON.parse(submitted.body).eml_base64, 'base64'), Buffer.from(bytes));
 });
 
 test('oversized email is rejected before reading and restores manual input', async () => {
@@ -564,11 +570,11 @@ test('oversized email is rejected before reading and restores manual input', asy
   const { context, elements } = loadFrontend();
   context.setupInputEvents();
   await elements.get('raw-email-file').listeners.change({ target: { files: [{
-    name: 'large.eml', size: 60001, arrayBuffer: async () => { read = true; return new ArrayBuffer(60001); },
+    name: 'large.eml', size: 2 * 1024 * 1024 + 1, arrayBuffer: async () => { read = true; return new ArrayBuffer(2 * 1024 * 1024 + 1); },
   }] } });
   assert.equal(read, false);
   assert.equal(elements.get('content-body').disabled, false);
-  assert.match(elements.get('content-error').textContent, /60,000-byte limit/);
+  assert.match(elements.get('content-error').textContent, /2 MiB limit/);
 });
 
 test('network and unreadable service responses remain request errors', async () => {

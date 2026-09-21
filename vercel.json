@@ -6,7 +6,7 @@
     "app.py": {
       "maxDuration": 30,
       "includeFiles": "{website/model/**,website/data/**}",
-      "excludeFiles": "{docs/**,website/tests/**,phishing-detection/**,**/*.test.py,**/*.test.mjs}"
+      "excludeFiles": "{docs/**,website/tests/**,website/tools/vision-assets/**,phishing-detection/**,**/*.test.py,**/*.test.mjs}"
     }
   },
   "env": {

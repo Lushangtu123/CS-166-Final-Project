@@ -53,6 +53,9 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Verify pinned recognition assets
+        run: node website/tools/vision-assets/verify.mjs
+
       - name: Run frontend tests
         run: node --test website/static/*.test.mjs
 
@@ -61,3 +64,7 @@ jobs:
           node --check website/static/app.js
           node --check website/static/cases.js
           node --check website/static/cases-theme.js
+          node --check website/static/vision.js
+          node --check website/static/vision-core.mjs
+          node --check website/static/vision-email.mjs
+          node --check website/static/vision-worker.mjs

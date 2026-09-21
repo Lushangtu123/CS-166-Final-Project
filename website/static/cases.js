@@ -22,6 +22,9 @@
     }
   }
   function signOut() {
+    window.PhishGuardVision?.cancel();
+    $('vision-progress').textContent = '';
+    $('visual-evidence').replaceChildren(); $('visual-evidence').hidden = true;
     token = ''; epoch++; listEpoch++; detailEpoch++; selected = null; creation = null;
     $('token').value = ''; $('workspace').hidden = true; $('session').hidden = true; $('login-panel').hidden = false;
     $('case-list').replaceChildren(); $('history').replaceChildren(); $('evidence').replaceChildren();
@@ -82,6 +85,7 @@
     $('case-meta').textContent = `${value.id} · Revision ${value.version} · Created by ${value.created_by}`;
     $('badges').replaceChildren(riskBadge(value.risk), ...[labels[value.status], value.verdict || 'Not reviewed'].map(text => node('span', text, 'badge')));
     const analysis = value.analysis;
+    window.PhishGuardVision?.render($('visual-evidence'), analysis.visual_analysis);
     $('analysis-summary').textContent = `${analysis.risk_label || value.risk}. ${analysis.analysis_complete === false ? 'Analysis is incomplete; inspect the warnings before deciding.' : 'Review the evidence before making a decision.'}`;
     $('evidence').replaceChildren();
     for (const evidence of [...(analysis.analysis_warnings || []), ...(analysis.extra_indicators || [])]) {
@@ -121,23 +125,29 @@
   });
   $('logout').addEventListener('click', signOut);
   window.addEventListener('pagehide', signOut);
-  $('create-form').addEventListener('input', () => { creation = null; inputVersion++; });
-  $('eml').addEventListener('change', () => { creation = null; const file = $('eml').files[0]; $('subject').disabled = $('body').disabled = Boolean(file); });
+  $('create-form').addEventListener('input', () => { creation = null; inputVersion++; window.PhishGuardVision?.cancel(); $('vision-progress').textContent = ''; });
+  $('eml').addEventListener('change', () => { creation = null; inputVersion++; window.PhishGuardVision?.cancel(); const file = $('eml').files[0]; $('subject').disabled = $('body').disabled = Boolean(file); });
+  $('cancel-vision').addEventListener('click', () => { inputVersion++; creation = null; window.PhishGuardVision?.cancel(); $('vision-progress').textContent = ''; });
   $('create-form').addEventListener('submit', event => {
     event.preventDefault(); const current = epoch;
     action(event.submitter, async () => {
       if (!creation) {
         const snapshot = inputVersion, file = $('eml').files[0];
-        if (file && (!file.size || file.size > 60000)) throw new Error('Choose a nonempty .eml file up to 60,000 bytes.');
-        const body = file ? await file.arrayBuffer() : JSON.stringify({subject: $('subject').value, body: $('body').value});
+        if (file && (!file.size || file.size > 2 * 1024 * 1024)) throw new Error('Choose a nonempty email or image file up to 2 MiB.');
+        if (file && !window.PhishGuardVision) throw new Error('Image recognition is unavailable. Reload the page.');
+        const payload = file ? await window.PhishGuardVision.recognize(file, message => {
+          if (current === epoch && snapshot === inputVersion) $('vision-progress').textContent = message;
+        }) : {subject: $('subject').value, body: $('body').value};
+        const body = JSON.stringify(payload);
         if (current !== epoch) return;
         if (snapshot !== inputVersion) throw new Error('Input changed while reading the file. Submit again.');
         creation = {key: crypto.randomUUID(), body, file: Boolean(file)};
       }
       const submitted = creation;
-      const value = await api(submitted.file ? '/eml' : '', {method: 'POST', headers: {'Content-Type': submitted.file ? 'message/rfc822' : 'application/json', 'Idempotency-Key': submitted.key}, body: submitted.body});
+      const value = await api(submitted.file ? '/visual' : '', {method: 'POST', headers: {'Content-Type': 'application/json', 'Idempotency-Key': submitted.key}, body: submitted.body});
       // Do not clear input edited while this submission was in flight.
       if (creation === submitted) { creation = null; $('create-form').reset(); $('subject').disabled = $('body').disabled = false; }
+      $('vision-progress').textContent = '';
       detailEpoch++; renderCase(value); notice('Case saved.'); await loadList();
     });
   });

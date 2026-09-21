@@ -128,11 +128,10 @@ uploaded email, and analysis waits while a selected file is still being read.
 `POST /api/analyze-content` accepts `subject` and `body`, or `raw_email` for a
 complete message represented as Unicode text. For original files, use
 `POST /api/analyze-eml` with the unchanged bytes and `Content-Type: message/rfc822`
-(or `application/octet-stream`). The browser uses this byte-preserving endpoint.
+(or `application/octet-stream`). API-only clients can use this byte-preserving endpoint. The browser uses the visual submission route described below.
 The manual `subject` field is always literal text; HTML parsing applies only to
 the manual body. A MIME subject is likewise treated as literal text.
-Uploads are limited to **60,000 bytes**, checked both before client-side reading
-and while the server consumes the request stream. No file is saved or forwarded
+The legacy binary endpoint is limited to **60,000 bytes**, checked while the server consumes the request stream. No file is saved or forwarded
 to a third-party analysis service.
 
 When `raw_email` is non-empty, the file's subject and decoded body are authoritative;
@@ -219,8 +218,9 @@ becomes Unknown if no other risk was found. Text-rich mail with ordinary remote
 imagery keeps the verdict from the inspected text but is explicitly marked
 incomplete; a Safe label then says it applies only to inspected text. This
 exception avoids treating every decorative logo as an undetermined message.
-The detector does not decode embedded images, scan QR codes, perform OCR, or
-fetch remote images; remote destinations still receive the existing URL checks.
+API-only MIME analysis does not decode image pixels. The browser can supplement it
+with QR/OCR extraction (see below). Neither path fetches remote images; remote
+destinations still receive the existing URL checks.
 `cid:` and image references without a usable remote base are reported in
 `unresolved_image_coverage` (capped at 20), with their own incomplete-analysis
 warning. The detector does not assume these image bytes are available merely
@@ -961,3 +961,39 @@ human verdicts, status changes and operation history. Vercel requires persistent
 Upstash storage; the feature is disabled until configured. See
 [case workflow and deployment instructions](docs/case-workflow.md) for access,
 limits, retention and production setup.
+
+## Image and QR recognition
+
+On **Email Content** or **Case workspace → New case**, select a PNG/JPEG/WebP
+image or an original `.eml` file. The browser runs self-hosted jsQR and Tesseract.js
+(English + Simplified Chinese), and extracts EML images with postal-mime. Results
+show each image's QR payloads, OCR text, OCR confidence and extraction warnings.
+Decoded links are plain text; the app never opens them. See
+[asset sources and licenses](website/tools/vision-assets/README.md).
+
+Limits: 2 MiB input file, four images per submission, 4,096 pixels per side and
+8 megapixels before decoding, eight QR codes per image, 6,000 OCR characters per
+image. Recognition resizes images above 2,000 pixels and reports this. One job has
+a 150-second deadline; OCR initialization/recognition have their own deadlines.
+Cancel, clear, file changes and case sign-out discard pending results. Recent
+browsers supporting Workers, OffscreenCanvas and WebAssembly are required.
+Animated WebP is rejected; PNG animation is not fully inspected. Remote images,
+SVG/GIF/PDF, attachment malware and general visual meaning are outside scope.
+
+`POST /api/analyze-visual` and authenticated `POST /api/cases/visual` accept
+`subject`, `body`, optional original bytes in `eml_base64`, and bounded
+`observations`/`warnings`. Each observation includes `name`, `source`, `mime_type`,
+`sha256`, `status`, `qr_payloads`, `ocr_text`, `ocr_confidence`, and `warnings`.
+Their request limit is 3 MiB; other endpoint limits are unchanged. The server
+rescans extracted strings as **literal text**, preserves original-message risk,
+and marks browser extraction `browser_extracted_unverified`. Digests identify
+client-observed bytes; they do not authenticate OCR output. Server-produced risk
+cannot be overridden by client verdict fields. No image-safety guarantee is made,
+even when OCR/QR finds no indicators; visual submissions remain incomplete.
+
+Original EML bytes are decoded server-side with a shared 60,000-character text
+budget; truncation is reported. The UI never converts EML bytes through UTF-8
+before transmission. Original image/attachment bytes are not retained in cases;
+extracted visual evidence, its provenance and the input digest are retained.
+Submitting a public analysis does not create a case. API callers without a browser
+must provide their own extraction or use the existing text/MIME-only routes.

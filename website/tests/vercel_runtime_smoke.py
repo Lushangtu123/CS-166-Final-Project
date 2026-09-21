@@ -50,6 +50,14 @@ async def main() -> None:
             ),
         ))
         analysis = json.loads(response.body)
+        visual_response = await backend.analyze_visual_endpoint(backend.VisualRequest(observations=[{
+            'name': 'synthetic-qr.png', 'mime_type': 'image/png', 'source': 'upload',
+            'sha256': 'a' * 64, 'status': 'processed',
+            'qr_payloads': ['https://paypa1.example/login'],
+        }]))
+        visual = json.loads(visual_response.body)
+        if visual['risk_level'] not in {'high', 'critical'} or visual['analysis_complete']:
+            raise SystemExit('Visual QR evidence was missed or incorrectly marked complete')
         legitimate_controls = []
         for subject, body in (
             (
@@ -123,6 +131,7 @@ async def main() -> None:
             raise SystemExit('Raw MIME uncertain-rendering control was misclassified')
         print(json.dumps({
             "model_loaded": health["content_model_loaded"],
+            "visual_qr_risk_level": visual["risk_level"],
             "model_id": f"sha256:{health['content_model_artifact_sha256'][:12]}",
             "verification_mode": config["verification_mode"],
             "risk_level": analysis["risk_level"],

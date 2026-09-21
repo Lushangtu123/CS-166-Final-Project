@@ -49,6 +49,8 @@ from case_api import build_case_service, make_case_router
 from disposable_registry import REGISTRY_DOMAIN_RE as _REGISTRY_DOMAIN_RE
 from disposable_registry import load_disposable_registry, load_privacy_relay_registry
 from request_limits import RequestBodyLimitMiddleware
+from visual_evidence import (VisualRequest, VISUAL_PATHS, MAX_VISUAL_REQUEST_BYTES,
+                             bound_message_text, merge_visual_findings)
 from language_coverage import (has_substantial_han_text as _has_substantial_han_text,
                                non_latin_script_segments)
 from sender_history import (
@@ -1106,7 +1108,8 @@ allowed_hosts = _build_allowed_hosts(
     os.getenv("CUSTOM_DOMAINS", ""),
 )
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
-app.add_middleware(RequestBodyLimitMiddleware, max_bytes=MAX_REQUEST_BYTES)
+app.add_middleware(RequestBodyLimitMiddleware, max_bytes=MAX_REQUEST_BYTES,
+                   path_limits={path: MAX_VISUAL_REQUEST_BYTES for path in VISUAL_PATHS})
 
 _rate_limit_lock = threading.Lock()
 _rate_limit_buckets: dict[str, deque[float]] = {}
@@ -1177,7 +1180,7 @@ async def security_middleware(request: Request, call_next):
     content_length = request.headers.get("content-length")
     if content_length:
         try:
-            if int(content_length) > MAX_REQUEST_BYTES:
+            if int(content_length) > (MAX_VISUAL_REQUEST_BYTES if request.url.path in VISUAL_PATHS else MAX_REQUEST_BYTES):
                 return _with_security_headers(JSONResponse(
                     status_code=413,
                     content={"detail": "Request body is too large"},
@@ -1221,7 +1224,12 @@ async def security_middleware(request: Request, call_next):
                 },
             ))
 
-    return _with_security_headers(await call_next(request))
+    response = _with_security_headers(await call_next(request))
+    if request.url.path in {'/static/vision-worker.mjs', '/static/vendor/vision/worker.min.js'}:
+        response.headers['Content-Security-Policy'] = (
+            "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; "
+            "connect-src 'self'; worker-src 'self'; object-src 'none'")
+    return response
 
 
 @app.middleware("http")
@@ -1231,7 +1239,7 @@ async def private_case_responses(request: Request, call_next):
         response.headers['Cache-Control'] = 'no-store'
         response.headers['Content-Security-Policy'] = (
             "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; "
-            "connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+            "connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
     return response
 
 
@@ -3286,6 +3294,8 @@ async def _analyze_content(
     structure: dict | None = None,
     *,
     observe_sender_history: bool = True,
+    plain_text: bool = False,
+    allow_empty: bool = False,
 ):
     subject = request.subject.strip()
     body    = request.body.strip()
@@ -3305,12 +3315,13 @@ async def _analyze_content(
         or structure["untrusted_authentication_claims"]
         or structure["parse_warnings"]
     )
-    if not subject and not body and not has_structure:
+    if not subject and not body and not has_structure and not allow_empty:
         raise HTTPException(status_code=400, detail="Subject, body, or message structure is required")
 
     # 1. Rule-based heuristic scan (explainable categories + extra indicators)
     model_view = {}
-    result = analyze_email_content(subject, body, content_parts=structure['content_parts'] if structure else None,
+    result = analyze_email_content(subject, body, content_parts=(structure['content_parts'] if structure else
+                                       [{'content_type': 'text/plain', 'content': body}] if plain_text else None),
                                    _model_view=model_view)
     if model_view.get('mime_alternatives_truncated'):
         result['analysis_warnings'].append(_MIME_ALTERNATIVE_LIMIT_WARNING)
@@ -3526,6 +3537,46 @@ async def _analyze_content(
             result['risk_label'] = 'Analysis Incomplete — Risk Undetermined'
             result['combined_phishing_score'] = None
     return JSONResponse(result)
+
+
+@app.post('/api/analyze-visual')
+async def analyze_visual_endpoint(payload: VisualRequest):
+    return await _analyze_visual(payload)
+
+
+# Do not echo private image text/base64 (or non-JSON NaN values) in validation errors.
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
+
+
+@app.exception_handler(RequestValidationError)
+async def safe_visual_validation(request, exc):
+    if request.url.path in VISUAL_PATHS:
+        return JSONResponse(status_code=422, content={'detail': 'Invalid image evidence or email input. Check file size and recognition limits.'})
+    return await request_validation_exception_handler(request, exc)
+
+
+async def _analyze_visual(payload, structure=None, *, observe_sender_history=True):
+    raw = payload.eml_bytes()
+    if structure is None and raw is not None:
+        structure = bound_message_text(analyze_raw_email(raw, trusted_authserv_ids=SETTINGS.trusted_authserv_ids))
+    if not (raw or payload.subject.strip() or payload.body.strip() or payload.observations or payload.warnings):
+        raise HTTPException(400, 'Image evidence or an email is required')
+    base = json.loads((await _analyze_content(
+        ContentRequest(subject=payload.subject, body=payload.body), structure,
+        observe_sender_history=observe_sender_history, allow_empty=True,
+    )).body)
+    findings = []
+    for item in payload.observations:
+        # Treat extracted strings as text, never as an HTML document or a URL to fetch.
+        text = '\n'.join([item.ocr_text, *dict.fromkeys(item.qr_payloads)])
+        finding = json.loads((await _analyze_content(
+            ContentRequest(body=text), observe_sender_history=False,
+            plain_text=True, allow_empty=True,
+        )).body)
+        findings.append(finding)
+    base['input_mode'] = 'raw-email' if raw else 'image-evidence'
+    return JSONResponse(merge_visual_findings(base, payload.observations, findings, payload.warnings))
 
 
 # ── Email Authenticity Verification ──────────────────────────────────────────
@@ -4117,17 +4168,34 @@ def verify_email_endpoint(req: VerifyRequest):
 async def _analyze_case(payload, raw):
     """Capture server evidence once; clients cannot submit or edit detection results."""
     structure = None
-    raw_input = raw if raw is not None else payload.raw_email
+    visual = isinstance(payload, VisualRequest)
+    raw_input = payload.eml_bytes() if visual else raw if raw is not None else payload.raw_email
     if raw_input:
         structure = analyze_raw_email(raw_input, trusted_authserv_ids=SETTINGS.trusted_authserv_ids)
-    response = await _analyze_content(ContentRequest(**payload.model_dump()), structure,
-                                      observe_sender_history=False)
+    if visual:
+        if structure:
+            bound_message_text(structure)
+        response = await _analyze_visual(payload, structure, observe_sender_history=False)
+    else:
+        response = await _analyze_content(ContentRequest(**payload.model_dump()), structure,
+                                         observe_sender_history=False)
     analysis = json.loads(response.body)
     analysis.pop('ml_metrics', None)  # Dataset-wide metrics are not per-message evidence.
     source = {'subject': structure['subject'] if structure else payload.subject.strip(),
               'body': structure['body'] if structure else payload.body.strip(),
               'input_mode': analysis['input_mode']}
-    source['text_truncated'] = len(source['body']) > 60000
+    if visual:
+        # Analyze the original message above, but retain text rather than embedded
+        # image bytes. Plain MIME parts remain literal text, including angle brackets.
+        parts = structure['content_parts'] if structure else [
+            {'content_type': 'text/html', 'content': source['body']}]
+        source['body'] = '\n'.join(_mask_inline_data_payloads(
+            _visible_content_text(part['content']) if part['content_type'] == 'text/html'
+            else part['content']) for part in parts)
+    if visual and not structure and not source['subject'] and payload.observations:
+        source['subject'] = 'Image: ' + payload.observations[0].name
+    source['text_truncated'] = bool(len(source['body']) > 60000 or
+                                    (visual and structure and structure.get('text_truncated')))
     source['body'] = source['body'][:60000]
     digest = hashlib.sha256()
     for path in sorted([*BASE_DIR.glob('*.py'), *(BASE_DIR / 'data').glob('*.json')]):
