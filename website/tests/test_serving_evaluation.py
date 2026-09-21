@@ -1,9 +1,11 @@
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 WEBSITE_DIR = Path(__file__).resolve().parents[1]
@@ -13,8 +15,65 @@ from tools import evaluate_serving_pipeline
 
 
 class ServingEvaluationTests(unittest.TestCase):
+    def test_eml_bytes_are_parsed_without_loading_version_specific_model(self):
+        import app
+        from config import load_settings
+        for charset, body in (
+            ('gb18030', '您的账户存在异常，请立即验证'),
+            ('iso-8859-1', 'Please review the regular project meeting notes. Hébergement.'),
+        ):
+            with self.subTest(charset=charset), tempfile.TemporaryDirectory() as directory:
+                email_file = Path(directory) / 'original.eml'
+                raw = (f'Content-Type: text/plain; charset={charset}\n'
+                       'Content-Transfer-Encoding: 8bit\n\n').encode() + body.encode(charset)
+                email_file.write_bytes(raw)
+                with patch.object(app, '_content_pipeline', None), \
+                        patch.object(app, 'SETTINGS', load_settings({})), \
+                        patch.object(app, 'analyze_raw_email', wraps=app.analyze_raw_email) as parse:
+                    result = evaluate_serving_pipeline.analyze_record({'eml_path': str(email_file)})
+                self.assertEqual(parse.call_args.args[0], raw)
+                self.assertEqual(result['message_structure']['parse_warnings'], [])
+
+    def test_cli_ignores_ambient_trust_and_records_explicit_configuration(self):
+        project_root = WEBSITE_DIR.parent
+        if f'{sys.version_info.major}.{sys.version_info.minor}' != (project_root / '.python-version').read_text().strip():
+            self.skipTest('Committed model integration requires its deployment Python version')
+        raw = ('From: alice@gmail.com\nTo: bob@outlook.com\nSubject: Project update\n'
+               'Authentication-Results: mx.example; dmarc=fail\n\n'
+               'Our project meeting is tomorrow at noon in the library. Please bring your notes '
+               'so we can review the assignment together. Thanks.')
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'synthetic.jsonl'
+            source.write_text(json.dumps({'provider': 'gmail', 'received_at': '2026-08-02',
+                                          'label': 'legitimate', 'raw_email': raw}) + '\n')
+            command = [sys.executable, str(WEBSITE_DIR / 'tools' / 'evaluate_serving_pipeline.py'),
+                       '--input', str(source)]
+            reports = []
+            for ambient, extra in (('', []), ('mx.example', []),
+                                   ('', ['--trusted-authserv-id', 'mx.example'])):
+                completed = subprocess.run(command + extra, cwd=project_root,
+                    env={**os.environ, 'TRUSTED_AUTHSERV_IDS': ambient}, capture_output=True, text=True)
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                reports.append(json.loads(completed.stdout))
+            self.assertEqual(reports[0], reports[1])
+            self.assertEqual(reports[0]['overall']['legitimate_false_alert_rate'], 0.0)
+            self.assertEqual(reports[2]['overall']['legitimate_false_alert_rate'], 1.0)
+            for report, trusted in ((reports[0], []), (reports[2], ['mx.example'])):
+                metadata = report['reproducibility']
+                self.assertEqual(metadata['configuration']['trusted_authserv_ids'], trusted)
+                self.assertFalse(metadata['configuration']['observe_sender_history'])
+                self.assertRegex(metadata['source_sha256'], r'^[0-9a-f]{64}$')
+                self.assertRegex(metadata['git_commit'], r'^[0-9a-f]{40}$')
+                self.assertIsInstance(metadata['git_dirty'], bool)
+                self.assertIn('scikit-learn', metadata['package_versions'])
+                self.assertIn('tldextract', metadata['package_versions'])
+                self.assertNotIn('alice@gmail.com', json.dumps(report))
+
     def test_cli_evaluates_original_eml_bytes(self):
         project_root = WEBSITE_DIR.parent
+        deployment_python = (project_root / '.python-version').read_text().strip()
+        if f'{sys.version_info.major}.{sys.version_info.minor}' != deployment_python:
+            self.skipTest(f'Committed artifact targets Python {deployment_python}')
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'consented-fixture.jsonl'
             email_file = Path(directory) / 'private-message.eml'

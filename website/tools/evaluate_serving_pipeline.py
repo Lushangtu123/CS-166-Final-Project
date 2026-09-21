@@ -1,7 +1,8 @@
 """Evaluate the deployed analysis path on locally supplied, consented JSONL.
 
-Only aggregate counts leave this process. This does not fetch inbox messages,
-train a model, or establish that a cohort is independent of training data.
+Reports contain aggregate results and execution metadata, never message content.
+This does not fetch inbox messages, train a model, or establish that a cohort is
+independent of training data.
 """
 
 from __future__ import annotations
@@ -10,10 +11,14 @@ import argparse
 import asyncio
 from collections import Counter, defaultdict
 from datetime import date
+import hashlib
 import json
 import math
+import os
 from pathlib import Path
+import platform
 import re
+import subprocess
 import sys
 from typing import Callable, Iterable
 from unittest.mock import patch
@@ -202,45 +207,98 @@ def _jsonl_records(path: Path):
                 raise ValueError(f'Line {line_number}: invalid JSON') from None
 
 
+def analyze_record(row: dict) -> dict:
+    """Analyze one validated row using the configured local app, without history writes."""
+    import app
+
+    structure = None
+    if 'eml_path' in row:
+        with Path(row['eml_path']).open('rb') as source:
+            raw = source.read(MAX_EML_BYTES + 1)
+        if len(raw) > MAX_EML_BYTES or not raw.strip():
+            raise ValueError('Email file must contain 1 to 60,000 bytes')
+        structure = app.analyze_raw_email(
+            raw, trusted_authserv_ids=app.SETTINGS.trusted_authserv_ids,
+        )
+        request = app.ContentRequest()
+    else:
+        request = app.ContentRequest(
+            subject=row.get('subject', ''), body=row.get('body', ''),
+            raw_email=row.get('raw_email', ''),
+        )
+    return json.loads(asyncio.run(app._analyze_content(
+        request, structure, observe_sender_history=False,
+    )).body)
+
+
+def _evaluation_metadata(configuration: dict) -> dict:
+    from model_environment import RUNTIME_PACKAGE_NAMES, package_versions
+
+    # Include local edits and the registries, without publishing source or mail.
+    sources = sorted(WEBSITE_DIR.glob('*.py')) + sorted((WEBSITE_DIR / 'data').glob('*.json'))
+    sources += [Path(__file__).resolve(), PROJECT_ROOT / 'app.py']
+    source_digest = hashlib.sha256()
+    for path in sources:
+        source_digest.update(path.relative_to(PROJECT_ROOT).as_posix().encode() + b'\0')
+        source_digest.update(hashlib.sha256(path.read_bytes()).digest())
+    commit = dirty = None
+    try:
+        commit = subprocess.run(
+            ['git', 'rev-parse', 'HEAD'], cwd=PROJECT_ROOT, check=True,
+            capture_output=True, text=True, timeout=5,
+        ).stdout.strip()
+        dirty = bool(subprocess.run(
+            ['git', 'status', '--porcelain'], cwd=PROJECT_ROOT, check=True,
+            capture_output=True, text=True, timeout=5,
+        ).stdout.strip())
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return {
+        'git_commit': commit,
+        'git_dirty': dirty,
+        'source_sha256': source_digest.hexdigest(),
+        'deployment_profile_sha256': hashlib.sha256((PROJECT_ROOT / 'vercel.json').read_bytes()).hexdigest(),
+        'python_version': platform.python_version(),
+        'platform': {'system': platform.system(), 'machine': platform.machine()},
+        'package_versions': package_versions((*RUNTIME_PACKAGE_NAMES, 'fastapi', 'pydantic', 'tldextract')),
+        'configuration': configuration,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--input', required=True, type=Path,
                         help='Local JSONL file with consented, labeled messages')
+    parser.add_argument('--trusted-authserv-id', action='append', default=[],
+                        help='Explicit trusted authentication service ID; repeat for multiple IDs (default: none)')
     args = parser.parse_args()
+    trusted_ids = sorted({value.strip().lower() for value in args.trusted_authserv_id})
+    if any(not re.fullmatch(r'[a-z0-9._-]{1,253}', value) for value in trusted_ids):
+        parser.error('Trusted authentication service IDs must contain only ASCII letters, digits, dots, underscores or hyphens')
 
     sys.path.insert(0, str(WEBSITE_DIR))
     from content_inference import load_content_pipeline_artifact
-    import app
+    from config import load_settings
 
     profile = json.loads((PROJECT_ROOT / 'vercel.json').read_text(encoding='utf-8'))['env']
+    evaluation_env = {**profile, 'TRUSTED_AUTHSERV_IDS': ','.join(trusted_ids),
+                      'SENDER_HISTORY_ENABLED': 'false'}
+    # Import-time settings must not inherit the invoking shell's trust or services.
+    with patch.dict(os.environ, evaluation_env, clear=True):
+        import app
+    settings = load_settings(evaluation_env)
     model_sha256 = profile['CONTENT_MODEL_ARTIFACT_SHA256'].lower()
     pipeline = load_content_pipeline_artifact(
         PROJECT_ROOT / profile['CONTENT_MODEL_ARTIFACT'], model_sha256,
     )
 
-    def analyze(row: dict) -> dict:
-        if 'eml_path' in row:
-            with Path(row['eml_path']).open('rb') as source:
-                raw = source.read(MAX_EML_BYTES + 1)
-            if len(raw) > MAX_EML_BYTES or not raw.strip():
-                raise ValueError('Email file must contain 1 to 60,000 bytes')
-            structure = app.analyze_raw_email(
-                raw, trusted_authserv_ids=app.SETTINGS.trusted_authserv_ids,
-            )
-            return json.loads(asyncio.run(app._analyze_content(
-                app.ContentRequest(), structure, observe_sender_history=False,
-            )).body)
-        request = app.ContentRequest(
-            subject=row.get('subject', ''), body=row.get('body', ''),
-            raw_email=row.get('raw_email', ''),
-        )
-        return json.loads(asyncio.run(app._analyze_content(
-            request, observe_sender_history=False,
-        )).body)
-
-    with patch.object(app, '_content_pipeline', pipeline):
-        report = evaluate_records(_jsonl_records(args.input), analyze,
+    with patch.object(app, '_content_pipeline', pipeline), patch.object(app, 'SETTINGS', settings):
+        report = evaluate_records(_jsonl_records(args.input), analyze_record,
                                   model_sha256=model_sha256)
+    report['reproducibility'] = _evaluation_metadata({
+        'trusted_authserv_ids': trusted_ids,
+        'observe_sender_history': False,
+    })
     print(json.dumps(report, indent=2, sort_keys=True))
 
 

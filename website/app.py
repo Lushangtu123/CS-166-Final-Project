@@ -3391,6 +3391,7 @@ async def _analyze_content(
         if not bodies:
             ml = {
                 'ml_status': 'unverified_rendering',
+                '_phishing_probability': None,
                 'ml_phishing_probability': None,
                 'ml_legitimate_probability': None,
                 'ml_label': None,
@@ -3404,16 +3405,16 @@ async def _analyze_content(
             predictions = [predict_content(_content_pipeline, model_view['subject'], body,
                                            canonical_text=True) for body in bodies]
             scored = [prediction for prediction in predictions
-                      if prediction['ml_phishing_probability'] is not None]
-            ml = (max(scored, key=lambda prediction: prediction['ml_phishing_probability'])
+                      if prediction['_phishing_probability'] is not None]
+            ml = (max(scored, key=lambda prediction: prediction['_phishing_probability'])
                   if scored else predictions[0])
             if len(views) > 1 and (len(bodies) != len(views)
                                    or len(scored) != len(predictions)):
                 result['analysis_warnings'].append(_MIME_ALTERNATIVE_MODEL_WARNING)
-        result.update(ml)
+        result.update({key: value for key, value in ml.items() if key != '_phishing_probability'})
         result["ml_metrics"] = _content_pipeline["metrics"]
 
-        ml_probability = ml["ml_phishing_probability"]
+        ml_probability = ml['_phishing_probability']
         if ml.get("ml_status") == "insufficient_context":
             result["analysis_warnings"].append(
                 "The message contains too little text for reliable model scoring; "
@@ -3426,9 +3427,7 @@ async def _analyze_content(
             )
 
         result.update(fuse_content_risk(
-            ml_phishing_probability=(
-                None if ml_probability is None else ml_probability / 100.0
-            ),
+            ml_phishing_probability=ml_probability,
             ml_decision_threshold=float(_content_pipeline.get("decision_threshold", 0.5)),
             heuristic_score=result["total_score"],
             minimum_level=result["risk_floor"],

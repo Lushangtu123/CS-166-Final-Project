@@ -327,6 +327,7 @@ class ContentRuleRobustnessTests(unittest.TestCase):
     def test_insufficient_context_keeps_rules_and_marks_clean_result_incomplete(self):
         abstention = {
             "ml_status": "insufficient_context",
+            "_phishing_probability": None,
             "ml_phishing_probability": None,
             "ml_legitimate_probability": None,
             "ml_label": None,
@@ -354,6 +355,7 @@ class ContentRuleRobustnessTests(unittest.TestCase):
     def test_insufficient_context_does_not_erase_independent_link_risk(self):
         abstention = {
             "ml_status": "insufficient_context",
+            "_phishing_probability": None,
             "ml_phishing_probability": None,
             "ml_legitimate_probability": None,
             "ml_label": None,
@@ -380,6 +382,7 @@ class ContentRuleRobustnessTests(unittest.TestCase):
     def test_ml_abstention_keeps_rules_and_marks_clean_result_incomplete(self):
         abstention = {
             "ml_status": "insufficient_feature_coverage",
+            "_phishing_probability": None,
             "ml_phishing_probability": None,
             "ml_legitimate_probability": None,
             "ml_label": None,

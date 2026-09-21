@@ -133,6 +133,7 @@ def predict_content(pipeline: dict, subject: str, body: str, *, canonical_text: 
     ):
         return {
             "ml_status": "insufficient_context",
+            "_phishing_probability": None,
             "ml_phishing_probability": None,
             "ml_legitimate_probability": None,
             "ml_label": None,
@@ -158,6 +159,7 @@ def predict_content(pipeline: dict, subject: str, body: str, *, canonical_text: 
     if features.nnz == 0 or uncovered_body or uncovered_segment:
         return {
             "ml_status": "insufficient_feature_coverage",
+            "_phishing_probability": None,
             "ml_phishing_probability": None,
             "ml_legitimate_probability": None,
             "ml_label": None,
@@ -195,6 +197,8 @@ def predict_content(pipeline: dict, subject: str, body: str, *, canonical_text: 
 
     return {
         "ml_status": "available",
+        # Internal fraction for decisions and MIME ranking; display fields are rounded.
+        "_phishing_probability": phishing_probability,
         "ml_phishing_probability": round(phishing_probability * 100, 1),
         "ml_legitimate_probability": round(legitimate_probability * 100, 1),
         "ml_label": "Likely Phishing" if prediction == 1 else "Likely Legitimate",

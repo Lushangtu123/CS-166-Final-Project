@@ -46,6 +46,7 @@ class HTMLInputCoverageTests(unittest.TestCase):
             captured.append((subject, body))
             return {
                 'ml_status': 'insufficient_context', 'ml_phishing_probability': None,
+                '_phishing_probability': None,
                 'ml_legitimate_probability': None, 'ml_label': None,
                 'ml_prediction': None, 'ml_top_contributors': [],
             }
@@ -67,6 +68,7 @@ class HTMLInputCoverageTests(unittest.TestCase):
                 patch.object(app, 'predict_content') as predict:
             predict.return_value = {
                 'ml_status': 'insufficient_context', 'ml_phishing_probability': None,
+                '_phishing_probability': None,
                 'ml_legitimate_probability': None, 'ml_label': None,
                 'ml_prediction': None, 'ml_top_contributors': [],
             }
@@ -82,6 +84,7 @@ class HTMLInputCoverageTests(unittest.TestCase):
                 patch.object(app, 'predict_content') as predict:
             predict.return_value = {
                 'ml_status': 'insufficient_context', 'ml_phishing_probability': None,
+                '_phishing_probability': None,
                 'ml_legitimate_probability': None, 'ml_label': None,
                 'ml_prediction': None, 'ml_top_contributors': [],
             }
@@ -104,6 +107,7 @@ class HTMLInputCoverageTests(unittest.TestCase):
         )
         prediction = {
             'ml_status': 'available', 'ml_phishing_probability': 90.0,
+            '_phishing_probability': 0.9,
             'ml_legitimate_probability': 10.0, 'ml_label': 'phishing',
             'ml_prediction': 1, 'ml_top_contributors': [],
         }
@@ -128,6 +132,7 @@ class HTMLInputCoverageTests(unittest.TestCase):
         )
         prediction = {
             'ml_status': 'available', 'ml_phishing_probability': 10.0,
+            '_phishing_probability': 0.1,
             'ml_legitimate_probability': 90.0, 'ml_label': 'legitimate',
             'ml_prediction': 0, 'ml_top_contributors': [],
         }

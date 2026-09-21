@@ -382,6 +382,9 @@ recall.
 With no independent evidence, either abstention produces an incomplete
 `unknown` result rather than claiming the email is safe. The UI labels supported
 outputs as a **model risk score**, not a calibrated probability or confidence claim.
+Model classification, MIME-view selection, and final risk fusion use the original
+unrounded model score. API display scores remain rounded to one decimal place;
+rounding cannot change a threshold decision or select a lower-scoring MIME view.
 An uncorroborated model score can still raise a message to High for review, but
 cannot by itself produce Critical. Critical requires corroborating rule,
 sender, or structure evidence, or a sufficiently strong heuristic score. The
@@ -807,11 +810,18 @@ the pinned Python 3.12 environment:
 .venv/bin/python website/tools/evaluate_serving_pipeline.py --input /absolute/path/to/consented-mail.jsonl
 ```
 
+The evaluator uses the committed Vercel profile and ignores ambient application
+environment variables. Authentication service IDs default to an empty trust list.
+Only for mail whose receiving system's header-handling boundary has been verified,
+add `--trusted-authserv-id mx.example` (repeat the flag for multiple IDs).
+This makes the trust decision explicit; the flag does not authenticate the header.
+External sender-history observation remains disabled.
+
 The command loads the digest-verified committed artifact and uses the same
 local analysis path as the API, with external sender-history observation
 disabled. `eml_path` uses the byte-preserving message parser; `raw_email` uses
 the legacy Unicode parser and cannot restore bytes lost during earlier decoding.
-It prints only aggregate counts and rates overall, by provider, by
+It prints aggregate counts and rates overall, by provider, by
 language, by received month, by provider×language, and by provider×month;
 message bodies and sender addresses are not included in the report. Medium,
 High, and Critical are counted as alerts, while Unknown is undetermined and
@@ -821,6 +831,13 @@ false-alert rate, unknown rate, complete rate, and model-available rate. A
 label-specific rate and interval are null when that group has no examples of
 the label. Small groups produce wide intervals, so avoid interpreting a point
 estimate alone as provider or language performance.
+The `reproducibility` section records the effective trust IDs and history policy,
+Git commit and dirty state, source/registry digest, deployment-profile digest,
+Python version, platform, and core inference/parser package versions. The source
+digest includes local edits, so a dirty working tree is not represented solely by
+its last commit. Git fields may be null in an exported source tree without Git.
+This metadata describes the evaluation run, not the original training environment
+or the configuration of a separately deployed service.
 Keep the output local: a small provider×month or provider×language cell can
 still disclose sensitive cohort information if published. The report marks
 temporal isolation `not_verified`: dates alone do not prove training-family
@@ -841,7 +858,10 @@ process. Rules and message-structure analysis remain available without it.
 
 GitHub Actions runs the development suite on both Python 3.12 and 3.13,
 including HTML recovery regressions that must not depend on standard-library
-exceptions. A separate Python 3.12 job installs the root Vercel dependencies,
+exceptions. Original-byte evaluation parsing is tested on both versions without
+loading the committed model. Tests that load that Python 3.12 artifact are skipped
+on incompatible interpreters; the loader's version checks remain enforced.
+A separate Python 3.12 job installs the root Vercel dependencies,
 checks their consistency, verifies the committed model digest, starts the real
 Lite profile with ML enabled, and performs phishing-positive and legitimate-
 negative prediction smoke tests. It also uploads original MIME bytes for a
