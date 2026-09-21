@@ -22,6 +22,25 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-20 17:52 PT] — Record model build dependencies and pin serving versions
+
+### Why
+- The committed text-model artifact records scikit-learn 1.9.0 but predates exact NumPy, SciPy, joblib, and threadpoolctl provenance; a successful load alone cannot establish parity with its original training environment.
+- The serving and local evaluation requirements allowed numerical dependency drift between installations.
+- Real Gmail/Outlook serving performance still needs independently labeled, campaign-separated inbox samples.
+
+### Files changed
+- `requirements.txt` and `website/requirements.txt` — pin the tested core numerical packages; pin pandas in the training requirements.
+- `website/model_environment.py` — provide shared dependency-version capture and serving validation.
+- `website/content_model.py` and `website/content_inference.py` — record versions in new training builds and artifact envelopes; reject recorded version drift when packaging or loading.
+- `website/tests/test_app_security.py` and `website/tests/test_content_corpus.py` — cover versioned round trips, mismatches, legacy metadata, and training-to-inference integration.
+- `README.md` — distinguish tested serving pins from unknown legacy training versions, and document deployment and independent-cohort verification.
+- `CHANGELOG.md` — record this update.
+
+### Effect
+- New builds record Python and six package versions; versioned artifacts reject mismatched serving dependencies. The existing SHA-256-pinned artifact remains loadable without claiming unavailable historical version evidence.
+- Local checks passed: 363 Python tests, 52 frontend tests, the committed-artifact Vercel runtime smoke test, and `pip check`. No real Gmail/Outlook cohort was evaluated.
+
 ## [2026-09-20 16:47 PT] — Score MIME alternatives separately and disclose unverified image/CSS views
 
 ### Why

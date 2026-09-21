@@ -58,6 +58,11 @@ from sklearn.model_selection import (
 from sklearn.naive_bayes import ComplementNB
 from sklearn.pipeline import FeatureUnion, Pipeline
 from sklearn.svm import LinearSVC
+from model_environment import (
+    RUNTIME_PACKAGE_NAMES,
+    package_versions,
+    validate_runtime_package_versions,
+)
 
 # ── Data-source configuration ────────────────────────────────────────────────
 _DEFAULT_DATA_DIR = (Path(__file__).resolve().parent.parent
@@ -95,12 +100,28 @@ def save_content_pipeline_artifact(pipeline: dict, path: Path | str) -> str:
     if not _PIPELINE_KEYS.issubset(pipeline):
         missing = ", ".join(sorted(_PIPELINE_KEYS - set(pipeline)))
         raise ValueError(f"Content-model pipeline is missing required fields: {missing}")
+    provenance = pipeline.get("metrics", {}).get("build_provenance", {})
+    training_versions = provenance.get("package_versions")
     envelope = {
         "schema": _ARTIFACT_SCHEMA,
         "python": _major_minor(platform.python_version()),
         "scikit_learn": sklearn.__version__,
         "pipeline": pipeline,
     }
+    if training_versions is not None:
+        if not isinstance(training_versions, dict):
+            raise ValueError("Content-model training package metadata is invalid")
+        current_versions = package_versions((*RUNTIME_PACKAGE_NAMES, "pandas"))
+        for name, current_version in current_versions.items():
+            if training_versions.get(name) != current_version:
+                raise ValueError(f"Content-model {name} changed since training")
+        training_python = provenance.get("python_version")
+        if training_python != platform.python_version():
+            raise ValueError("Content-model Python version changed since training")
+        envelope["python_full"] = training_python
+        envelope["runtime_package_versions"] = {
+            name: training_versions[name] for name in RUNTIME_PACKAGE_NAMES
+        }
     payload = pickle.dumps(envelope, protocol=pickle.HIGHEST_PROTOCOL)
     digest = hashlib.sha256(payload).hexdigest()
     destination = Path(path)
@@ -141,6 +162,8 @@ def load_content_pipeline_artifact(
         sklearn.__version__, _major_minor(sklearn.__version__)
     }:
         raise ValueError("Content-model artifact scikit-learn version is incompatible")
+    if "runtime_package_versions" in envelope:
+        validate_runtime_package_versions(envelope["runtime_package_versions"])
     pipeline = envelope.get("pipeline")
     if not isinstance(pipeline, dict) or not _PIPELINE_KEYS.issubset(pipeline):
         raise ValueError("Content-model artifact has an invalid pipeline payload")
@@ -2143,6 +2166,8 @@ def build_content_pipeline(
         "data_source": " + ".join(sources),
         "build_provenance": {
             "seed": seed,
+            "python_version": platform.python_version(),
+            "package_versions": package_versions((*RUNTIME_PACKAGE_NAMES, "pandas")),
             "cache_version": _CACHE_VERSION,
             "use_real": use_real,
             "augment_synthetic": augment_synthetic,

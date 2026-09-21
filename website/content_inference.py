@@ -17,6 +17,7 @@ from sklearn.calibration import CalibratedClassifierCV
 from sklearn.exceptions import InconsistentVersionWarning
 from sklearn.naive_bayes import ComplementNB
 from language_coverage import non_latin_script_segments
+from model_environment import validate_runtime_package_versions
 
 
 ARTIFACT_SCHEMA = "phishguard-content-model-v1"
@@ -58,6 +59,8 @@ def load_content_pipeline_artifact(path: Path | str, expected_sha256: str) -> di
         sklearn.__version__, _major_minor(sklearn.__version__)
     }:
         raise ValueError("Content-model artifact scikit-learn version is incompatible")
+    if "runtime_package_versions" in envelope:
+        validate_runtime_package_versions(envelope["runtime_package_versions"])
     pipeline = envelope.get("pipeline")
     if not isinstance(pipeline, dict) or not PIPELINE_KEYS.issubset(pipeline):
         raise ValueError("Content-model artifact has an invalid pipeline payload")

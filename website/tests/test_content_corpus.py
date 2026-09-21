@@ -426,6 +426,21 @@ class SpaPhishCorpusTests(unittest.TestCase):
             pipeline["metrics"]["build_provenance"]["cache_version"],
             content_model._CACHE_VERSION,
         )
+        package_versions = pipeline["metrics"]["build_provenance"]["package_versions"]
+        self.assertEqual(
+            set(package_versions),
+            {"numpy", "scipy", "scikit-learn", "joblib", "threadpoolctl", "pandas"},
+        )
+        self.assertTrue(pipeline["metrics"]["build_provenance"]["python_version"])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "new-model.pkl"
+            digest = content_model.save_content_pipeline_artifact(pipeline, path)
+            from content_inference import load_content_pipeline_artifact
+            loaded = load_content_pipeline_artifact(path, digest)
+        self.assertEqual(
+            loaded["metrics"]["build_provenance"]["package_versions"],
+            package_versions,
+        )
         self.assertGreater(
             pipeline["metrics"]["source_sample_counts"]["hard-negative-synthetic"],
             0,

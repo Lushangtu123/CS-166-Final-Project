@@ -524,15 +524,23 @@ and best-effort WHOIS checks. It never opens an SMTP connection and returns
 verified. The response separates `domain_verification` from
 `mailbox_verification`; the latter is `unavailable` on this profile.
 
-The Vercel runtime installs NumPy and scikit-learn for inference but not pandas.
-Training remains local-only. When `website/model/content_model_artifact.pkl` is
-present, `vercel.json` must contain its exact SHA-256 digest and enables the
-model. The committed artifact was saved with scikit-learn 1.9.0, so both the
-Vercel runtime and local evaluation requirements pin that exact version.
+The Vercel runtime installs pinned NumPy, SciPy, scikit-learn, joblib, and
+threadpoolctl versions for inference but not pandas. These are the versions
+validated by the current serving smoke test; the committed model predates
+dependency-version recording, so they do not prove its original training
+environment. Training remains local-only. When the artifact at
+`website/model/content_model_artifact.pkl` is present, `vercel.json` must
+contain its exact SHA-256 digest and enable the model. The committed artifact
+was saved with scikit-learn 1.9.0. Both the Vercel runtime and local
+evaluation requirements pin that exact version.
 Startup verifies the digest before deserializing and rejects scikit-learn
 estimator version warnings, including patch-version mismatches. New artifacts
-record the full scikit-learn version. A rejected or missing artifact leaves
-rule and structure analysis available and reports the model error through
+record the full scikit-learn version, Python version, and exact versions of the
+core numerical dependencies. The loaders reject a recorded runtime dependency
+mismatch before serving predictions. Legacy artifacts without this metadata
+remain loadable, but cannot establish numerical-dependency parity with their
+training run. A rejected or missing artifact leaves rule and structure
+analysis available and reports the model error through
 `/health`. Successful health and metrics responses expose the loaded artifact
 digest and a short `model_id`, so displayed metrics can be tied to the
 deployed binary rather than a different training run.
@@ -605,6 +613,10 @@ so Vercel SSO pages cannot be mistaken for application health output.
 Read-only health/config readiness checks retry briefly while a deployment alias
 converges; phishing, legitimate, and sender-history POST controls run exactly
 once after the expected model and configuration are ready.
+Feature-branch pushes run CI, but the production smoke job only runs after a
+successful Production deployment event. After merging a reviewed PR, check
+that `/health` reports the merged commit SHA and that the production smoke job
+completed successfully; a skipped branch run is not production verification.
 
 For local research with the text model, train and package it before starting the
 web service:
@@ -624,7 +636,11 @@ APP_ENV=development CONTENT_MODEL_ENABLED=true \
 
 Only load artifacts produced and stored by a trusted build process. The digest
 is checked before deserialization, and Python/scikit-learn compatibility metadata
-is validated afterward.
+is validated afterward. New builds record the training environment in
+`build_provenance` and the serving dependencies in the artifact envelope. Keep
+the pinned runtime requirements aligned with those recorded versions when
+publishing a newly built artifact; a saved artifact is rejected if its core
+packages changed between training and packaging.
 
 To opt into network-based mailbox verification locally, additionally set
 `ENABLE_EMAIL_VERIFICATION=true`. Do not expose that endpoint anonymously.
@@ -802,6 +818,12 @@ still disclose sensitive cohort information if published. The report marks
 temporal isolation `not_verified`: dates alone do not prove training-family
 separation. No real Gmail/Outlook cohort is committed or measured here, so the
 offline table above must not be presented as provider-specific serving recall.
+For a future independent cohort, obtain consent and labels before inspecting
+model outputs. Keep a private campaign/family identifier and labeling record
+outside the repository, exclude training-family overlap, and reserve a later
+campaign-separated sample that is not used for threshold selection. Run this
+tool only after that split is fixed; its Wilson intervals describe message
+counts and do not correct for repeated messages within a campaign.
 
 The included public Render profile still keeps the optional text model disabled
 until a representative, versioned artifact is supplied through a trusted build
