@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#101413">
 <title>Cases · PhishGuard</title>
-<link rel="stylesheet" href="/static/cases.css?v=2"><script src="/static/cases.js?v=2" defer></script>
+<script src="/static/cases-theme.js?v=1"></script>
+<link rel="stylesheet" href="/static/cases.css?v=3"><script src="/static/cases.js?v=2" defer></script>
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to workspace</a>
@@ -18,7 +19,7 @@
   </div>
 </aside>
 <div class="app-shell">
-<header class="topbar"><span>Operations <span class="slash" aria-hidden="true">/</span> <strong>Cases</strong></span><span class="private-label"><span aria-hidden="true">◇</span> Analyst access</span></header>
+<header class="topbar"><span>Operations <span class="slash" aria-hidden="true">/</span> <strong>Cases</strong></span><div class="topbar-actions"><span class="private-label"><span aria-hidden="true">◇</span> Analyst access</span><label class="theme-control" for="case-theme"><span>Theme</span><select id="case-theme"><option value="auto">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div></header>
 <main id="main">
 <div class="heading"><div><p class="eyebrow">INVESTIGATE. DECIDE. DOCUMENT.</p><h1>Case workspace<span>.</span></h1><p>A clear view of every message. A record of every decision.</p></div><span class="workspace-tag">EMAIL SECURITY</span></div>
 <p id="notice" role="status" aria-live="polite"></p>

@@ -60,3 +60,4 @@ jobs:
         run: |
           node --check website/static/app.js
           node --check website/static/cases.js
+          node --check website/static/cases-theme.js

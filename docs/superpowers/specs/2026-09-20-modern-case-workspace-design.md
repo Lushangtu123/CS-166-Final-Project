@@ -20,3 +20,9 @@ Use the existing static HTML/CSS/JavaScript with local font fallbacks and no new
 ## Verification
 
 Run frontend tests and JavaScript syntax checks. Inspect the actual local application at desktop and mobile widths with synthetic records, checking login, queue selection, filtering, case creation and review persistence. Check for horizontal overflow at small widths and ensure logout clears case evidence. Production publishing is a separate step.
+
+## Theme modes
+
+The workspace theme selector offers System, Light and Dark. System follows live OS appearance changes; an explicit choice stays fixed until changed. Use the existing homepage key `phishguard-theme` for non-sensitive appearance preferences only. Removing the explicit choice restores automatic behavior. Changes from another homepage tab update the workspace through storage events. Authentication and case data remain outside browser storage.
+
+A same-origin script runs before the stylesheet to set the initial theme without weakening the case page CSP. Local storage failures fall back to page-local switching. Light colors cover navigation, login, cases, forms, risk badges, evidence, history, empty states and notices. The control is available while signed out and on mobile.
