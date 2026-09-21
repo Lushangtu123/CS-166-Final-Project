@@ -26,6 +26,7 @@ LABELS = {'phishing', 'legitimate'}
 ALERT_LEVELS = {'medium', 'high', 'critical'}
 RISK_LEVELS = ALERT_LEVELS | {'safe', 'low', 'unknown'}
 WILSON_95_Z = 1.959963984540054
+MAX_EML_BYTES = 60_000
 
 
 def _validated_record(row: dict, index: int) -> dict:
@@ -50,7 +51,12 @@ def _validated_record(row: dict, index: int) -> dict:
     for field in ('subject', 'body', 'raw_email'):
         if field in row and not isinstance(row[field], str):
             raise ValueError(f'Row {index}: {field} must be text')
-    if not any(row.get(field) for field in ('subject', 'body', 'raw_email')):
+    if 'eml_path' in row:
+        if not isinstance(row['eml_path'], str) or not Path(row['eml_path']).is_absolute():
+            raise ValueError(f'Row {index}: eml_path must be an absolute path')
+        if any(row.get(field) for field in ('subject', 'body', 'raw_email')):
+            raise ValueError(f'Row {index}: eml_path cannot be mixed with text input')
+    elif not any(row.get(field) for field in ('subject', 'body', 'raw_email')):
         raise ValueError(f'Row {index}: message content is required')
     return row
 
@@ -213,6 +219,17 @@ def main() -> None:
     )
 
     def analyze(row: dict) -> dict:
+        if 'eml_path' in row:
+            with Path(row['eml_path']).open('rb') as source:
+                raw = source.read(MAX_EML_BYTES + 1)
+            if len(raw) > MAX_EML_BYTES or not raw.strip():
+                raise ValueError('Email file must contain 1 to 60,000 bytes')
+            structure = app.analyze_raw_email(
+                raw, trusted_authserv_ids=app.SETTINGS.trusted_authserv_ids,
+            )
+            return json.loads(asyncio.run(app._analyze_content(
+                app.ContentRequest(), structure, observe_sender_history=False,
+            )).body)
         request = app.ContentRequest(
             subject=row.get('subject', ''), body=row.get('body', ''),
             raw_email=row.get('raw_email', ''),

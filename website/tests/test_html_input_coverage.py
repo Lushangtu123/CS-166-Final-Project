@@ -1038,13 +1038,13 @@ class HTMLInputCoverageTests(unittest.TestCase):
             self.assertEqual(result['total_score'], 0)
             self.assertFalse(result['analysis_complete'])
 
-    def test_hidden_manual_subject_punctuation_does_not_add_rule_points(self):
+    def test_manual_subject_markup_is_literal_and_punctuation_adds_rule_points(self):
         body = 'Please review the regular project planning notes for tomorrow.'
         with patch.object(app, '_content_pipeline', None):
             control = self.analyze(subject='Project update', body=body)
             result = self.analyze(subject='<span hidden>??</span>Project update', body=body)
-        self.assertEqual(result['total_score'], control['total_score'])
-        self.assertFalse(result['analysis_complete'])
+        self.assertEqual(result['total_score'], control['total_score'] + 1)
+        self.assertTrue(result['analysis_complete'])
 
     def test_uncovered_kana_and_cyrillic_bodies_do_not_inherit_english_subject_score(self):
         pipeline = self.deployment_pipeline()

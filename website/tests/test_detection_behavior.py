@@ -308,6 +308,22 @@ class DisposableEmailClassificationTests(unittest.TestCase):
 
 
 class ContentRuleRobustnessTests(unittest.TestCase):
+    def test_manual_subject_keeps_markup_like_text_literal(self):
+        subject = '<script>Your account has been suspended. Act now and enter your password.</script>'
+        manual_view = {}
+        mime_view = {}
+        manual = app.analyze_email_content(subject, 'Hello.', _model_view=manual_view)
+        mime = app.analyze_email_content(
+            subject, 'Hello.',
+            content_parts=[{'content': 'Hello.', 'content_type': 'text/plain'}],
+            _model_view=mime_view,
+        )
+
+        self.assertEqual(manual_view['subject'], subject)
+        self.assertEqual(manual_view['subject'], mime_view['subject'])
+        self.assertEqual(manual['risk_level'], 'high')
+        self.assertEqual(manual['total_score'], mime['total_score'])
+
     def test_insufficient_context_keeps_rules_and_marks_clean_result_incomplete(self):
         abstention = {
             "ml_status": "insufficient_context",

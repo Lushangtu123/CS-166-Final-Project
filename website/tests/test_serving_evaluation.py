@@ -13,6 +13,42 @@ from tools import evaluate_serving_pipeline
 
 
 class ServingEvaluationTests(unittest.TestCase):
+    def test_cli_evaluates_original_eml_bytes(self):
+        project_root = WEBSITE_DIR.parent
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'consented-fixture.jsonl'
+            email_file = Path(directory) / 'private-message.eml'
+            email_file.write_bytes(
+                b'Subject: Project update\nContent-Type: text/plain; charset=utf-8\n'
+                b'Content-Transfer-Encoding: 8bit\n\n'
+                b'Our project meeting is tomorrow at noon in the library. '
+                b'Please bring your notes so we can review the assignment together. Thanks. \xff'
+            )
+            source.write_text(json.dumps({
+                'provider': 'gmail', 'received_at': '2026-08-02',
+                'label': 'legitimate', 'eml_path': str(email_file),
+            }) + '\n')
+            completed = subprocess.run(
+                [sys.executable, str(WEBSITE_DIR / 'tools' / 'evaluate_serving_pipeline.py'),
+                 '--input', str(source)], cwd=project_root, capture_output=True, text=True,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertEqual(report['overall']['n'], 1)
+        self.assertEqual(report['overall']['legitimate']['undetermined'], 1)
+        self.assertEqual(report['overall']['complete_rate'], 0.0)
+        self.assertNotIn('private-message.eml', completed.stdout)
+
+    def test_eml_path_cannot_be_mixed_with_text_input(self):
+        row = {
+            'provider': 'gmail', 'received_at': '2026-08-02',
+            'label': 'legitimate', 'eml_path': '/private/message.eml',
+            'body': 'stale manual text',
+        }
+        with self.assertRaises(ValueError):
+            evaluate_serving_pipeline._validated_record(row, 1)
+
     def test_provider_and_month_metrics_count_abstentions_explicitly(self):
         rows = [
             {'provider': 'gmail', 'received_at': '2026-08-02', 'label': 'phishing',

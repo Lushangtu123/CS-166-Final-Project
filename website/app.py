@@ -2829,8 +2829,8 @@ def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] 
 
     if content_parts is None:
         raw_parts = [subject, body]
-        html_parts = [True, True]
-        parsed_parts = [visible_html(part) for part in raw_parts]
+        html_parts = [False, True]
+        parsed_parts = [(subject, False, False), visible_html(body)]
         visible_parts = [visible for visible, _css_uncertain, _model_uncertain in parsed_parts]
         stylesheet_uncertain_parts = [uncertain for _visible, uncertain, _model in parsed_parts]
     else:

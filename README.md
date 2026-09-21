@@ -129,6 +129,8 @@ uploaded email, and analysis waits while a selected file is still being read.
 complete message represented as Unicode text. For original files, use
 `POST /api/analyze-eml` with the unchanged bytes and `Content-Type: message/rfc822`
 (or `application/octet-stream`). The browser uses this byte-preserving endpoint.
+The manual `subject` field is always literal text; HTML parsing applies only to
+the manual body. A MIME subject is likewise treated as literal text.
 Uploads are limited to **60,000 bytes**, checked both before client-side reading
 and while the server consumes the request stream. No file is saved or forwarded
 to a third-party analysis service.
@@ -791,7 +793,11 @@ To measure the **current serving pipeline** on consented, labeled inbox mail,
 use `website/tools/evaluate_serving_pipeline.py` with a local JSONL file kept
 outside version control. Each line must provide `provider` (`gmail` or
 `outlook`), `received_at` (`YYYY-MM-DD`), `label` (`phishing` or `legitimate`),
-and either `raw_email` or `subject`/`body`. An optional, manually verified
+and either `eml_path` (an absolute path to a local original `.eml` file),
+`raw_email` (Unicode text), or `subject`/`body`. Do not mix `eml_path` with text
+fields. The `.eml` route preserves MIME bytes and uses the same 60,000-byte limit
+as the upload API; keep the JSONL and referenced files outside version control.
+An optional, manually verified
 `language` field accepts a lowercase two- or three-letter code such as `en`,
 `es`, or `zh`; omitted language is reported as `unlabeled`. Do not infer the
 language from the model prediction. Run from the repository root with
@@ -803,7 +809,9 @@ the pinned Python 3.12 environment:
 
 The command loads the digest-verified committed artifact and uses the same
 local analysis path as the API, with external sender-history observation
-disabled. It prints only aggregate counts and rates overall, by provider, by
+disabled. `eml_path` uses the byte-preserving message parser; `raw_email` uses
+the legacy Unicode parser and cannot restore bytes lost during earlier decoding.
+It prints only aggregate counts and rates overall, by provider, by
 language, by received month, by provider×language, and by provider×month;
 message bodies and sender addresses are not included in the report. Medium,
 High, and Critical are counted as alerts, while Unknown is undetermined and
