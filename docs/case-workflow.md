@@ -28,12 +28,15 @@ project environment settings, configure these **Production-only** variables:
 `CASE_REDIS_REST_URL` / `CASE_REDIS_REST_TOKEN` may point at a dedicated database.
 If omitted, the existing `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` are
 used. Secrets must remain in Vercel settings, never in `vercel.json` or Git.
-Invalid enabled configuration prevents startup rather than exposing unprotected
-case data. Set `CASE_MANAGEMENT_ENABLED=false` to disable this feature.
+Invalid enabled configuration disables every case API with HTTP 503 while the
+independent public analyzer remains available. No unprotected case data is exposed. Set `CASE_MANAGEMENT_ENABLED=false` to disable this feature.
 Environment changes apply to a new deployment, not an existing one.
 
 Run `python website/manage_case_access.py` in your own interactive terminal for
-each analyst. Save the generated token in a password manager and deliver it
+each analyst. Choose `y` at the existing-token prompt if you already saved one;
+the hidden prompt regenerates its hash without changing that token. Copy the
+ENTIRE JSON line (including braces and double quotes) into Vercel, not the token
+or the hash alone. Save the generated token in a password manager and deliver it
 privately to that analyst. Merge the generated hash into the JSON map, preserving
 other analysts. The helper refuses redirected output. Do not send raw tokens in
 chat. Browser refresh signs out; tokens are not saved in localStorage or cookies.

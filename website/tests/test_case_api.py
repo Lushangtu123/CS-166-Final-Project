@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
@@ -51,6 +52,8 @@ class CaseAPITests(unittest.TestCase):
                     'CASE_DB_PATH': str(Path(self.temp.name) / 'cases.sqlite3'),
                     'CASE_ANALYST_TOKEN_HASHES': json.dumps({'alice': hashlib.sha256(TOKEN.encode()).hexdigest()})}
         self.previous = getattr(app.app.state, 'case_service', None)
+        self.previous_error = getattr(app.app.state, 'case_configuration_error', False)
+        app.app.state.case_configuration_error = False
         app.app.state.case_service = build_case_service(self.env)
         app._rate_limit_buckets.clear()
         self.model_patch = patch.object(app, '_content_pipeline', None)
@@ -59,6 +62,7 @@ class CaseAPITests(unittest.TestCase):
     def tearDown(self):
         self.model_patch.stop()
         app.app.state.case_service = self.previous
+        app.app.state.case_configuration_error = self.previous_error
         self.temp.cleanup()
 
     def call(self, *args, **kwargs):
@@ -143,3 +147,24 @@ class CaseAPITests(unittest.TestCase):
                         json.dumps({'alice': hashlib.sha256(TOKEN.encode()).hexdigest(), 'bob': hashlib.sha256(TOKEN.encode()).hexdigest()})}]:
             with self.assertRaises(ValueError):
                 build_case_service({**cloud, **changes})
+
+    def test_invalid_optional_config_does_not_break_public_service(self):
+        async def check():
+            with patch.dict('os.environ', {'CASE_MANAGEMENT_ENABLED': 'true',
+                                         'CASE_ANALYST_TOKEN_HASHES': 'not-json'}), \
+                 patch.object(app, 'SETTINGS', replace(app.SETTINGS, content_model_enabled=False)):
+                async with app.lifespan(app.app):
+                    status, health, _ = await request('GET', '/health', token=None)
+                    self.assertEqual(status, 200)
+                    self.assertEqual(health['status'], 'ok')
+                    status, analysis, _ = await request('POST', '/api/analyze-content', token=None,
+                        payload={'subject': 'Synthetic', 'body': '<a href="https://paypa1.example">Review</a>'})
+                    self.assertEqual(status, 200)
+                    self.assertEqual(analysis['risk_level'], 'high')
+                    for method, path in [('GET', '/api/cases'), ('POST', '/api/cases'),
+                                         ('GET', '/api/cases/me'), ('PATCH', '/api/cases/missing')]:
+                        status, body, headers = await request(method, path, token=None, payload={})
+                        self.assertEqual(status, 503)
+                        self.assertEqual(headers[b'cache-control'], b'no-store')
+                        self.assertNotIn('not-json', str(body))
+        asyncio.run(check())

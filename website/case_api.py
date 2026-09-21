@@ -75,6 +75,8 @@ def make_case_router(analyze):
     router = APIRouter(prefix='/api/cases')
 
     def identity(request: Request):
+        if getattr(request.app.state, 'case_configuration_error', False):
+            raise HTTPException(503, 'Case configuration is invalid; contact the administrator')
         service = getattr(request.app.state, 'case_service', None)
         if service is None:
             raise HTTPException(404, 'Case management is not configured')

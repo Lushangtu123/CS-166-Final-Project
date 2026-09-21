@@ -1019,7 +1019,15 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    _app.state.case_service = build_case_service(os.environ)
+    _app.state.case_service = None
+    _app.state.case_configuration_error = False
+    try:
+        _app.state.case_service = build_case_service(os.environ)
+    except (ValueError, OSError):
+        # Optional case configuration must fail closed without taking down
+        # the independent transient analyzer. Never log configuration values.
+        _app.state.case_configuration_error = True
+        print('Case management unavailable: invalid configuration or inaccessible storage.')
     global _content_pipeline, _content_model_error, _content_model_artifact_sha256
     global _sender_history_store
     _sender_history_store = build_sender_history_store(SETTINGS)
