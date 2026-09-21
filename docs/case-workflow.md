@@ -1,6 +1,9 @@
 # Case workspace operations
 
-Open `/cases` and sign in with your individual analyst token. Create a case from
+Use the homepage **Case login** button (also visible on mobile) to open
+`https://phishguard-email-analyzer.vercel.app/cases` and sign in with your
+individual analyst token. Bookmark this stable address, not a deployment-specific
+Vercel URL. For local development, open `/cases` on the local server. Create a case from
 subject/body or an original `.eml` file. Creation saves extracted text and detection
 evidence; the public analyzer does not automatically create cases. Everyone
 configured for this workspace can read and review its cases.

@@ -1228,3 +1228,21 @@ code {
   .demo-tabs { max-width: none; }
   .step:hover { transform: none; }
 }
+
+/* Keep the analyst login reachable when section navigation is collapsed. */
+.case-login {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  min-height: 38px; padding: 8px 14px; border-radius: var(--pill);
+  border: 1px solid var(--border-hi); background: var(--surface-2);
+  color: var(--text); font-size: 12px; font-weight: 650; white-space: nowrap;
+  text-decoration: none; flex-shrink: 0;
+}
+.case-login:hover { color: var(--accent); border-color: var(--accent); text-decoration: none; }
+.case-login:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+@media (max-width: 900px) { .nav-links { display: none; } }
+@media (max-width: 640px) {
+  .case-login { min-height: 40px; padding: 8px 10px; font-size: 11px; }
+  .case-login span { display: none; }
+  .nav-brand { gap: 7px; font-size: 16px; }
+  .theme-toggle { flex-shrink: 0; }
+}
