@@ -17,7 +17,7 @@
       document.documentElement.dataset.themeMode = stored || 'auto';
     })();
   </script>
-  <link rel="stylesheet" href="/static/style.css?v=26" />
+  <link rel="stylesheet" href="/static/style.css?v=28" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -422,10 +422,16 @@
     <div class="tab-panel hidden" id="panel-email-content">
 
       <div class="content-input-card">
-        <div class="raw-email-upload-row">
+        <div class="raw-email-upload-row file-dropzone" id="content-file-dropzone" tabindex="0" role="group" aria-label="Screenshot upload area" aria-describedby="content-drop-help">
+          <p id="content-drop-help" class="file-drop-hint">Drop a screenshot or email here, or click this area and paste a screenshot (Ctrl / ⌘ + V). One file, up to 2 MiB. Then click Analyze Content.</p>
           <label class="content-label" for="raw-email-file">Email or image file</label>
           <input id="raw-email-file" class="raw-email-file" type="file" accept=".eml,.png,.jpg,.jpeg,.webp,message/rfc822,image/png,image/jpeg,image/webp" />
-          <div id="raw-email-status" class="raw-email-status" role="status">Upload an .eml email or PNG/JPEG/WebP image, up to 2 MiB. QR and English/Chinese text recognition runs in your browser (up to four images). Email images are extracted locally; remote images are not loaded. Manual fields are ignored while a file is selected.</div>
+          <div id="raw-email-status" class="raw-email-status" role="status">Upload an .eml email or PNG/JPEG/WebP image, up to 2 MiB. QR and text recognition runs in your browser (up to four images). Email images are extracted locally; remote images are not loaded. Manual fields are ignored while a file is selected.</div>
+        </div>
+        <div class="content-input-subject-row">
+          <label class="content-label" for="content-ocr-language">Image text language (OCR)</label>
+          <select id="content-ocr-language" class="ocr-language-select" aria-describedby="content-ocr-help"><option value="eng">English</option><option value="chi_sim">简体中文 · Simplified Chinese</option><option value="eng+chi_sim">中英混合 · English + Chinese</option></select>
+          <p id="content-ocr-help" class="raw-email-status">Choose the language visible in the image. English avoids unrelated Chinese characters in English screenshots. Use mixed mode for bilingual images; always check extracted text.</p>
         </div>
         <div class="content-input-subject-row">
           <label class="content-label" for="content-subject">Subject</label>
@@ -805,8 +811,9 @@
   </div>
 </footer>
 
-<script src="/static/vision.js?v=2"></script>
-<script src="/static/app.js?v=28"></script>
+<script src="/static/vision.js?v=3"></script>
+<script src="/static/file-intake.js?v=1"></script>
+<script src="/static/app.js?v=30"></script>
 <!-- Vercel's same-origin page-view and web-vitals collectors. No email input is sent as a custom event. -->
 <script>
   window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };

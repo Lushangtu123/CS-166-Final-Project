@@ -75,3 +75,21 @@ test('successful OCR with unknown risk distinguishes recognition from risk and m
   assert.doesNotMatch(text,/Recognition completed|model score: 12%/);
   assert.match(text,/Too little readable text/);
 });
+
+test('OCR language defaults to English and forwards each explicit supported choice',async()=>{
+  for (const language of [undefined,'eng','chi_sim','eng+chi_sim']) {
+    const {api,workers}=setup();
+    const promise=api.recognize({name:'test.png',size:1,arrayBuffer:async()=>new Uint8Array([1]).buffer},()=>{},language);
+    await tick();
+    const sent=workers[0].input.language;
+    workers[0].onmessage({data:{result:{observations:[],warnings:[]}}});
+    await promise;
+    assert.equal(sent,language ?? 'eng');
+  }
+});
+test('unsupported OCR language is rejected before reading the file or starting a worker',async()=>{
+  const {api,workers}=setup();let read=false;
+  const rejected=assert.rejects(api.recognize({name:'test.png',size:1,arrayBuffer:async()=>{read=true;return new ArrayBuffer(1);}},()=>{},'../../unknown'),/language/i);
+  await tick();workers[0]?.onmessage({data:{result:{observations:[],warnings:[]}}});await rejected;
+  assert.equal(read,false);assert.equal(workers.length,0);
+});

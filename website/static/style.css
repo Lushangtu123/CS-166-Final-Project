@@ -718,6 +718,9 @@ code {
   backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
 }
 .raw-email-upload-row { margin-bottom: 20px; }
+.file-dropzone { padding: 16px; border: 1px dashed var(--border-hi); border-radius: var(--radius-sm); }
+.file-dropzone:focus-visible, .file-dropzone.drag-active { outline: 2px solid var(--accent, #5ad1ff); outline-offset: 3px; }
+.file-drop-hint { margin: 0 0 12px; color: var(--text-muted); font-size: 13px; line-height: 1.6; }
 .raw-email-file {
   width: 100%; padding: 12px 14px; background: var(--field-bg);
   border: 1px dashed var(--border-hi); border-radius: var(--radius-sm); color: var(--text);
@@ -1254,3 +1257,6 @@ code {
 .visual-evidence pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 20rem; overflow: auto; font-size: .85rem; }
 .visual-evidence h3, .visual-evidence h4 { margin: 0 0 .5rem; overflow-wrap: anywhere; }
 .visual-evidence p { margin: .5rem 0; overflow-wrap: anywhere; }
+
+.ocr-language-select { width: 100%; min-height: 44px; padding: 12px; border: 1px solid var(--border-hi); border-radius: var(--radius-sm); background: var(--field-bg); color: var(--text); font: inherit; }
+.ocr-language-select:focus-visible { outline: 2px solid var(--accent, #5ad1ff); outline-offset: 3px; }

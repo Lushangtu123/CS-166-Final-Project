@@ -318,6 +318,7 @@ function setupInputEvents() {
     document.getElementById(id).addEventListener('input', invalidateContent);
   });
   document.getElementById('cancel-content-scan')?.addEventListener('click', invalidateContent);
+  document.getElementById('content-ocr-language').addEventListener('change', invalidateContent);
   const rawInput = document.getElementById('raw-email-file');
   if (rawInput) {
     rawInput.addEventListener('change', async event => {
@@ -352,7 +353,7 @@ function setupInputEvents() {
         _rawEmailSource = source;
         _visualFile = file || null;
         document.getElementById('raw-email-status').textContent = file
-          ? `${file.name} loaded — QR and English/Chinese text recognition will run when you analyze. Manual fields are ignored.` : '';
+          ? `${file.name} loaded — QR and text recognition will use the selected OCR language when you analyze. Manual fields are ignored.` : '';
       } catch (_error) {
         if (readId !== _rawReadId) return;
         clearRawEmail();
@@ -361,6 +362,9 @@ function setupInputEvents() {
         if (readId === _rawReadId) _rawReadPending = false;
       }
     });
+    window.PhishGuardFiles?.bind({zone: document.getElementById('content-file-dropzone'), input: rawInput,
+      enabled: () => !document.getElementById('panel-email-content').classList.contains('hidden'),
+      onError: message => setError('content-error', message)});
   }
 }
 
@@ -1067,7 +1071,7 @@ async function runContentAnalysis() {
       if (!window.PhishGuardVision) throw new Error('Image recognition is unavailable. Reload the page.');
       const payload = await window.PhishGuardVision.recognize(_visualFile, message => {
         if (requestId === _contentRequestId) document.getElementById('visual-progress').textContent = message;
-      });
+      }, document.getElementById('content-ocr-language').value || 'eng');
       if (requestId !== _contentRequestId) return;
       data = await postJSON('/api/analyze-visual', payload);
     } else {

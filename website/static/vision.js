@@ -9,8 +9,9 @@ window.PhishGuardVision = (() => {
     for (let i = 0; i < bytes.length; i += 8192) text += String.fromCharCode(...bytes.subarray(i, i + 8192));
     return btoa(text);
   }
-  async function recognize(file, onProgress = () => {}) {
+  async function recognize(file, onProgress = () => {}, language = 'eng') {
     cancel();
+    if (!['eng', 'chi_sim', 'eng+chi_sim'].includes(language)) throw new Error('Choose a supported OCR language.');
     if (!file.size || file.size > MAX_BYTES) throw new Error('Choose a nonempty PNG, JPEG, WebP or EML file up to 2 MiB.');
     const kind = /\.eml$/i.test(file.name) || file.type === 'message/rfc822' ? 'eml' : 'image';
     // Register before the asynchronous file read, so clear/sign-out cancels reading too.
@@ -23,7 +24,7 @@ window.PhishGuardVision = (() => {
       if (!buffer.byteLength || buffer.byteLength > MAX_BYTES) throw new Error('File exceeds the 2 MiB limit.');
       const result = await new Promise((resolve, reject) => {
         rejectWork = reject;
-        worker = new Worker('/static/vision-worker.mjs?v=1', {type: 'module'});
+        worker = new Worker('/static/vision-worker.mjs?v=2', {type: 'module'});
         timer = setTimeout(() => { worker.terminate(); reject(new Error('Recognition timed out. Try a smaller image.')); }, 150000);
         worker.onerror = () => reject(new Error('Recognition could not start. Reload the page or try a supported browser.'));
         worker.onmessage = ({data}) => {
@@ -32,7 +33,7 @@ window.PhishGuardVision = (() => {
           if (data.error) reject(new Error(data.error));
           if (data.result) resolve(data.result);
         };
-        worker.postMessage({buffer, name: file.name, kind});
+        worker.postMessage({buffer, name: file.name, kind, language});
       });
       if (cancelled) throw new Error('Recognition cancelled.');
       return {...result, ...(kind === 'eml' ? {eml_base64: base64(buffer)} : {})};

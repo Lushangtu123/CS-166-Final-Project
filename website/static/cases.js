@@ -24,6 +24,7 @@
   function signOut() {
     window.PhishGuardVision?.cancel();
     $('vision-progress').textContent = '';
+    $('case-file-status').textContent = '';
     $('visual-evidence').replaceChildren(); $('visual-evidence').hidden = true;
     token = ''; epoch++; listEpoch++; detailEpoch++; selected = null; creation = null;
     $('token').value = ''; $('workspace').hidden = true; $('session').hidden = true; $('login-panel').hidden = false;
@@ -126,7 +127,16 @@
   $('logout').addEventListener('click', signOut);
   window.addEventListener('pagehide', signOut);
   $('create-form').addEventListener('input', () => { creation = null; inputVersion++; window.PhishGuardVision?.cancel(); $('vision-progress').textContent = ''; });
-  $('eml').addEventListener('change', () => { creation = null; inputVersion++; window.PhishGuardVision?.cancel(); const file = $('eml').files[0]; $('subject').disabled = $('body').disabled = Boolean(file); });
+  $('case-ocr-language').addEventListener('change', () => { creation = null; inputVersion++; window.PhishGuardVision?.cancel(); $('vision-progress').textContent = ''; });
+  $('eml').addEventListener('change', () => {
+    creation = null; inputVersion++; window.PhishGuardVision?.cancel();
+    const file = $('eml').files[0]; $('subject').disabled = $('body').disabled = Boolean(file);
+    $('vision-progress').textContent = '';
+    $('case-file-status').textContent = file ? `${file.name} loaded. Click Analyze & create case to continue. Manual fields are ignored.` : '';
+  });
+  window.PhishGuardFiles?.bind({zone: $('case-file-dropzone'), input: $('eml'),
+    enabled: () => Boolean(token) && !$('workspace').hidden,
+    onError: message => notice(message, true)});
   $('cancel-vision').addEventListener('click', () => { inputVersion++; creation = null; window.PhishGuardVision?.cancel(); $('vision-progress').textContent = ''; });
   $('create-form').addEventListener('submit', event => {
     event.preventDefault(); const current = epoch;
@@ -137,7 +147,7 @@
         if (file && !window.PhishGuardVision) throw new Error('Image recognition is unavailable. Reload the page.');
         const payload = file ? await window.PhishGuardVision.recognize(file, message => {
           if (current === epoch && snapshot === inputVersion) $('vision-progress').textContent = message;
-        }) : {subject: $('subject').value, body: $('body').value};
+        }, $('case-ocr-language').value || 'eng') : {subject: $('subject').value, body: $('body').value};
         const body = JSON.stringify(payload);
         if (current !== epoch) return;
         if (snapshot !== inputVersion) throw new Error('Input changed while reading the file. Submit again.');
@@ -146,7 +156,7 @@
       const submitted = creation;
       const value = await api(submitted.file ? '/visual' : '', {method: 'POST', headers: {'Content-Type': 'application/json', 'Idempotency-Key': submitted.key}, body: submitted.body});
       // Do not clear input edited while this submission was in flight.
-      if (creation === submitted) { creation = null; $('create-form').reset(); $('subject').disabled = $('body').disabled = false; }
+      if (creation === submitted) { creation = null; $('create-form').reset(); $('subject').disabled = $('body').disabled = false; $('case-file-status').textContent = ''; }
       $('vision-progress').textContent = '';
       detailEpoch++; renderCase(value); notice('Case saved.'); await loadList();
     });

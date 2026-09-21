@@ -65,6 +65,7 @@ jobs:
           node --check website/static/cases.js
           node --check website/static/cases-theme.js
           node --check website/static/vision.js
+          node --check website/static/file-intake.js
           node --check website/static/vision-core.mjs
           node --check website/static/vision-email.mjs
           node --check website/static/vision-worker.mjs

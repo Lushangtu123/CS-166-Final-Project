@@ -9,10 +9,11 @@ function deadline(promise, ms, message) {
   let timer;
   return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message)), ms); })]).finally(() => clearTimeout(timer));
 }
-self.onmessage = async ({data: {buffer, kind, name}}) => {
+self.onmessage = async ({data: {buffer, kind, name, language = 'eng'}}) => {
   let ocr, pendingOCR;
   const warnings = [], observations = [];
   try {
+    if (!['eng', 'chi_sim', 'eng+chi_sim'].includes(language)) throw new Error('Choose a supported OCR language.');
     if (!buffer.byteLength || buffer.byteLength > LIMITS.bytes) throw new Error('Choose a nonempty file up to 2 MiB.');
     const images = [];
     if (kind === 'eml') {
@@ -45,9 +46,10 @@ self.onmessage = async ({data: {buffer, kind, name}}) => {
         if (scale < 1) item.warnings.push('Large image was resized for recognition; small details may be missed.');
         const qr = decodeQRs(ctx.getImageData(0, 0, canvas.width, canvas.height), self.jsQR);
         item.qr_payloads = qr.values; item.warnings.push(...qr.warnings);
-        progress('Reading English and Chinese text…');
+        const languageLabel = {eng: 'English', chi_sim: 'Simplified Chinese', 'eng+chi_sim': 'English and Simplified Chinese'}[language];
+        progress(`Reading ${languageLabel} text…`);
         if (!ocr) {
-          pendingOCR = Tesseract.createWorker('eng+chi_sim', 1, {
+          pendingOCR = Tesseract.createWorker(language, 1, {
             workerPath: assets + 'worker.min.js', corePath: assets + 'core', langPath: assets + 'lang',
             workerBlobURL: false, cacheMethod: 'none', logger: () => {}, errorHandler: () => {},
           });

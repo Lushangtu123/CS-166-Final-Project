@@ -859,3 +859,22 @@ test('attacker-controlled indicator text is HTML escaped before rendering', () =
     '&lt;img src=x onerror=alert(1)&gt;',
   );
 });
+
+test('public OCR forwards language and discards recognition after the selection changes',async()=>{
+  let release, selectedLanguage, posts=0;
+  const {context,elements}=loadFrontend({fetch:async()=>{posts++;return response(contentResult('File result'));}});
+  context.window.PhishGuardVision.recognize=async(_file,_progress,language)=>{
+    selectedLanguage=language;return new Promise(resolve=>{release=resolve;});
+  };
+  context.setupInputEvents();
+  await elements.get('raw-email-file').listeners.change({target:{files:[{
+    name:'test.png',size:1,arrayBuffer:async()=>new Uint8Array([1]).buffer,
+  }]}});
+  const select=elements.get('content-ocr-language');
+  assert(select,'language selector is wired');select.value='chi_sim';
+  const pending=context.runContentAnalysis();
+  assert.equal(selectedLanguage,'chi_sim');
+  select.value='eng';select.listeners.change();
+  release({observations:[],warnings:[]});await pending;
+  assert.equal(posts,0);assert.equal(elements.get('content-analyze-btn').disabled,false);
+});

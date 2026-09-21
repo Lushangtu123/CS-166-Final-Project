@@ -85,6 +85,8 @@ summary::marker { color: #8ca798; font-size: 10px; }
 .compose form { max-width: 780px; }
 .compose .primary { margin-top: 20px; }
 .upload-field { margin-top: 20px; padding: 4px 16px 8px; border: 1px dashed #485b4e; border-radius: 8px; }
+.file-dropzone:focus-visible, .file-dropzone.drag-active { outline: 2px solid var(--accent); outline-offset: 3px; }
+.file-drop-hint { margin: 12px 0; color: var(--muted); }
 input[type=file] { border: 0; background: transparent; padding: 6px 0; font-size: 12px; }
 input::file-selector-button { border: 1px solid #465c4e; background: #23352b; color: var(--accent); padding: 9px 12px; margin-right: 12px; border-radius: 5px; cursor: pointer; }
 .queue { overflow: hidden; }

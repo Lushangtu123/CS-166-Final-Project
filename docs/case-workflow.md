@@ -93,7 +93,15 @@ closure/reopening and unauthenticated denial. Keep test data out of real cases.
 ## Visual evidence
 
 Email/image uploads up to 2 MiB run QR and English/Simplified Chinese OCR in the
-browser (four images maximum). The server recomputes risk from extracted strings.
+browser (four images maximum). **Image text language (OCR)** defaults to English;
+select Simplified Chinese or English + Chinese when appropriate. Changing it
+cancels recognition and discards any pending creation payload, so the next submit
+uses the new selection. It does not change QR decoding or original EML text.
+The server recomputes risk from extracted strings.
+Drop a local screenshot or EML onto the upload area, or focus the area and paste
+an image with Ctrl/Cmd+V. The file picker remains available. Only one nonempty
+file up to 2 MiB is accepted; dropped links are not fetched. Selecting, dropping
+or pasting does not create a case: click **Analyze & create case** to submit.
 The **Image & QR evidence** section shows payloads, OCR text/confidence, statuses
 and warnings; all links remain plain text. Original EML bytes remain authoritative
 for headers/body. Recognition cannot lower risk from the original message.

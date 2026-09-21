@@ -965,8 +965,15 @@ limits, retention and production setup.
 ## Image and QR recognition
 
 On **Email Content** or **Case workspace → New case**, select a PNG/JPEG/WebP
-image or an original `.eml` file. The browser runs self-hosted jsQR and Tesseract.js
-(English + Simplified Chinese), and extracts EML images with postal-mime. Results
+image or an original `.eml` file. You can also drop one file onto the upload area,
+or click/focus that area and paste a screenshot with Ctrl/Cmd+V. Selecting a file
+does not submit it; use the existing analysis button when ready. The browser runs self-hosted jsQR and Tesseract.js
+with **Image text language (OCR)** set to **English** by default. Select **Simplified
+Chinese** or **English + Chinese** for those images. This is a manual language
+choice, not automatic detection; changing it cancels the current scan. Language
+selection affects image text only, including embedded EML images, not QR decoding
+or original email text. Check extracted text even when confidence is high.
+The browser extracts EML images with postal-mime. Results
 show each image's QR payloads, OCR text, OCR confidence and extraction warnings.
 Decoded links are plain text; the app never opens them. See
 [asset sources and licenses](website/tools/vision-assets/README.md).

@@ -4,13 +4,15 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 class Element {
-  constructor() { this.value = ''; this.textContent = ''; this.hidden = false; this.disabled = false; this.dataset = {}; this.listeners = {}; this.children = []; this.files = []; this.attrs = {}; }
+  constructor() { this.value = ''; this.textContent = ''; this.hidden = false; this.disabled = false; this.dataset = {}; this.listeners = {}; this.children = []; this.files = []; this.attrs = {}; this.classList = {add(){},remove(){}}; }
   set innerHTML(_) { throw new Error('Untrusted content must never use HTML'); }
   setAttribute(key, value) { this.attrs[key] = value; }
   append(...children) { this.children.push(...children); }
   replaceChildren(...children) { this.children = children; }
   reset() {}
   addEventListener(name, listener) { this.listeners[name] = listener; }
+  dispatchEvent(event) { this.listeners[event.type]?.(event); }
+  contains(target) { return target === this; }
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const caseValue = () => ({id: 'case-1', title: '<img src=x onerror=alert(1)>', risk: 'high', status: 'pending', verdict: null, version: 1,
@@ -20,13 +22,32 @@ function setup(handler, vision = {cancel() {}, render() {}}) {
   const elements = new Map(), calls = [];
   const el = id => { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); };
   const source = readFileSync(new URL('./cases.js', import.meta.url), 'utf8');
-  vm.runInNewContext(source, {document: {getElementById: el, createElement: () => new Element()}, window: {addEventListener() {}, PhishGuardVision: vision},
-    URLSearchParams, crypto: {randomUUID: () => 'synthetic-uuid'}, fetch: async (url, options) => { calls.push({url, options}); const result = await handler(url, options); return {ok: result.status < 400, status: result.status, json: async () => result.data}; }});
+  class DataTransfer { constructor(){this.files=[];this.items={add:file=>this.files.push(file)};} }
+  const context=vm.createContext({document: {getElementById: el, createElement: () => new Element(), addEventListener() {}}, window: {addEventListener() {}, PhishGuardVision: vision},
+    DataTransfer, Event, URLSearchParams, crypto: {randomUUID: () => 'synthetic-uuid'}, fetch: async (url, options) => { calls.push({url, options}); const result = await handler(url, options); return {ok: result.status < 400, status: result.status, json: async () => result.data}; }});
+  vm.runInContext(readFileSync(new URL('./file-intake.js',import.meta.url),'utf8'),context);
+  vm.runInContext(source,context);
   const fire = async (id, name = 'click') => { el(id).listeners[name]({preventDefault() {}, submitter: el(id + '-submit'), currentTarget: el(id)}); await tick(); };
   const login = async () => { el('token').value = 'synthetic-access-token-at-least-32-characters'; await fire('login-form', 'submit'); };
   return {el, fire, login, calls};
 }
 const standard = async url => ({status: 200, data: url.endsWith('/me') ? {actor: 'alice'} : url.includes('?') ? {items: [caseValue()], total: 1} : caseValue()});
+
+test('dropped and pasted case files use existing recognition and require explicit submission',async()=>{
+  for(const kind of ['drop','paste']){
+    let recognized;
+    const ui=setup(standard,{cancel(){},render(){},async recognize(file){recognized=file;return {observations:[],warnings:[]};}});
+    await ui.login();
+    const file={name:'clipboard.png',type:'image/png',size:100};
+    ui.el('case-file-dropzone').listeners[kind]({preventDefault(){},stopPropagation(){},
+      [kind==='drop'?'dataTransfer':'clipboardData']:{files:[file],types:['Files']}});
+    assert.equal(ui.el('body').disabled,true);assert.match(ui.el('case-file-status').textContent,/clipboard.png loaded/);
+    assert(!ui.calls.some(call=>call.options.method==='POST'));
+    await ui.fire('create-form','submit');
+    assert.equal(recognized,file);assert(ui.calls.some(call=>call.url==='/api/cases/visual'));
+    assert.equal(ui.el('case-file-status').textContent,'');
+  }
+});
 
 test('token is sent only in auth header and untrusted evidence is rendered as text', async () => {
   const ui = setup(standard); await ui.login();
@@ -103,4 +124,17 @@ test('signout during OCR prevents late extraction from posting a case', async()=
   release({observations:[],warnings:[]});await tick();
   assert.equal(cancelled,true);assert.equal(ui.el('workspace').hidden,true);
   assert.equal(ui.calls.filter(c=>c.options.method==='POST').length,0);
+});
+
+test('case OCR forwards language and invalidates in-flight output when it changes',async()=>{
+  let release, selectedLanguage;
+  const ui=setup(standard,{cancel(){},render(){},async recognize(_file,_progress,language){
+    selectedLanguage=language;return new Promise(resolve=>{release=resolve;});
+  }});
+  await ui.login();ui.el('eml').files=[{name:'test.png',size:1}];
+  ui.el('case-ocr-language').value='eng+chi_sim';
+  await ui.fire('create-form','submit');assert.equal(selectedLanguage,'eng+chi_sim');
+  ui.el('case-ocr-language').value='eng';await ui.fire('case-ocr-language','change');
+  release({observations:[],warnings:[]});await tick();
+  assert(!ui.calls.some(call=>call.options.method==='POST'));
 });
