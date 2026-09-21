@@ -32,3 +32,8 @@ phishing-detection/data/*.pkl
 dist/
 build/
 *.egg-info/
+
+# Private case records and SQLite transaction files
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm

@@ -953,3 +953,11 @@ Do not use these numbers to describe sender-address or full-email detection.
 ---
 
 *CS 166 – Information Security | Final Project*
+
+### Team case workspace
+
+The optional `/cases` workspace adds authenticated case creation, evidence review,
+human verdicts, status changes and operation history. Vercel requires persistent
+Upstash storage; the feature is disabled until configured. See
+[case workflow and deployment instructions](docs/case-workflow.md) for access,
+limits, retention and production setup.

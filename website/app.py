@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import json
+import hashlib
 import ipaddress
 import re
 import math
@@ -44,6 +45,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
 from config import load_settings
+from case_api import build_case_service, make_case_router
 from disposable_registry import REGISTRY_DOMAIN_RE as _REGISTRY_DOMAIN_RE
 from disposable_registry import load_disposable_registry, load_privacy_relay_registry
 from request_limits import RequestBodyLimitMiddleware
@@ -1017,6 +1019,7 @@ def extract_email_features(email: str) -> tuple[dict, list, bool, bool, str | No
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    _app.state.case_service = build_case_service(os.environ)
     global _content_pipeline, _content_model_error, _content_model_artifact_sha256
     global _sender_history_store
     _sender_history_store = build_sender_history_store(SETTINGS)
@@ -1177,7 +1180,7 @@ async def security_middleware(request: Request, call_next):
                 content={"detail": "Invalid Content-Length"},
             ))
 
-    if request.method == "POST" and request.url.path.startswith("/api/"):
+    if request.method in {"POST", "PATCH"} and request.url.path.startswith("/api/"):
         bucket_key = _rate_limit_key(request)
         now = time.monotonic()
 
@@ -1211,6 +1214,22 @@ async def security_middleware(request: Request, call_next):
             ))
 
     return _with_security_headers(await call_next(request))
+
+
+@app.middleware("http")
+async def private_case_responses(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path == '/cases' or request.url.path.startswith('/api/cases'):
+        response.headers['Cache-Control'] = 'no-store'
+        response.headers['Content-Security-Policy'] = (
+            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; "
+            "connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+    return response
+
+
+@app.get('/cases', include_in_schema=False)
+async def serve_cases():
+    return FileResponse(str(BASE_DIR / 'static' / 'cases.html'))
 
 
 # ── Static files ──────────────────────────────────────────────────────────────
@@ -4084,6 +4103,34 @@ def verify_email_endpoint(req: VerifyRequest):
         out["overall"] = "suspicious"
 
     return respond()
+
+
+
+async def _analyze_case(payload, raw):
+    """Capture server evidence once; clients cannot submit or edit detection results."""
+    structure = None
+    raw_input = raw if raw is not None else payload.raw_email
+    if raw_input:
+        structure = analyze_raw_email(raw_input, trusted_authserv_ids=SETTINGS.trusted_authserv_ids)
+    response = await _analyze_content(ContentRequest(**payload.model_dump()), structure,
+                                      observe_sender_history=False)
+    analysis = json.loads(response.body)
+    analysis.pop('ml_metrics', None)  # Dataset-wide metrics are not per-message evidence.
+    source = {'subject': structure['subject'] if structure else payload.subject.strip(),
+              'body': structure['body'] if structure else payload.body.strip(),
+              'input_mode': analysis['input_mode']}
+    source['text_truncated'] = len(source['body']) > 60000
+    source['body'] = source['body'][:60000]
+    digest = hashlib.sha256()
+    for path in sorted([*BASE_DIR.glob('*.py'), *(BASE_DIR / 'data').glob('*.json')]):
+        digest.update(str(path.relative_to(BASE_DIR)).encode() + b'\0' + path.read_bytes())
+    provenance = {'code_sha256': digest.hexdigest(), 'model_sha256': _content_model_artifact_sha256,
+                  'commit': os.getenv('VERCEL_GIT_COMMIT_SHA') or None,
+                  'trusted_authserv_ids': sorted(SETTINGS.trusted_authserv_ids)}
+    return source, analysis, provenance
+
+
+app.include_router(make_case_router(_analyze_case))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cases · PhishGuard</title>
+<link rel="stylesheet" href="/static/cases.css">
+<script src="/static/cases.js" defer></script>
+</head>
+<body>
+<header><a class="brand" href="/">◈ PhishGuard</a><span class="eyebrow">CASE WORKSPACE</span><div id="session" hidden><span id="actor"></span><button id="logout" type="button">Sign out</button></div></header>
+<main>
+<div class="heading"><div><p class="eyebrow">EMAIL INVESTIGATIONS</p><h1>From detection to decision.</h1><p>Review the evidence. Record a verdict. Keep the history.</p></div><span class="pill">Shared team workspace</span></div>
+<p id="notice" role="status" aria-live="polite"></p>
+<section id="login-panel" class="card login"><h2>Analyst access</h2><p>Use your individual access token. All analysts in this workspace can view and review its cases.</p><form id="login-form"><label for="token">Access token</label><input id="token" type="password" required minlength="32" maxlength="256" autocomplete="off"><button type="submit" class="primary">Open workspace</button></form><p class="muted">Your token stays in this tab's memory. Refreshing or signing out clears it. Ask your administrator for access.</p></section>
+<div id="workspace" hidden>
+<details class="card compose"><summary>Create a case</summary><p>Saving a case retains extracted email text, addresses, detection evidence and review history in the team's private storage. Original attachment bytes are not saved. Submit only emails you are authorized to retain.</p>
+<form id="create-form"><label for="subject">Subject</label><input id="subject" maxlength="500"><label for="body">Email body</label><textarea id="body" rows="5" maxlength="50000"></textarea><label for="eml">Or upload an original .eml file (up to 60,000 bytes)</label><input id="eml" type="file" accept=".eml,message/rfc822"><p class="muted">When a file is selected, it replaces the subject and body above.</p><button type="submit" class="primary">Analyze &amp; create case</button></form></details>
+<div class="columns"><section class="card queue"><div class="section-title"><h2>Case queue</h2><button id="refresh" type="button">Refresh</button></div>
+<form id="filters"><div class="filter-grid"><label>Status<select id="filter-status"><option value="">All statuses</option><option value="pending">Pending</option><option value="in_progress">In progress</option><option value="closed">Closed</option></select></label><label>Risk<select id="filter-risk"><option value="">All risks</option><option>critical</option><option>high</option><option>medium</option><option>low</option><option>safe</option><option>unknown</option></select></label><label>Created from (UTC)<input id="filter-from" type="date"></label><label>Created through (UTC)<input id="filter-to" type="date"></label></div><button type="submit">Apply filters</button></form>
+<p id="count" class="muted"></p><div id="case-list" aria-label="Cases"></div><div class="pagination"><button id="previous" type="button">Previous</button><span id="page"></span><button id="next" type="button">Next</button></div></section>
+<section class="card detail"><div id="empty-detail"><p class="eyebrow">CASE DETAILS</p><h2>Choose a case to review.</h2><p>Detection evidence and human decisions are recorded separately.</p></div><div id="detail" hidden><div class="section-title"><h2 id="case-title"></h2><button id="reload-case" type="button">Reload case</button></div><p id="case-meta" class="muted"></p><div id="badges"></div>
+<h3>Detection evidence</h3><p id="analysis-summary"></p><ul id="evidence"></ul><details><summary>Full analysis &amp; provenance</summary><pre id="analysis-json"></pre></details><details><summary>Saved message text</summary><p id="source-note" class="muted"></p><pre id="source"></pre></details>
+<h3>Record your review</h3><p class="muted">Start work before closing a case. A human verdict is required to close it; explain any verdict change in your note. Reopen a closed case to make further changes.</p>
+<form id="review-form"><div class="filter-grid"><label>Status<select id="review-status"></select></label><label>Human verdict<select id="verdict"><option value="">Not reviewed</option><option value="phishing">Phishing</option><option value="legitimate">Legitimate</option><option value="uncertain">Uncertain</option></select></label></div><label for="note">Review note</label><textarea id="note" rows="3" maxlength="4000"></textarea><button type="submit" class="primary">Save review</button></form><h3>Activity history</h3><ol id="history"></ol></div></section></div>
+</div>
+</main><footer>PhishGuard · Detection supports analyst judgment. An automated low-risk result is not a guarantee of safety.</footer>
+</body></html>
