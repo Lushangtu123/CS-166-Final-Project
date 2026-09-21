@@ -33,6 +33,48 @@ function setup(handler, vision = {cancel() {}, render() {}}) {
 }
 const standard = async url => ({status: 200, data: url.endsWith('/me') ? {actor: 'alice'} : url.includes('?') ? {items: [caseValue()], total: 1} : caseValue()});
 
+test('Jev is opt-in, independent of case risk, and rendered as text', async () => {
+  const ui = setup(async url => url.endsWith('/me') ? {status: 200, data: {actor: 'alice', jev_available: true}} :
+    url.endsWith('/auxiliary') ? {status: 200, data: {case_id: 'case-1', case_version: caseValue().version,
+      status: 'available', model: '<img src=x onerror=bad()>', evidence_incomplete: true,
+      probabilities: {phishing_intent: .95, insufficient_evidence: .7}}} : standard(url));
+  await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
+  assert.equal(ui.el('jev-panel').hidden, false);
+  await ui.fire('jev-run');
+  assert(!ui.calls.some(call => call.url.endsWith('/auxiliary')));
+  assert.match(ui.el('jev-status').textContent, /permission/);
+  const original = ui.el('analysis-summary').textContent;
+  ui.el('jev-consent').checked = true; await ui.fire('jev-run');
+  const request = ui.calls.find(call => call.url.endsWith('/auxiliary'));
+  assert.deepEqual(JSON.parse(request.options.body), {allow_external_processing: true});
+  assert.match(ui.el('jev-status').textContent, /<img src=x onerror=bad\(\)>/);
+  assert.match(ui.el('jev-status').textContent, /evidence is incomplete/);
+  assert.equal(ui.el('jev-results').children.length, 2);
+  assert.equal(ui.el('analysis-summary').textContent, original);
+  assert.equal(ui.el('jev-consent').checked, false);
+  await ui.fire('logout');
+  assert.equal(ui.el('jev-panel').hidden, true);
+  assert.equal(ui.el('jev-results').children.length, 0);
+});
+
+test('late Jev results cannot reappear after switching case or signing out', async () => {
+  let release;
+  const ui = setup(async url => url.endsWith('/me') ? {status: 200, data: {actor: 'alice', jev_available: true}} :
+    url.endsWith('/auxiliary') ? await new Promise(resolve => { release = resolve; }) : standard(url));
+  await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
+  ui.el('jev-consent').checked = true; await ui.fire('jev-run');
+  await ui.fire('logout');
+  release({status: 200, data: {status: 'available', model: 'jev', probabilities: {phishing_intent: 1}}}); await tick();
+  assert.equal(ui.el('jev-results').children.length, 0);
+  assert.equal(ui.el('jev-status').textContent, '');
+});
+
+test('Jev panel is hidden unless server explicitly enables it', async () => {
+  const ui = setup(standard); await ui.login();
+  ui.el('case-list').children[0].listeners.click(); await tick();
+  assert.equal(ui.el('jev-panel').hidden, true);
+});
+
 test('dropped and pasted case files use existing recognition and require explicit submission',async()=>{
   for(const kind of ['drop','paste']){
     let recognized;

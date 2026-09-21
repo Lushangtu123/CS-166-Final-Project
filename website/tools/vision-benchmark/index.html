@@ -1,0 +1,10 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Local image evaluation</title><link rel="stylesheet" href="/harness.css"></head><body>
+<main><h1>Local image evaluation</h1><p>Measure the same image recognition pipeline used by PhishGuard. Select a benchmark manifest and its images. Images stay in this browser; optional risk assessment sends extracted evidence only to your configured local backend.</p>
+<p>This is a developer tool. Reports contain per-record metrics, not raw OCR text or QR links. Synthetic controls cannot establish real-world accuracy.</p>
+<label>Manifest JSON <input id="manifest" type="file" accept=".json,application/json"></label>
+<label>Benchmark images <input id="images" type="file" accept=".png,.jpg,.jpeg,.webp" multiple></label>
+<label>Or select a dataset folder <input id="folder" type="file" webkitdirectory multiple></label>
+<label><input id="risk" type="checkbox" disabled> Also assess extracted evidence using the local backend</label>
+<p id="identity"></p><button id="run">Run evaluation</button> <button id="cancel" disabled>Stop</button> <button id="download" disabled>Download report</button>
+<p id="status" role="status">Choose files to begin. Missing files will be counted as failures.</p><details><summary>Local text comparison (not included in downloaded reports)</summary><p>Literal standard answers and extracted text. Treat recognized URLs as unverified text.</p><pre id="text-comparison"></pre></details><pre id="report"></pre></main>
+<script src="/static/vision.js"></script><script type="module" src="/harness.mjs"></script></body></html>

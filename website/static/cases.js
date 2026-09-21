@@ -4,6 +4,7 @@
   const labels = {pending: 'Pending', in_progress: 'In progress', closed: 'Closed'};
   let token = '', epoch = 0, listEpoch = 0, detailEpoch = 0, offset = 0, selected = null;
   let creation = null, inputVersion = 0, total = 0;
+  let jevAvailable = false, jevTurn = 0;
   const PAGE_SIZE = 25;
   function notice(text = '', error = false) { $('notice').textContent = text; $('notice').dataset.error = String(error); }
   function node(tag, text, className) {
@@ -22,6 +23,7 @@
     }
   }
   function signOut() {
+    jevAvailable = false; clearJev();
     window.PhishGuardVision?.cancel();
     $('vision-progress').textContent = '';
     $('case-file-status').textContent = '';
@@ -81,6 +83,7 @@
     $('previous').disabled = offset === 0; $('next').disabled = offset + PAGE_SIZE >= data.total;
   }
   function renderCase(value) {
+    clearJev();
     selected = value; syncSelection(); $('detail').hidden = false; $('empty-detail').hidden = true;
     $('case-title').textContent = value.title;
     $('case-meta').textContent = `${value.id} · Revision ${value.version} · Created by ${value.created_by}`;
@@ -120,11 +123,46 @@
     token = $('token').value.trim(); epoch++;
     action(button, async () => {
       const me = await api('/me'); $('token').value = ''; $('actor').textContent = me.actor;
+      jevAvailable = me.jev_available === true;
       $('login-panel').hidden = true; $('session').hidden = false; $('workspace').hidden = false;
       notice(); await loadList();
     });
   });
   $('logout').addEventListener('click', signOut);
+  function clearJev() {
+    jevTurn++; $('jev-panel').hidden = !jevAvailable;
+    $('jev-consent').checked = false; $('jev-status').textContent = '';
+    $('jev-results').replaceChildren(); $('jev-run').disabled = false;
+  }
+  $('jev-run').addEventListener('click', async () => {
+    if (!selected || !jevAvailable) return;
+    if (!$('jev-consent').checked) { $('jev-status').textContent = 'Confirm permission to send this message first.'; return; }
+    const turn = ++jevTurn, session = epoch, id = selected.id, version = selected.version;
+    $('jev-run').disabled = true; $('jev-results').replaceChildren(); $('jev-status').textContent = 'Requesting auxiliary opinion…';
+    try {
+      const result = await api('/' + encodeURIComponent(id) + '/auxiliary', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({allow_external_processing: true})});
+      if (turn !== jevTurn || session !== epoch || selected?.id !== id) return;
+      if (result.case_id !== id || result.case_version !== version) {
+        $('jev-status').textContent = 'The case changed. Reload it before requesting another opinion.'; return;
+      }
+      if (result.status !== 'available') {
+        $('jev-status').textContent = 'Auxiliary analysis was unavailable or skipped. The original detection result is unchanged.'; return;
+      }
+      $('jev-status').textContent = `${result.model} · Model opinions, not verified findings. Risk and verdict are unchanged.${result.evidence_incomplete ? ' Original evidence is incomplete; this opinion cannot fill missing images or correct OCR.' : ''}`;
+      const names = {credential_request: 'Request for authentication secrets', payment_redirection: 'New or changed payment destination', authority_pressure: 'Pressure to bypass normal checks', phishing_intent: 'Deceptive intent', insufficient_evidence: 'Insufficient evidence'};
+      for (const [key, label] of Object.entries(names)) {
+        const probability = result.probabilities?.[key];
+        if (typeof probability === 'number' && Number.isFinite(probability) && probability >= 0 && probability <= 1) {
+          $('jev-results').append(node('li', `${label}: ${(probability * 100).toFixed(1)}% estimated probability. This is not a severity score.`));
+        }
+      }
+    } catch (error) {
+      if (turn === jevTurn && session === epoch) $('jev-status').textContent = error.message || 'Auxiliary analysis failed. The original detection result is unchanged.';
+    } finally {
+      if (turn === jevTurn) { $('jev-run').disabled = false; $('jev-consent').checked = false; }
+    }
+  });
   window.addEventListener('pagehide', signOut);
   $('create-form').addEventListener('input', () => { creation = null; inputVersion++; window.PhishGuardVision?.cancel(); $('vision-progress').textContent = ''; });
   $('case-ocr-language').addEventListener('change', () => { creation = null; inputVersion++; window.PhishGuardVision?.cancel(); $('vision-progress').textContent = ''; });

@@ -22,6 +22,11 @@ jobs:
       - name: Smoke-test committed Vercel profile and model
         run: python website/tests/vercel_runtime_smoke.py
 
+      - name: Evaluate fixed synthetic controls against committed baseline
+        run: |
+          python website/tools/evaluate_public_corpus.py --manifest website/tests/fixtures/evaluation/manifest.json --output /tmp/evaluation-candidate.json
+          python website/tools/compare_evaluations.py --baseline website/tests/fixtures/evaluation/baseline.json --candidate /tmp/evaluation-candidate.json
+
       - name: Check Vercel dependency consistency
         run: python -m pip check
 
@@ -46,6 +51,9 @@ jobs:
       - name: Run backend tests
         run: python -m unittest discover -s website/tests -v
 
+      - name: Test localhost evaluation server boundaries
+        run: python website/tools/vision-benchmark/test_server.py
+
       - name: Check Python syntax
         run: python -m compileall -q website phishing-detection/src
 
@@ -69,3 +77,5 @@ jobs:
           node --check website/static/vision-core.mjs
           node --check website/static/vision-email.mjs
           node --check website/static/vision-worker.mjs
+          node --check website/tools/vision-benchmark/harness.mjs
+          node --check website/tools/vision-benchmark/metrics.mjs

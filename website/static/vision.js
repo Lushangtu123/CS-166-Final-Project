@@ -24,7 +24,7 @@ window.PhishGuardVision = (() => {
       if (!buffer.byteLength || buffer.byteLength > MAX_BYTES) throw new Error('File exceeds the 2 MiB limit.');
       const result = await new Promise((resolve, reject) => {
         rejectWork = reject;
-        worker = new Worker('/static/vision-worker.mjs?v=2', {type: 'module'});
+        worker = new Worker('/static/vision-worker.mjs?v=3', {type: 'module'});
         timer = setTimeout(() => { worker.terminate(); reject(new Error('Recognition timed out. Try a smaller image.')); }, 150000);
         worker.onerror = () => reject(new Error('Recognition could not start. Reload the page or try a supported browser.'));
         worker.onmessage = ({data}) => {
@@ -52,6 +52,8 @@ window.PhishGuardVision = (() => {
         failed:'Recognition failed', skipped:'Recognition skipped'}[item.status] || 'Recognition status unavailable';
       const risk = !item.risk_level || item.risk_level === 'unknown' ? 'Risk undetermined' : `Risk: ${item.risk_level}`;
       section.append(node('h4', item.name), node('p', `${recognition} · ${risk} · OCR confidence ${Math.round(item.ocr_confidence)}%`));
+      const language = {eng: 'English', chi_sim: 'Simplified Chinese', 'eng+chi_sim': 'English + Chinese'}[item.ocr_language];
+      section.append(node('p', `OCR language: ${language || 'Not recorded'}`));
       if (item.ml_status === 'available' && Number.isFinite(item.ml_phishing_probability)) {
         section.append(node('p', `Extracted-text model score: ${item.ml_phishing_probability}% phishing risk. Risk assessment also uses rule and link evidence.`));
       } else {

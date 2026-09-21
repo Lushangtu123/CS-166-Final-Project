@@ -11,3 +11,12 @@ venv/
 CHANGELOG.md
 progress_report.md
 render.yaml
+
+# Local evaluation corpora, private fingerprints and reports
+.evaluation-data/
+website/tools/vision-benchmark/
+website/tools/evaluate_public_corpus.py
+website/tools/evaluate_jev.py
+website/tools/evaluation_data.py
+website/tools/prepare_public_pilot.py
+website/tools/compare_evaluations.py

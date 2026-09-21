@@ -72,6 +72,35 @@ class CaseAPITests(unittest.TestCase):
         return self.call('POST', '/api/cases', key='00000000-0000-4000-8000-000000000001',
                          payload={'subject': 'Review', 'body': '<a href="https://paypa1.example">Review</a>'})
 
+    def test_auxiliary_auth_consent_disabled_and_unchanged_case(self):
+        from jev import JevClient
+        from unittest.mock import Mock
+        _, case, _ = self.create()
+        path = '/api/cases/' + case['id'] + '/auxiliary'
+        client = JevClient(enabled=True, key='synthetic')
+        client.evaluate = Mock(return_value={'status': 'available', 'affects_risk': False})
+        with patch('case_api.jev_client', return_value=client):
+            self.assertEqual(self.call('POST', path, token=None, payload={'allow_external_processing': True})[0], 401)
+            for consent in (False, 'true', 1, None):
+                self.assertEqual(self.call('POST', path, payload={'allow_external_processing': consent})[0], 422)
+            client.evaluate.assert_not_called()
+            status, result, headers = self.call('POST', path, payload={'allow_external_processing': True})
+            self.assertEqual(status, 200)
+            self.assertFalse(result['affects_risk'])
+            self.assertEqual(headers[b'cache-control'], b'no-store')
+            self.assertEqual(self.call('GET', '/api/cases/' + case['id'])[1], case)
+            prepared = client.evaluate.call_args.kwargs
+            self.assertNotIn('<a ', prepared['body'])
+            client.enabled = False
+            self.assertEqual(self.call('POST', path, payload={'allow_external_processing': True})[0], 503)
+
+    def test_saved_mime_plain_text_is_preserved_for_auxiliary_analysis(self):
+        raw = b'Subject: Review\nContent-Type: text/plain\n\nVisit <https://evil.example/login> to verify'
+        status, case, _ = self.call('POST', '/api/cases/eml', raw=raw,
+                                   key='00000000-0000-4000-8000-000000000004')
+        self.assertEqual(status, 201)
+        self.assertIn('<https://evil.example/login>', case['source']['auxiliary_text'])
+
     def test_disabled_and_invalid_configuration_fail_closed(self):
         self.assertIsNone(build_case_service({}))
         for changes in ({'VERCEL': '1'}, {'CASE_DB_PATH': 'relative.db'},

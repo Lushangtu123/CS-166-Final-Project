@@ -19,6 +19,7 @@ class VisualObservation(BaseModel):
     sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
     status: Literal['processed', 'partial', 'failed', 'skipped']
     qr_payloads: list[Annotated[str, Field(max_length=2048)]] = Field(default_factory=list, max_length=8)
+    ocr_language: Literal['eng', 'chi_sim', 'eng+chi_sim'] | None = None
     ocr_text: str = Field(default='', max_length=6000)
     ocr_confidence: float = Field(default=0, ge=0, le=100, allow_inf_nan=False)
     warnings: list[Annotated[str, Field(max_length=200)]] = Field(default_factory=list, max_length=6)
@@ -73,7 +74,12 @@ def merge_visual_findings(base, observations, findings, warnings):
         record['risk_level'] = 'unknown' if finding['risk_level'] == 'safe' else finding['risk_level']
         record['indicators'] = finding['extra_indicators']
         record['categories'] = finding['category_results']
-        record['assessment_warnings'] = finding['analysis_warnings']
+        record['assessment_warnings'] = list(finding['analysis_warnings'])
+        if observation.ocr_text.strip():
+            record['assessment_warnings'].append(
+                'Verify website addresses against the original image character by character. '
+                'OCR can confuse 1/l/I or 0/O and break URL punctuation, even with high confidence. '
+                'The original OCR text is preserved; no address spelling has been verified.')
         record['ml_status'] = finding.get('ml_status')
         record['ml_phishing_probability'] = finding.get('ml_phishing_probability')
         records.append(record)
@@ -92,7 +98,7 @@ def merge_visual_findings(base, observations, findings, warnings):
     if observations:
         base['fusion_method'] = 'conservative-message-visual-max'
     base['visual_analysis'] = {'provenance': 'browser_extracted_unverified',
-        'extractors': 'jsQR 1.4.0; Tesseract.js 6.0.1 (eng+chi_sim); postal-mime 3.0.0',
+        'extractors': 'jsQR 1.4.0; Tesseract.js 6.0.1; postal-mime 3.0.0',
         'observations': records, 'warnings': warnings}
     if observations or warnings:
         base['analysis_warnings'].append(

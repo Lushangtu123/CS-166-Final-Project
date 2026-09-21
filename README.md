@@ -732,6 +732,11 @@ endpoint additionally retains its stricter 60,000-byte file limit.
 
 ## Data and evaluation scope
 
+For the local public-corpus pilot, browser OCR/QR benchmarks, and reproducible
+baseline comparison, see [the evaluation workflow](docs/evaluation.md). These tools
+include owned CI controls and explicit data/label limitations; public raw mail and
+private screenshots stay outside Git and Vercel deployments.
+
 ### UCI website benchmark
 
 The notebook uses the [UCI Phishing Websites dataset](https://archive.ics.uci.edu/dataset/327/phishing+websites):
@@ -1004,3 +1009,22 @@ before transmission. Original image/attachment bytes are not retained in cases;
 extracted visual evidence, its provenance and the input digest are retained.
 Submitting a public analysis does not create a case. API callers without a browser
 must provide their own extraction or use the existing text/MIME-only routes.
+
+### Experimental Jev auxiliary opinions
+
+The authenticated case workspace can request a separate TypeSafe Jev text opinion.
+It is **disabled by default** and never changes the saved risk, verdict, evidence,
+or case history. Enabling requires `PHISHGUARD_JEV_ENABLED=true` and a server-side
+`TYPESAFE_API_KEY`; each request also requires the analyst's explicit permission
+to send the message text to TypeSafe. The public analyzer never calls Jev.
+
+The adapter pins `jev-1.13.0`, uses the official HTTP endpoint without an added
+Python dependency, and asks separate questions about secret disclosure, changed
+payment destinations, pressure to bypass checks, deceptive intent and missing
+evidence. These are model opinions, not verified findings. Jev cannot inspect
+images or repair OCR spelling, and multilingual performance is unverified here.
+
+Before enabling, run the [shadow evaluation workflow](docs/evaluation.md#jev-shadow-evaluation)
+and configure provider-side spending controls. No live Jev accuracy result is
+included. TypeSafe skill installation guides the coding agent; it does not install
+model weights, create an API account or enable inference.

@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "records": "records.jsonl",
+  "exploratory_only": true,
+  "sources": [{
+    "id": "owned-controls",
+    "url": "https://github.com/Lushangtu123/CS-166-Final-Project",
+    "revision": "owned-evaluation-controls-v1",
+    "license": "Project-authored synthetic test fixtures; no third-party messages",
+    "label_basis": "Authored benign and credential-theft scenarios; regression controls, not a representative accuracy set"
+  }]
+}

@@ -4,6 +4,7 @@ from datetime import date
 import hashlib
 import hmac
 import json
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -16,6 +17,7 @@ from starlette.concurrency import run_in_threadpool
 from case_store import CaseStore, CaseConflict, CaseInvalid, CaseNotFound, RISKS, STATUSES
 from case_cloud import UpstashCaseStore, CaseUnavailable
 from visual_evidence import VisualRequest
+from jev import JevClient, prepare_case_input
 
 
 @dataclass
@@ -72,6 +74,18 @@ class CaseReview(BaseModel):
     note: str = Field(default='', max_length=4000)
 
 
+class AuxiliaryConsent(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    allow_external_processing: bool = Field(strict=True)
+
+
+def jev_client(request):
+    # One budget per process lifetime. Fleet-wide cost limits belong at the provider.
+    if not hasattr(request.app.state, 'jev_client'):
+        request.app.state.jev_client = JevClient.from_env(os.environ)
+    return request.app.state.jev_client
+
+
 def make_case_router(analyze):
     router = APIRouter(prefix='/api/cases')
 
@@ -106,8 +120,8 @@ def make_case_router(analyze):
             raise HTTPException(503, 'Case storage is unavailable. Reload to check whether your last operation completed.') from None
 
     @router.get('/me')
-    async def me(access=Depends(identity)):
-        return {'actor': access[1]}
+    async def me(request: Request, access=Depends(identity)):
+        return {'actor': access[1], 'jev_available': jev_client(request).enabled}
 
     @router.get('')
     async def listing(status: str | None = None, risk: str | None = None,
@@ -162,6 +176,23 @@ def make_case_router(analyze):
     @router.get('/{case_id}')
     async def get(case_id: str, access=Depends(identity)):
         return await call(access[0].get, case_id)
+
+    @router.post('/{case_id}/auxiliary')
+    async def auxiliary(case_id: str, payload: AuxiliaryConsent, request: Request, access=Depends(identity)):
+        if payload.allow_external_processing is not True:
+            raise HTTPException(422, 'Explicit permission to send this message to TypeSafe is required')
+        client = jev_client(request)
+        if not client.enabled:
+            raise HTTPException(503, 'Auxiliary analysis is not configured')
+        case = await call(access[0].get, case_id)
+        try:
+            prepared = prepare_case_input(case['source'], case['analysis'])
+        except ValueError:
+            return {'case_id': case_id, 'case_version': case['version'], 'status': 'skipped',
+                    'reason': 'legacy_source_format', 'affects_risk': False}
+        result = await run_in_threadpool(client.evaluate, **prepared)
+        # An ephemeral opinion: no case mutation, score replacement, or automatic verdict.
+        return {'case_id': case_id, 'case_version': case['version'], **result}
 
     @router.patch('/{case_id}')
     async def update(case_id: str, payload: CaseReview, access=Depends(identity)):

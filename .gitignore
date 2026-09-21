@@ -40,3 +40,6 @@ build/
 
 # Browser recognition asset tooling (served artifacts are checked in)
 node_modules/
+
+# Local evaluation corpora, private fingerprints and reports
+.evaluation-data/

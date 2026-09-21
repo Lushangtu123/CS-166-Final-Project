@@ -32,7 +32,7 @@ self.onmessage = async ({data: {buffer, kind, name, language = 'eng'}}) => {
       try { info = checkImage(image.buffer); }
       catch (error) { warnings.push(`${image.name}: ${error.message}`.slice(0, 200)); continue; }
       const item = {name: image.name, source: image.source, mime_type: info.mime, sha256,
-        status: 'processed', qr_payloads: [], ocr_text: '', ocr_confidence: 0, warnings: []};
+        status: 'processed', qr_payloads: [], ocr_language: language, ocr_text: '', ocr_confidence: 0, warnings: []};
       observations.push(item);
       let bitmap;
       try {

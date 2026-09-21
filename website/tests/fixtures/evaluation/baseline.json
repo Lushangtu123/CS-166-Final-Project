@@ -1,0 +1,281 @@
+{
+  "alert_policy": "medium/high/critical count as alerts; unknown and inference failures remain undetermined in denominators",
+  "by_language": {
+    "en": {
+      "complete_rate": 1.0,
+      "complete_rate_95_ci": [
+        0.5101,
+        1.0
+      ],
+      "legitimate": {
+        "alerted": 0,
+        "not_alerted": 2,
+        "undetermined": 0
+      },
+      "legitimate_count": 2,
+      "legitimate_false_alert_rate": 0.0,
+      "legitimate_false_alert_rate_95_ci": [
+        0.0,
+        0.6576
+      ],
+      "ml_available_rate": 1.0,
+      "ml_available_rate_95_ci": [
+        0.5101,
+        1.0
+      ],
+      "n": 4,
+      "phishing": {
+        "alerted": 2,
+        "not_alerted": 0,
+        "undetermined": 0
+      },
+      "phishing_alert_recall": 1.0,
+      "phishing_alert_recall_95_ci": [
+        0.3424,
+        1.0
+      ],
+      "phishing_count": 2,
+      "unknown_rate": 0.0,
+      "unknown_rate_95_ci": [
+        0.0,
+        0.4899
+      ]
+    }
+  },
+  "by_month": {
+    "unknown": {
+      "complete_rate": 1.0,
+      "complete_rate_95_ci": [
+        0.5101,
+        1.0
+      ],
+      "legitimate": {
+        "alerted": 0,
+        "not_alerted": 2,
+        "undetermined": 0
+      },
+      "legitimate_count": 2,
+      "legitimate_false_alert_rate": 0.0,
+      "legitimate_false_alert_rate_95_ci": [
+        0.0,
+        0.6576
+      ],
+      "ml_available_rate": 1.0,
+      "ml_available_rate_95_ci": [
+        0.5101,
+        1.0
+      ],
+      "n": 4,
+      "phishing": {
+        "alerted": 2,
+        "not_alerted": 0,
+        "undetermined": 0
+      },
+      "phishing_alert_recall": 1.0,
+      "phishing_alert_recall_95_ci": [
+        0.3424,
+        1.0
+      ],
+      "phishing_count": 2,
+      "unknown_rate": 0.0,
+      "unknown_rate_95_ci": [
+        0.0,
+        0.4899
+      ]
+    }
+  },
+  "by_provider": {
+    "unknown": {
+      "complete_rate": 1.0,
+      "complete_rate_95_ci": [
+        0.5101,
+        1.0
+      ],
+      "legitimate": {
+        "alerted": 0,
+        "not_alerted": 2,
+        "undetermined": 0
+      },
+      "legitimate_count": 2,
+      "legitimate_false_alert_rate": 0.0,
+      "legitimate_false_alert_rate_95_ci": [
+        0.0,
+        0.6576
+      ],
+      "ml_available_rate": 1.0,
+      "ml_available_rate_95_ci": [
+        0.5101,
+        1.0
+      ],
+      "n": 4,
+      "phishing": {
+        "alerted": 2,
+        "not_alerted": 0,
+        "undetermined": 0
+      },
+      "phishing_alert_recall": 1.0,
+      "phishing_alert_recall_95_ci": [
+        0.3424,
+        1.0
+      ],
+      "phishing_count": 2,
+      "unknown_rate": 0.0,
+      "unknown_rate_95_ci": [
+        0.0,
+        0.4899
+      ]
+    }
+  },
+  "by_source": {
+    "owned-controls": {
+      "complete_rate": 1.0,
+      "complete_rate_95_ci": [
+        0.5101,
+        1.0
+      ],
+      "legitimate": {
+        "alerted": 0,
+        "not_alerted": 2,
+        "undetermined": 0
+      },
+      "legitimate_count": 2,
+      "legitimate_false_alert_rate": 0.0,
+      "legitimate_false_alert_rate_95_ci": [
+        0.0,
+        0.6576
+      ],
+      "ml_available_rate": 1.0,
+      "ml_available_rate_95_ci": [
+        0.5101,
+        1.0
+      ],
+      "n": 4,
+      "phishing": {
+        "alerted": 2,
+        "not_alerted": 0,
+        "undetermined": 0
+      },
+      "phishing_alert_recall": 1.0,
+      "phishing_alert_recall_95_ci": [
+        0.3424,
+        1.0
+      ],
+      "phishing_count": 2,
+      "unknown_rate": 0.0,
+      "unknown_rate_95_ci": [
+        0.0,
+        0.4899
+      ]
+    }
+  },
+  "confidence_intervals": "two-sided 95% Wilson score intervals; correlated templates may reduce effective sample size",
+  "counts": {
+    "duplicates": 0,
+    "evaluated": 4,
+    "excluded": 0,
+    "failures": 0,
+    "input": 4,
+    "overlap_exact": 0,
+    "overlap_template": 0
+  },
+  "dataset_sha256": "82c5066d8eb0c0dceff840a6022c7fcd61adb0d91189bf23ce3c9a15e232c63b",
+  "evaluated_cohort_sha256": "34f680e5e9b27484b8d81f04d3e77c4dd7ea9a87b8674c94723adf8dda5edd4b",
+  "evaluation_scope": "public_corpus_local_serving_pipeline",
+  "exploratory_only": true,
+  "limitations": [
+    "Source metadata and labels are supplied declarations and have not been independently verified by this tool.",
+    "Public corpus results do not establish accuracy on real user inboxes or enterprise traffic.",
+    "Temporal isolation and full model training independence are not established."
+  ],
+  "manifest_sha256": "325a469b4363d02d1ce25feac91966264fb264f8eba471d659442c37ec3e2805",
+  "model_artifact_sha256": "a0a503a0cd6122e722933add91f49cc72e3fa74abaf1129c4df3fe0450401746",
+  "overall": {
+    "complete_rate": 1.0,
+    "complete_rate_95_ci": [
+      0.5101,
+      1.0
+    ],
+    "legitimate": {
+      "alerted": 0,
+      "not_alerted": 2,
+      "undetermined": 0
+    },
+    "legitimate_count": 2,
+    "legitimate_false_alert_rate": 0.0,
+    "legitimate_false_alert_rate_95_ci": [
+      0.0,
+      0.6576
+    ],
+    "ml_available_rate": 1.0,
+    "ml_available_rate_95_ci": [
+      0.5101,
+      1.0
+    ],
+    "n": 4,
+    "phishing": {
+      "alerted": 2,
+      "not_alerted": 0,
+      "undetermined": 0
+    },
+    "phishing_alert_recall": 1.0,
+    "phishing_alert_recall_95_ci": [
+      0.3424,
+      1.0
+    ],
+    "phishing_count": 2,
+    "unknown_rate": 0.0,
+    "unknown_rate_95_ci": [
+      0.0,
+      0.4899
+    ]
+  },
+  "overlap_check": {
+    "limitation": "Heuristic matching against the supplied reference only; complete training corpus coverage is not verified.",
+    "reference_dataset_sha256": null,
+    "reference_rows": 0,
+    "status": "not_verified",
+    "template_algorithm": "casefold, normalize whitespace, mask URLs/emails/digits; minimum 80 characters and 12 words",
+    "template_repeats_within_evaluation": 0
+  },
+  "records_sha256": "aa5e558bcbca8e0d9bd0dd986c6f8cf65da612c4bd598aacbcd245b4ae13f1b7",
+  "reproducibility": {
+    "configuration": {
+      "network_services_enabled": false,
+      "observe_sender_history": false,
+      "trusted_authserv_ids": []
+    },
+    "deployment_profile_sha256": "f835e66c25095e20a9492f69c1998d0756f2bf7076e988da9ca9c61ed8c87b00",
+    "evaluator_sha256": "d0bbfa37a7bb2b53efc5ba54c07ab320353968303747eca533a96c19d94ca0db",
+    "git_commit": "5fc42fe99659dc4f4ced645b98d0643b267df4aa",
+    "git_dirty": true,
+    "package_versions": {
+      "fastapi": "0.141.1",
+      "joblib": "1.6.0",
+      "numpy": "2.5.3",
+      "pydantic": "2.13.5",
+      "scikit-learn": "1.9.0",
+      "scipy": "1.18.1",
+      "threadpoolctl": "3.7.0",
+      "tldextract": "5.3.2"
+    },
+    "platform": {
+      "machine": "arm64",
+      "system": "Darwin"
+    },
+    "python_version": "3.12.9",
+    "source_sha256": "e3a144938784d0dbc97e62aedaa2d947f10e0544fd82816e3863ed690382c229"
+  },
+  "schema_version": 1,
+  "scoring_sha256": "1639b65ab3a1fdfd91fac7168a8dabe9325c96d8b998ff85e399ac9f386eb927",
+  "sources": [
+    {
+      "id": "owned-controls",
+      "label_basis": "Authored benign and credential-theft scenarios; regression controls, not a representative accuracy set",
+      "license": "Project-authored synthetic test fixtures; no third-party messages",
+      "revision": "owned-evaluation-controls-v1",
+      "url": "https://github.com/Lushangtu123/CS-166-Final-Project"
+    }
+  ],
+  "temporal_isolation": "not_verified",
+  "training_independence": "not_verified"
+}

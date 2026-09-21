@@ -507,15 +507,24 @@ def _analyze_message(message, *, unicode_source, trusted_authserv_ids, depth, bu
     if brand_score:
         risk_floor = "high"
 
-    for name, points, level in (('Reply-To', 4, 'high'), ('Return-Path', 2, 'medium')):
+    # Reply and bounce routing may legitimately differ from the visible author
+    # (for example with discussion lists and delivery services). They are one
+    # weak routing concern, not independent evidence of sender impersonation.
+    # Keep every observation; never trust a List-Id or other claimed list header
+    # to suppress this concern or unrelated authentication/content evidence.
+    routing_mismatch = False
+    for name in ('Reply-To', 'Return-Path'):
         domains = {_domain(address) for value in header_candidates[name]
                    for _, address in getaddresses([value])} - {''}
         mismatch = next((other for other in sorted(domains) if from_domains
                          and not any(_domains_align(other, sender) for sender in from_domains)), None)
         if mismatch:
-            score += points
-            indicators.append({'level': level, 'msg':
-                f'{name} domain ({mismatch}) differs from From domain candidates ({", ".join(sorted(from_domains))}).'})
+            routing_mismatch = True
+            indicators.append({'level': 'low', 'msg':
+                f'{name} domain ({mismatch}) differs from From domain candidates ({", ".join(sorted(from_domains))}). '
+                'Routing differs; this alone does not establish impersonation.'})
+    if routing_mismatch:
+        score += 2
 
     trusted_ids = {
         value.strip().lower()

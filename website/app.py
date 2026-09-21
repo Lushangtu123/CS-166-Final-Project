@@ -2531,7 +2531,7 @@ def _stylesheet_may_hide_text(css: str) -> bool:
     return False
 
 
-def _visible_content_text(text: str, parse_warnings=None) -> str:
+def _visible_content_text(text: str, parse_warnings=None, *, structure_stats=None) -> str:
     """Decode HTML text separately from destinations, preserving inline words."""
     class TextCollector(_AnalysisHTMLParser):
         head_elements = {'html', 'head', 'base', 'basefont', 'bgsound', 'link',
@@ -2543,6 +2543,8 @@ def _visible_content_text(text: str, parse_warnings=None) -> str:
             self.hidden = []
             self.elements = []
             self.excluded_hidden_text = False
+            self.hidden_characters = 0
+            self.linked_visible_images = 0
             self.stylesheet_parts = []
             self.conditional_image_alt = False
             self.uncertain_inline_style = False
@@ -2608,6 +2610,11 @@ def _visible_content_text(text: str, parse_warnings=None) -> str:
             if self.hidden:
                 return
             self._implicitly_close(tag)
+            if tag == 'a':
+                # HTML closes a prior anchor when another anchor starts. Do not
+                # inherit an old HTTP action through a nested mailto/fragment link.
+                self.elements = [(*element[:4], False) if element[0] == 'a' else element
+                                 for element in self.elements]
             # Browsers retain the first duplicate attribute, not the last.
             style = next((value for name, value in attrs if name == 'style'), '')
             display_hidden, visibility_hidden, opacity_hidden, uncertain_style = _inline_visibility(style or '')
@@ -2623,8 +2630,12 @@ def _visible_content_text(text: str, parse_warnings=None) -> str:
                 for index in range(len(self.elements) - 1, -1, -1):
                     if self.elements[index][0] == 'picture':
                         picture = self.elements[index]
-                        self.elements[index] = (*picture[:3], True)
+                        self.elements[index] = (*picture[:3], True, *picture[4:])
                         break
+            if (tag == 'img' and not element_display and not element_visibility
+                    and any(element[4] for element in self.elements)
+                    and any(name in {'src', 'srcset'} and value and value.strip() for name, value in attrs)):
+                self.linked_visible_images += 1
             if tag == 'img':
                 alt = next((value for name, value in attrs if name == 'alt'), '') or ''
                 if alt.strip():
@@ -2653,7 +2664,15 @@ def _visible_content_text(text: str, parse_warnings=None) -> str:
                                      or bool(non_latin_script_segments(alt, 12))))
                         )
             if tag not in _HTML_VOID_ELEMENTS:
-                self.elements.append((tag, element_display, element_visibility, False))
+                href = dict(attrs).get('href') or ''
+                actionable_anchor = False
+                if tag == 'a' and re.sub(r'[\t\r\n]', '', href).strip().lower().startswith(('http://', 'https://')):
+                    try:
+                        target = _parse_link_target(href)
+                        actionable_anchor = target.scheme.lower() in {'http', 'https'} and bool(target.hostname)
+                    except ValueError:
+                        pass
+                self.elements.append((tag, element_display, element_visibility, False, actionable_anchor))
                 if tag == 'p':
                     self.open_paragraph = True
             if not element_display and not element_visibility and tag in {'p', 'div', 'br', 'li', 'tr', 'td', 'hr', 'section'}:
@@ -2680,6 +2699,7 @@ def _visible_content_text(text: str, parse_warnings=None) -> str:
                     self.stylesheet_parts.append(data)
                 return
             if self._visually_hidden():
+                self.hidden_characters += sum(not char.isspace() for char in _strip_invisible_format_controls(data))
                 if data.strip():
                     self.excluded_hidden_text = True
             else:
@@ -2694,7 +2714,12 @@ def _visible_content_text(text: str, parse_warnings=None) -> str:
         parse_warnings.append(_INLINE_CSS_VISIBILITY_WARNING)
     if collector.conditional_image_alt and parse_warnings is not None:
         parse_warnings.append(_IMAGE_ALT_FALLBACK_WARNING)
-    return re.sub(r'\s+', ' ', ''.join(collector.parts)).strip()
+    visible = re.sub(r'\s+', ' ', ''.join(collector.parts)).strip()
+    if structure_stats is not None:
+        structure_stats.update(hidden_characters=collector.hidden_characters,
+                               visible_characters=sum(not char.isspace() for char in _strip_invisible_format_controls(visible)),
+                               linked_visible_images=collector.linked_visible_images)
+    return visible
 
 
 _INLINE_IMAGE_WARNING = 'Embedded image content was not inspected; analysis is incomplete.'
@@ -2890,9 +2915,24 @@ def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] 
     """Rule-based heuristic phishing analysis of email subject + body text."""
     analysis_warnings = []
 
+    hidden_image_padding = []
+
     def visible_html(part):
         part_warnings = []
-        visible = _visible_content_text(part, part_warnings)
+        stats = {}
+        visible = _visible_content_text(part, part_warnings, structure_stats=stats)
+        # Require a large explicitly concealed block and an actionable image in
+        # this same HTML document. Short preheaders and text-rich mail do not qualify.
+        hidden_image_padding.append(
+            stats['hidden_characters'] >= 500
+            and stats['visible_characters'] < _REMOTE_IMAGE_MIN_VISIBLE_CHARS
+            and stats['hidden_characters'] >= 10 * max(stats['visible_characters'], 1)
+            and stats['linked_visible_images'] > 0
+            and not any(warning in part_warnings for warning in (
+                _STYLESHEET_VISIBILITY_WARNING, _INLINE_CSS_VISIBILITY_WARNING,
+                _MSO_CONDITIONAL_WARNING))
+            and not any('malformed' in warning.lower() or 'recovery' in warning.lower()
+                        for warning in part_warnings))
         analysis_warnings.extend(part_warnings)
         stylesheet_uncertain = any(warning in part_warnings for warning in (
             _STYLESHEET_VISIBILITY_WARNING, _INLINE_CSS_VISIBILITY_WARNING,
@@ -3049,6 +3089,15 @@ def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] 
             })
 
     extra_indicators = []
+
+    if any(hidden_image_padding):
+        total_score += 4
+        risk_floor = 'medium'
+        extra_indicators.append({
+            'level': 'medium',
+            'msg': 'Large hidden text block accompanies an image-dominant linked message; '
+                   'the visible message differs substantially from its hidden text. Review the image and destination manually.',
+        })
 
     if any(_has_password_form(part, analysis_warnings) for part, is_html in zip(raw_parts, html_parts) if is_html):
         total_score += 4
@@ -3528,8 +3577,11 @@ async def _analyze_content(
     result['analysis_warnings'] = list(dict.fromkeys(result['analysis_warnings']
         + (structure['parse_warnings'] if structure else [])))
     result['analysis_complete'] = not bool(result['analysis_warnings'])
+    # Weak routing/text evidence cannot establish low risk when the main visible
+    # content is an uninspected image. Keep independently supported alerts.
     if not result['analysis_complete'] and (result['risk_level'] == 'safe'
-                                            or rendering_uncertain and result['risk_level'] == 'low'):
+                                            or (rendering_uncertain or remote_image_dominant)
+                                            and result['risk_level'] == 'low'):
         if result['analysis_warnings'] == [_REMOTE_IMAGE_WARNING] and not remote_image_dominant:
             result['risk_label'] = 'No Indicators in Inspected Text — Remote Image Unchecked'
         else:
@@ -4197,6 +4249,15 @@ async def _analyze_case(payload, raw):
     source['text_truncated'] = bool(len(source['body']) > 60000 or
                                     (visual and structure and structure.get('text_truncated')))
     source['body'] = source['body'][:60000]
+    # Preserve MIME text/plain literally for later optional semantic analysis.
+    # Saved legacy raw-email bodies mix HTML/plain and cannot be re-parsed safely.
+    semantic_parts = structure['content_parts'] if structure else [
+        {'content_type': 'text/html', 'content': payload.body}]
+    source['auxiliary_text'] = '\n'.join(
+        _mask_inline_data_payloads(_visible_content_text(part['content'])
+                                  if part['content_type'] == 'text/html' else part['content'])
+        for part in semantic_parts)[:12001]  # Over-limit sentinel length makes Jev skip, not silently truncate.
+    source['auxiliary_omitted_nested_messages'] = bool(structure and structure.get('nested_messages'))
     digest = hashlib.sha256()
     for path in sorted([*BASE_DIR.glob('*.py'), *(BASE_DIR / 'data').glob('*.json')]):
         digest.update(str(path.relative_to(BASE_DIR)).encode() + b'\0' + path.read_bytes())

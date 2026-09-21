@@ -1,0 +1,69 @@
+{
+  "schema_version": "phishguard-vision-benchmark/v1",
+  "dataset_id": "project-synthetic-visual-v1",
+  "source": "Project-owned synthetic controls in website/tests/fixtures/vision. Human transcription from rendered images; reference line breaks follow visible lines and include one terminal newline.",
+  "license": "Project-authored fixture data; see repository license. No external or personal mail.",
+  "limitations": [
+    "Synthetic integration controls only; not a production accuracy estimate.",
+    "QR-only images have empty text ground truth; false OCR text is measured separately."
+  ],
+  "records": [
+    {
+      "id": "synthetic-benign",
+      "filename": "synthetic-benign.png",
+      "sha256": "9261bea00d366dc1e252dcc73fc115acee3ae012e17e96513d13311134eba5f3",
+      "language": "eng",
+      "expected_text": "Project meeting on Thursday\nPlease review the team notes before lunch.\n",
+      "expected_qr_payloads": [],
+      "label": "benign",
+      "expected_urls": []
+    },
+    {
+      "id": "synthetic-phishing",
+      "filename": "synthetic-phishing.png",
+      "sha256": "6d78fde264d9c7214259ed9fa70e97d8b042b4d9b5f1e3b291e7314c78068616",
+      "language": "eng",
+      "expected_text": "URGENT: Verify your account now\nYour account will be suspended.\nEnter your password at\nhttps://paypa1.example/login\n",
+      "expected_qr_payloads": [],
+      "label": "phishing",
+      "expected_urls": [
+        "https://paypa1.example/login"
+      ]
+    },
+    {
+      "id": "synthetic-chinese",
+      "filename": "synthetic-chinese.png",
+      "sha256": "d6c25e718871eb80de9c5416e0d64caf89c39daa23011ff3f6ee98a82f2d3d2a",
+      "language": "chi_sim",
+      "expected_text": "您的账户即将停用\n请立即验证账户并输入密码\nhttps://paypa1.example/login\n",
+      "expected_qr_payloads": [],
+      "label": "phishing",
+      "expected_urls": [
+        "https://paypa1.example/login"
+      ]
+    },
+    {
+      "id": "synthetic-qr",
+      "filename": "synthetic-qr.png",
+      "sha256": "123b9433701dcd63ff1191707d687aabec622a78684e1c4124eeea594968aa50",
+      "language": "eng",
+      "expected_text": "",
+      "expected_qr_payloads": [
+        "https://paypa1.example/login"
+      ],
+      "label": "phishing"
+    },
+    {
+      "id": "synthetic-multiple-qr",
+      "filename": "synthetic-multiple-qr.png",
+      "sha256": "9a9990082dcfbd4bfea4b0627d45e1289a2e29f0f92a4f8512a6c7d8f13ab495",
+      "language": "eng",
+      "expected_text": "",
+      "expected_qr_payloads": [
+        "https://paypa1.example/login",
+        "https://example.com/meeting"
+      ],
+      "label": "phishing"
+    }
+  ]
+}

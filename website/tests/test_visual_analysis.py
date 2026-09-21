@@ -38,6 +38,29 @@ class VisualAPITests(unittest.TestCase):
     def call(self, payload, path='/api/analyze-visual'):
         return asyncio.run(request('POST', path, token=None, payload=payload))
 
+    def test_actual_ocr_language_is_preserved_without_trusting_it_as_a_verdict(self):
+        for language in ('eng', 'chi_sim', 'eng+chi_sim', None):
+            status, data, _ = self.call({'observations': [observation(ocr_language=language)]})
+            self.assertEqual(status, 200)
+            evidence = data['visual_analysis']
+            self.assertEqual(evidence['observations'][0]['ocr_language'], language)
+            self.assertNotIn('(eng+chi_sim)', evidence['extractors'])
+            self.assertEqual(evidence['provenance'], 'browser_extracted_unverified')
+            self.assertFalse(data['analysis_complete'])
+        self.assertEqual(self.call({'observations': [observation(ocr_language='unknown-language') ]})[0], 422)
+
+    def test_high_confidence_ocr_does_not_certify_url_spelling(self):
+        for text in ('https://paypal.example/login', 'httbs:/ /baybal.example/login'):
+            status, data, _ = self.call({'observations': [observation(
+                qr_payloads=[], ocr_text=text, ocr_confidence=99)]})
+            self.assertEqual(status, 200)
+            record = data['visual_analysis']['observations'][0]
+            self.assertEqual(record['ocr_text'], text)
+            self.assertTrue(any('character by character' in warning
+                                for warning in record['assessment_warnings']))
+            self.assertFalse(data['analysis_complete'])
+            self.assertNotEqual(data['risk_level'], 'safe')
+
     def test_benign_blank_or_failed_extraction_never_certifies_safety(self):
         for item in [observation(qr_payloads=[], ocr_text='Team meeting on Thursday.'),
                      observation(qr_payloads=[], status='failed', warnings=['OCR failed']),
