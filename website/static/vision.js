@@ -43,10 +43,22 @@ window.PhishGuardVision = (() => {
     target.replaceChildren(); target.hidden = !analysis;
     if (!analysis) return;
     const node = (tag, text) => { const el = document.createElement(tag); el.textContent = text; return el; };
-    target.append(node('h3', 'Image & QR evidence'), node('p', 'Extracted in your browser; not independently verified. Recognition may miss content and does not assess malware or all image meaning. Links are shown as text and are not opened.'));
+    target.append(node('h3', 'Image & QR evidence'), node('p', 'Extracted in your browser; not independently verified. Recognition may miss content and does not assess malware or all image meaning. Links are shown as text and are not opened.'),
+      node('p', 'OCR confidence measures text extraction, not a phishing probability. Successful recognition does not establish that an image is safe.'));
     for (const item of analysis.observations || []) {
       const section = node('section', '');
-      section.append(node('h4', item.name), node('p', `${item.status} · ${item.risk_level || 'unscored'} · OCR confidence ${Math.round(item.ocr_confidence)}%`));
+      const recognition = {processed:'Recognition completed', partial:'Recognition partially completed',
+        failed:'Recognition failed', skipped:'Recognition skipped'}[item.status] || 'Recognition status unavailable';
+      const risk = !item.risk_level || item.risk_level === 'unknown' ? 'Risk undetermined' : `Risk: ${item.risk_level}`;
+      section.append(node('h4', item.name), node('p', `${recognition} · ${risk} · OCR confidence ${Math.round(item.ocr_confidence)}%`));
+      if (item.ml_status === 'available' && Number.isFinite(item.ml_phishing_probability)) {
+        section.append(node('p', `Extracted-text model score: ${item.ml_phishing_probability}% phishing risk. Risk assessment also uses rule and link evidence.`));
+      } else {
+        const reason = {insufficient_context:'Too little readable text for the extracted-text model.',
+          insufficient_feature_coverage:'The extracted text has insufficient model coverage.',
+          unverified_rendering:'The extracted text could not be verified for model analysis.'}[item.ml_status];
+        section.append(node('p', reason || 'Extracted-text model assessment is unavailable. Review the rule and link evidence.'));
+      }
       for (const payload of item.qr_payloads || []) section.append(node('strong', 'QR payload'), node('pre', payload));
       if (item.ocr_text) section.append(node('strong', 'Extracted text'), node('pre', item.ocr_text));
       for (const warning of [...new Set([...(item.warnings || []), ...(item.assessment_warnings || [])])]) section.append(node('p', warning));

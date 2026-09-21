@@ -1101,6 +1101,7 @@ const RISK_CONFIG = {
 
 function renderContentResult(data) {
   const cfg = RISK_CONFIG[data.risk_level] || RISK_CONFIG.medium;
+  const imageOnly = data.input_mode === 'image-evidence';
 
   // Banner
   const banner = document.getElementById('content-risk-banner');
@@ -1120,7 +1121,9 @@ function renderContentResult(data) {
     const unresolvedImageCoverage = data.unresolved_image_coverage?.inspection_status === 'metadata_only' ||
       (data.analysis_warnings || []).some(warning => warning.includes('Unresolved image references were not inspected;'));
     const parseIssues = (data.message_structure?.parse_warnings || []).length > 0;
-    subParts.push('Analysis incomplete. Review the warnings below.');
+    subParts.push(imageOnly
+      ? 'Image risk coverage is limited. Review the recognition status and extracted-text assessment in Image & QR evidence.'
+      : 'Analysis incomplete. Review the warnings below.');
     if (attachmentCoverage) {
       subParts.push('Attachment contents were not inspected; only filenames and MIME types were checked.');
     }
@@ -1128,7 +1131,7 @@ function renderContentResult(data) {
     if (remoteImageCoverage) subParts.push('Remote image content was not inspected.');
     if (unresolvedImageCoverage) subParts.push('Unresolved image references were not inspected.');
     if (parseIssues) subParts.push('Some message content could not be reliably parsed.');
-    if (['insufficient_context', 'insufficient_feature_coverage', 'unverified_rendering'].includes(data.ml_status)) {
+    if (!imageOnly && ['insufficient_context', 'insufficient_feature_coverage', 'unverified_rendering'].includes(data.ml_status)) {
       subParts.push('The text model could not score this message.');
     }
   }
@@ -1177,7 +1180,11 @@ function renderContentResult(data) {
   // ── ML Classifier Card ───────────────────────────────────────────────────
   const mlCard = document.getElementById('content-ml-card');
   const mlProbabilityBars = document.getElementById('content-ml-prob-bars');
-  if (['insufficient_context', 'insufficient_feature_coverage', 'unverified_rendering'].includes(data.ml_status)) {
+  if (imageOnly) {
+    // The top-level model result describes the original email body, which is
+    // empty for an image upload. Each image has its own extracted-text result.
+    mlCard.style.display = 'none';
+  } else if (['insufficient_context', 'insufficient_feature_coverage', 'unverified_rendering'].includes(data.ml_status)) {
     mlCard.style.display = '';
     mlProbabilityBars.style.display = 'none';
     document.getElementById('content-phish-bar').style.width = '0%';
@@ -1239,6 +1246,7 @@ function renderContentResult(data) {
 
   // Category cards
   const grid = document.getElementById('content-category-grid');
+  grid.style.display = imageOnly ? 'none' : '';
   if (data.category_results.length === 0) {
     grid.innerHTML = `<div class="cat-empty">No suspicious keyword categories matched in this email.</div>`;
   } else {

@@ -56,3 +56,22 @@ test('recognition evidence renders malicious payloads only as text, never links 
   assert(!nodes.some(n=>['img','a','script'].includes(n.tag)));
   api.render(root,null);assert.equal(root.children.length,0);assert.equal(root.hidden,true);
 });
+
+test('successful OCR with unknown risk distinguishes recognition from risk and model confidence',()=>{
+  const {api}=setup(),root=new Element('section');
+  const item={name:'newsletter.png',status:'processed',risk_level:'unknown',ocr_confidence:92,
+    qr_payloads:[],ocr_text:'Readable newsletter text.',warnings:[],ml_status:'available',ml_phishing_probability:12};
+  function textOf(node) {return [node.textContent,...node.children.map(textOf)].join(' ');}
+  api.render(root,{observations:[item],warnings:[]});
+  let text=textOf(root);
+  assert.match(text,/Recognition completed/);
+  assert.match(text,/Risk undetermined/);
+  assert.match(text,/OCR confidence 92%/);
+  assert.match(text,/Extracted-text model score: 12%/);
+  assert.match(text,/not a phishing probability/);
+  api.render(root,{observations:[{...item,status:'failed',ocr_text:'',ml_status:'insufficient_context',ml_phishing_probability:null}],warnings:[]});
+  text=textOf(root);
+  assert.match(text,/Recognition failed/);
+  assert.doesNotMatch(text,/Recognition completed|model score: 12%/);
+  assert.match(text,/Too little readable text/);
+});

@@ -97,6 +97,27 @@ test('content summary handles zero, singular, and plural categories', () => {
   assert.equal(elements.get('crb-sub').textContent, '2 suspicious categories detected.');
 });
 
+test('image-only results do not present empty email-body analysis as OCR failure', () => {
+  const {context, elements} = loadFrontend();
+  const result = {risk_level:'unknown', risk_label:'Analysis Incomplete — Risk Undetermined',
+    total_score:0, category_results:[], extra_indicators:[], safety_signals:[],
+    analysis_complete:false, ml_status:'insufficient_context', ml_label:null,
+    input_mode:'image-evidence', visual_analysis:{observations:[{
+      status:'processed', ocr_text:'A community newsletter with a long readable message.',
+      ocr_confidence:92, ml_status:'available', ml_phishing_probability:12,
+    }]}};
+  context.renderContentResult(result);
+  assert.equal(elements.get('content-ml-card').style.display, 'none');
+  assert.equal(elements.get('content-category-grid').style.display, 'none');
+  assert.doesNotMatch(elements.get('crb-sub').textContent, /text model could not score this message/);
+  assert.match(elements.get('crb-sub').textContent, /Image & QR evidence/);
+  assert.match(elements.get('crb-title').textContent, /[Uu]ndetermined/);
+  context.renderContentResult({...result, input_mode:'manual', visual_analysis:undefined});
+  assert.equal(elements.get('content-ml-card').style.display, '');
+  assert.equal(elements.get('content-category-grid').style.display, '');
+  assert.match(elements.get('content-ml-sub').textContent, /too little text/);
+});
+
 test('Null MX explains no mail service without claiming phishing or a missing mailbox', () => {
   const { context, elements } = loadFrontend();
   context.renderVerifyResult({email: 'user@example.com', format_valid: true, mx_found: false,
