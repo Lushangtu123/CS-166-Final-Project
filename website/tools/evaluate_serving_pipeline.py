@@ -36,6 +36,9 @@ def _validated_record(row: dict, index: int) -> dict:
         raise ValueError(f'Row {index}: provider must be gmail or outlook')
     if label not in LABELS:
         raise ValueError(f'Row {index}: label must be phishing or legitimate')
+    if 'language' in row and (not isinstance(row['language'], str)
+                              or not re.fullmatch(r'[a-z]{2,3}', row['language'])):
+        raise ValueError(f'Row {index}: language must be a lowercase two- or three-letter code')
     if not isinstance(received_at, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', received_at):
         raise ValueError(f'Row {index}: received_at must be YYYY-MM-DD')
     try:
@@ -97,6 +100,7 @@ def evaluate_records(
             raise ValueError(f'Row {index}: analyzer returned an invalid risk level')
         outcomes.append({
             'provider': row['provider'],
+            'language': row.get('language', 'unlabeled'),
             'month': row['received_at'][:7],
             'label': row['label'],
             'decision': ('undetermined' if risk == 'unknown' else
@@ -109,11 +113,15 @@ def evaluate_records(
         raise ValueError('No evaluation rows were supplied')
 
     by_provider = defaultdict(list)
+    by_language = defaultdict(list)
     by_month = defaultdict(list)
+    by_provider_language = defaultdict(lambda: defaultdict(list))
     by_provider_month = defaultdict(lambda: defaultdict(list))
     for item in outcomes:
         by_provider[item['provider']].append(item)
+        by_language[item['language']].append(item)
         by_month[item['month']].append(item)
+        by_provider_language[item['provider']][item['language']].append(item)
         by_provider_month[item['provider']][item['month']].append(item)
     return {
         'evaluation_scope': 'local_serving_pipeline',
@@ -124,7 +132,12 @@ def evaluate_records(
         'last_received_at': max(dates),
         'overall': _summary(outcomes),
         'by_provider': {key: _summary(values) for key, values in sorted(by_provider.items())},
+        'by_language': {key: _summary(values) for key, values in sorted(by_language.items())},
         'by_month': {key: _summary(values) for key, values in sorted(by_month.items())},
+        'by_provider_language': {
+            provider: {language: _summary(values) for language, values in sorted(languages.items())}
+            for provider, languages in sorted(by_provider_language.items())
+        },
         'by_provider_month': {
             provider: {month: _summary(values) for month, values in sorted(months.items())}
             for provider, months in sorted(by_provider_month.items())

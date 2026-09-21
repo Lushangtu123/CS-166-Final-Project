@@ -74,6 +74,39 @@ class ServingEvaluationTests(unittest.TestCase):
                 [], lambda _row: {}, model_sha256='a' * 64,
             )
 
+    def test_explicit_language_labels_have_separate_aggregate_metrics(self):
+        rows = [
+            {'provider': 'gmail', 'received_at': '2026-08-02', 'label': 'phishing',
+             'language': 'zh', 'body': 'private Chinese sample'},
+            {'provider': 'outlook', 'received_at': '2026-08-03', 'label': 'legitimate',
+             'language': 'zh', 'body': 'private legitimate sample'},
+            {'provider': 'gmail', 'received_at': '2026-08-04', 'label': 'phishing',
+             'language': 'en', 'body': 'private English sample'},
+            {'provider': 'gmail', 'received_at': '2026-08-05', 'label': 'legitimate',
+             'body': 'private unlabeled sample'},
+        ]
+        risks = iter(('high', 'medium', 'unknown', 'safe'))
+        report = evaluate_serving_pipeline.evaluate_records(
+            rows, lambda _row: {'risk_level': next(risks), 'analysis_complete': True},
+            model_sha256='a' * 64,
+        )
+        self.assertEqual(report['by_language']['zh']['phishing_alert_recall'], 1.0)
+        self.assertEqual(report['by_language']['zh']['legitimate_false_alert_rate'], 1.0)
+        self.assertEqual(report['by_language']['en']['phishing']['undetermined'], 1)
+        self.assertEqual(report['by_language']['unlabeled']['n'], 1)
+        self.assertEqual(report['by_provider_language']['gmail']['zh']['phishing']['alerted'], 1)
+        self.assertEqual(report['by_provider_language']['outlook']['zh']['legitimate']['alerted'], 1)
+        self.assertNotIn('private', json.dumps(report))
+
+    def test_language_tags_must_be_short_codes_not_message_content(self):
+        row = {'provider': 'gmail', 'received_at': '2026-08-02',
+               'label': 'phishing', 'body': 'private body', 'language': 'private body'}
+        with self.assertRaises(ValueError) as caught:
+            evaluate_serving_pipeline.evaluate_records(
+                [row], lambda _row: {'risk_level': 'safe'}, model_sha256='a' * 64,
+            )
+        self.assertNotIn('private', str(caught.exception))
+
     def test_cli_uses_committed_artifact_and_only_prints_aggregate_output(self):
         project_root = WEBSITE_DIR.parent
         deployment_python = (project_root / '.python-version').read_text().strip()

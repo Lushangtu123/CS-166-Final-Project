@@ -296,12 +296,13 @@ conservatively, including inside media-rule blocks. Inline zero `font-size` and
 transparent text color also mark rendering uncertain. Other `calc(...)` opacity
 expressions are left unscored when their visible result cannot be established.
 Because selector matching and CSS cascade are not fully rendered, the API sets
-`ml_status=unverified_rendering`, leaves model scores null, and marks analysis
-incomplete instead of allowing hidden CSS padding to produce a complete Low or
-Safe verdict. Prose from only the CSS-uncertain HTML part is withheld from text
-rules, including bare URLs and displayed link labels; unambiguous MIME parts
-still contribute text rules. Explicit link destinations, forms, sender, and
-message-structure checks still run.
+`ml_status=unverified_rendering` and leaves model scores null when every MIME
+view is uncertain. A separate trustworthy text/plain alternative may still be
+model-scored, but the whole-message analysis remains incomplete and cannot
+produce a complete Low or Safe verdict. Prose from only the CSS-uncertain HTML
+part is withheld from text rules, including bare URLs and displayed link labels;
+unambiguous MIME parts still contribute text rules. Explicit link destinations,
+forms, sender, and message-structure checks still run.
 This is not a browser renderer: external CSS and other visual-hiding methods
 are not fully resolved, so even a complete result does not establish pixel-level
 visibility. MIME `text/plain` remains literal. HTML
@@ -323,8 +324,10 @@ its replacement text to rule and model input, unless the image is hidden. For
 images that may load, a substantive `alt` (at least three words and 12
 non-whitespace characters, or a substantial no-space non-Latin passage) is
 conditional fallback content: its presence
-produces `ml_status=unverified_rendering` and an incomplete-analysis warning,
-without assuming the image fails or treating that alternative as always visible.
+prevents model scoring of the affected MIME view and produces an incomplete-
+analysis warning, without assuming the image fails or treating that alternative
+as always visible. When no other trustworthy view can be scored,
+`ml_status=unverified_rendering`.
 Short instructions requesting credentials, such as “Enter password,” are also
 treated as conditional fallback content.
 Short decorative labels such as “Company logo” do not disable the text model;
@@ -762,7 +765,10 @@ To measure the **current serving pipeline** on consented, labeled inbox mail,
 use `website/tools/evaluate_serving_pipeline.py` with a local JSONL file kept
 outside version control. Each line must provide `provider` (`gmail` or
 `outlook`), `received_at` (`YYYY-MM-DD`), `label` (`phishing` or `legitimate`),
-and either `raw_email` or `subject`/`body`. Run from the repository root with
+and either `raw_email` or `subject`/`body`. An optional, manually verified
+`language` field accepts a lowercase two- or three-letter code such as `en`,
+`es`, or `zh`; omitted language is reported as `unlabeled`. Do not infer the
+language from the model prediction. Run from the repository root with
 the pinned Python 3.12 environment:
 
 ```bash
@@ -772,10 +778,11 @@ the pinned Python 3.12 environment:
 The command loads the digest-verified committed artifact and uses the same
 local analysis path as the API, with external sender-history observation
 disabled. It prints only aggregate counts and rates overall, by provider, by
-received month, and by provider×month; message bodies and sender addresses are
-not included in the report. Medium, High, and Critical are counted as alerts,
-while Unknown is undetermined and remains in the phishing-recall denominator.
-Keep the output local: a provider×month cell with only one or two messages can
+language, by received month, by provider×language, and by provider×month;
+message bodies and sender addresses are not included in the report. Medium,
+High, and Critical are counted as alerts, while Unknown is undetermined and
+remains in the phishing-recall denominator.
+Keep the output local: a small provider×month or provider×language cell can
 still disclose sensitive cohort information if published. The report marks
 temporal isolation `not_verified`: dates alone do not prove training-family
 separation. No real Gmail/Outlook cohort is committed or measured here, so the
@@ -792,7 +799,8 @@ including HTML recovery regressions that must not depend on standard-library
 exceptions. A separate Python 3.12 job installs the root Vercel dependencies,
 checks their consistency, verifies the committed model digest, starts the real
 Lite profile with ML enabled, and performs phishing-positive and legitimate-
-negative prediction smoke tests.
+negative prediction smoke tests. It also uploads original MIME bytes for a
+phishing positive control and an uncertain-rendering control.
 A separate deployment-status workflow checks the completed public Vercel
 deployment rather than assuming that the source checkout represents its bundle.
 

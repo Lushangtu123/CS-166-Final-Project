@@ -2254,22 +2254,22 @@ _HIDDEN_HTML_TEXT_WARNING = (
 )
 _STYLESHEET_VISIBILITY_WARNING = (
     'A stylesheet may hide or reveal text; CSS rendering was not verified, '
-    'so text-model classification was not applied.'
+    'so the affected text-model view was not scored.'
 )
 _INLINE_CSS_VISIBILITY_WARNING = (
     'Inline CSS may conceal text; its rendering was not verified, '
-    'so text-model classification was not applied.'
+    'so the affected text-model view was not scored.'
 )
 _IMAGE_ALT_FALLBACK_WARNING = (
     'Image alternative text may be shown when an image is unavailable; '
-    'that rendering was not verified, so text-model classification was not applied.'
+    'that rendering was not verified, so the affected text-model view was not scored.'
 )
 _MIME_ALTERNATIVE_LIMIT_WARNING = (
     'MIME alternative view limit reached; not every rendered version was model-scored. '
     'Analysis is incomplete.'
 )
 _MIME_ALTERNATIVE_MODEL_WARNING = (
-    'At least one MIME alternative had insufficient text-model coverage; analysis is incomplete.'
+    'At least one MIME alternative could not be model-scored; analysis is incomplete.'
 )
 _MAX_MIME_MODEL_VIEWS = 16
 _HTML_VOID_ELEMENTS = {
@@ -2819,25 +2819,31 @@ def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] 
         part_warnings = []
         visible = _visible_content_text(part, part_warnings)
         analysis_warnings.extend(part_warnings)
-        return visible, any(warning in part_warnings for warning in (
+        stylesheet_uncertain = any(warning in part_warnings for warning in (
             _STYLESHEET_VISIBILITY_WARNING, _INLINE_CSS_VISIBILITY_WARNING,
         ))
+        return (visible, stylesheet_uncertain,
+                stylesheet_uncertain or _IMAGE_ALT_FALLBACK_WARNING in part_warnings)
 
     if content_parts is None:
         raw_parts = [subject, body]
         html_parts = [True, True]
         parsed_parts = [visible_html(part) for part in raw_parts]
-        visible_parts = [visible for visible, _uncertain in parsed_parts]
-        stylesheet_uncertain_parts = [uncertain for _visible, uncertain in parsed_parts]
+        visible_parts = [visible for visible, _css_uncertain, _model_uncertain in parsed_parts]
+        stylesheet_uncertain_parts = [uncertain for _visible, uncertain, _model in parsed_parts]
     else:
         # Each MIME part is its own document. Plain text must not be interpreted
         # as markup, nor may an unclosed tag in one part hide another part.
         raw_parts = [subject] + [part['content'] for part in content_parts]
         html_parts = [False] + [part['content_type'] == 'text/html' for part in content_parts]
         parsed_parts = [visible_html(part['content']) if part['content_type'] == 'text/html'
-                        else (part['content'], False) for part in content_parts]
-        visible_parts = [subject] + [visible for visible, _uncertain in parsed_parts]
-        stylesheet_uncertain_parts = [False] + [uncertain for _visible, uncertain in parsed_parts]
+                        else (part['content'], False, False) for part in content_parts]
+        visible_parts = [subject] + [visible for visible, _css_uncertain, _model_uncertain
+                                     in parsed_parts]
+        stylesheet_uncertain_parts = [False] + [uncertain for _visible, uncertain, _model
+                                                  in parsed_parts]
+        model_uncertain_parts = [False] + [uncertain for _visible, _css, uncertain
+                                           in parsed_parts]
     raw_parts = [_strip_invisible_format_controls(part) for part in raw_parts]
     if _model_view is not None:
         # The model and rule checks consume the same MIME-aware visible text.
@@ -2846,6 +2852,7 @@ def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] 
         _model_view['subject'] = model_parts[0]
         _model_view['body'] = '\n'.join(model_parts[1:]).strip()
         if content_parts is not None:
+            _model_view['mime_views'] = [(_model_view['body'], any(model_uncertain_parts[1:]))]
             choices = {}
             for part in content_parts:
                 for path in part.get('alternative_paths', [()]):
@@ -2853,8 +2860,7 @@ def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] 
                         choices.setdefault(group, set()).add(branch)
             if choices:
                 groups = sorted(choices)
-                bodies = []
-                seen = set()
+                views = {}
                 defaults = tuple(min(choices[group]) for group in groups)
                 combinations = 1
                 for group in groups:
@@ -2884,15 +2890,19 @@ def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] 
                             break
                 for branches in assignments:
                     selected = dict(zip(groups, branches))
-                    body_view = '\n'.join(
-                        text for text, part in zip(model_parts[1:], content_parts)
-                        if any(all(selected[group] == branch for group, branch in path)
-                               for path in part.get('alternative_paths', [()]))
-                    ).strip()
-                    if body_view not in seen:
-                        seen.add(body_view)
-                        bodies.append(body_view)
-                _model_view['mime_bodies'] = bodies
+                    included = [
+                        any(all(selected[group] == branch for group, branch in path)
+                            for path in part.get('alternative_paths', [()]))
+                        for part in content_parts
+                    ]
+                    body_view = '\n'.join(text for text, use in zip(model_parts[1:], included)
+                                          if use).strip()
+                    uncertain = any(use and part_uncertain for use, part_uncertain
+                                    in zip(included, model_uncertain_parts[1:]))
+                    # Identical visible text is safe to score if any MIME path
+                    # reaches it without uncertain rendering.
+                    views[body_view] = views.get(body_view, True) and uncertain
+                _model_view['mime_views'] = list(views.items())
     html_image_parts = [(part, visible) for part, visible, is_html
                         in zip(raw_parts[1:], visible_parts[1:], html_parts[1:]) if is_html]
     image_counts = [_image_reference_counts(part, analysis_warnings)
@@ -3374,7 +3384,9 @@ async def _analyze_content(
         _IMAGE_ALT_FALLBACK_WARNING,
     ))
     if _content_pipeline is not None:
-        if rendering_uncertain:
+        views = model_view.get('mime_views', [(model_view['body'], rendering_uncertain)])
+        bodies = [body for body, uncertain in views if not uncertain]
+        if not bodies:
             ml = {
                 'ml_status': 'unverified_rendering',
                 'ml_phishing_probability': None,
@@ -3387,14 +3399,14 @@ async def _analyze_content(
                 'ml_top_contributors': [],
             }
         else:
-            bodies = model_view.get('mime_bodies', [model_view['body']])
             predictions = [predict_content(_content_pipeline, model_view['subject'], body,
                                            canonical_text=True) for body in bodies]
             scored = [prediction for prediction in predictions
                       if prediction['ml_phishing_probability'] is not None]
             ml = (max(scored, key=lambda prediction: prediction['ml_phishing_probability'])
                   if scored else predictions[0])
-            if len(bodies) > 1 and len(scored) != len(predictions):
+            if len(views) > 1 and (len(bodies) != len(views)
+                                   or len(scored) != len(predictions)):
                 result['analysis_warnings'].append(_MIME_ALTERNATIVE_MODEL_WARNING)
         result.update(ml)
         result["ml_metrics"] = _content_pipeline["metrics"]
