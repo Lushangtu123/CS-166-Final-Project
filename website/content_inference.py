@@ -9,10 +9,12 @@ from pathlib import Path
 import pickle
 import platform
 import re
+import warnings
 
 import numpy as np
 import sklearn
 from sklearn.calibration import CalibratedClassifierCV
+from sklearn.exceptions import InconsistentVersionWarning
 from sklearn.naive_bayes import ComplementNB
 from language_coverage import non_latin_script_segments
 
@@ -39,12 +41,22 @@ def load_content_pipeline_artifact(path: Path | str, expected_sha256: str) -> di
     if not hmac.compare_digest(actual, expected):
         raise ValueError("Content-model SHA-256 digest does not match")
 
-    envelope = pickle.loads(payload)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", InconsistentVersionWarning)
+            envelope = pickle.loads(payload)
+    except InconsistentVersionWarning as exc:
+        raise ValueError(
+            "Content-model artifact scikit-learn version is incompatible: "
+            f"{exc.original_sklearn_version} != {exc.current_sklearn_version}"
+        ) from exc
     if not isinstance(envelope, dict) or envelope.get("schema") != ARTIFACT_SCHEMA:
         raise ValueError("Unsupported content-model artifact schema")
     if envelope.get("python") != _major_minor(platform.python_version()):
         raise ValueError("Content-model artifact Python version is incompatible")
-    if envelope.get("scikit_learn") != _major_minor(sklearn.__version__):
+    if envelope.get("scikit_learn") not in {
+        sklearn.__version__, _major_minor(sklearn.__version__)
+    }:
         raise ValueError("Content-model artifact scikit-learn version is incompatible")
     pipeline = envelope.get("pipeline")
     if not isinstance(pipeline, dict) or not PIPELINE_KEYS.issubset(pipeline):

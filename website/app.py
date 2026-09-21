@@ -1225,10 +1225,12 @@ async def serve_index():
 @app.get("/health")
 async def health():
     """Liveness/readiness probe for deployments and load balancers."""
+    commit_sha = os.getenv("VERCEL_GIT_COMMIT_SHA", "")
     return JSONResponse(
         status_code=200,
         content={
             "status": "ok",
+            "commit_sha": commit_sha.lower() if re.fullmatch(r"[0-9a-fA-F]{40}", commit_sha) else None,
             "model_loaded": _content_pipeline is not None,
             "content_model_loaded": _content_pipeline is not None,
             "content_model_error": _content_model_error,

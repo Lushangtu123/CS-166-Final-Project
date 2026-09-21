@@ -527,12 +527,22 @@ verified. The response separates `domain_verification` from
 The Vercel runtime installs NumPy and scikit-learn for inference but not pandas.
 Training remains local-only. When `website/model/content_model_artifact.pkl` is
 present, `vercel.json` must contain its exact SHA-256 digest and enables the
-model. Startup verifies the digest plus Python/scikit-learn compatibility before
-deserializing. A rejected or missing artifact leaves rule and structure analysis
-available and reports the model error through `/health`. Successful health and
-metrics responses expose the loaded artifact digest and a short `model_id`, so
-displayed metrics can be tied to the deployed binary rather than a different
-training run.
+model. The committed artifact was saved with scikit-learn 1.9.0, so both the
+Vercel runtime and local evaluation requirements pin that exact version.
+Startup verifies the digest before deserializing and rejects scikit-learn
+estimator version warnings, including patch-version mismatches. New artifacts
+record the full scikit-learn version. A rejected or missing artifact leaves
+rule and structure analysis available and reports the model error through
+`/health`. Successful health and metrics responses expose the loaded artifact
+digest and a short `model_id`, so displayed metrics can be tied to the
+deployed binary rather than a different training run.
+
+The `/health` response also exposes the full Git commit SHA from Vercel's
+`VERCEL_GIT_COMMIT_SHA` system environment variable. Enable System Environment
+Variables in the Vercel project settings if that field is null. The production
+deployment smoke check requires this SHA to match the deployment event before
+it sends analysis controls; an alias still serving older code will fail the
+check even when the model artifact has not changed.
 
 Model explanations cache their immutable 80,000-feature name/coefficient arrays
 and calculate contributors directly from the sparse request vector. This keeps
@@ -781,7 +791,12 @@ disabled. It prints only aggregate counts and rates overall, by provider, by
 language, by received month, by provider×language, and by provider×month;
 message bodies and sender addresses are not included in the report. Medium,
 High, and Critical are counted as alerts, while Unknown is undetermined and
-remains in the phishing-recall denominator.
+remains in the phishing-recall denominator. Each group reports phishing and
+legitimate denominators alongside two-sided Wilson 95% intervals for recall,
+false-alert rate, unknown rate, complete rate, and model-available rate. A
+label-specific rate and interval are null when that group has no examples of
+the label. Small groups produce wide intervals, so avoid interpreting a point
+estimate alone as provider or language performance.
 Keep the output local: a small provider×month or provider×language cell can
 still disclose sensitive cohort information if published. The report marks
 temporal isolation `not_verified`: dates alone do not prove training-family
@@ -802,7 +817,11 @@ Lite profile with ML enabled, and performs phishing-positive and legitimate-
 negative prediction smoke tests. It also uploads original MIME bytes for a
 phishing positive control and an uncertain-rendering control.
 A separate deployment-status workflow checks the completed public Vercel
-deployment rather than assuming that the source checkout represents its bundle.
+deployment's commit SHA, model digest, and JSON and raw `.eml` controls rather
+than assuming that the source checkout represents its bundle. It performs six
+POST requests when sender-history checks are enabled, within the committed
+10-per-minute per-client limit when no other traffic shares the same rate-limit
+bucket.
 
 ```bash
 # From repository root, after installing website dependencies

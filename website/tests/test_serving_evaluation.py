@@ -42,9 +42,14 @@ class ServingEvaluationTests(unittest.TestCase):
         self.assertEqual(report['overall']['legitimate']['alerted'], 1)
         self.assertEqual(report['overall']['phishing_alert_recall'], 0.5)
         self.assertEqual(report['overall']['legitimate_false_alert_rate'], 0.5)
+        self.assertEqual(report['overall']['phishing_count'], 2)
+        self.assertEqual(report['overall']['legitimate_count'], 2)
+        self.assertEqual(report['overall']['phishing_alert_recall_95_ci'], [0.0945, 0.9055])
+        self.assertEqual(report['overall']['legitimate_false_alert_rate_95_ci'], [0.0945, 0.9055])
         self.assertEqual(report['overall']['complete_rate'], 0.5)
         self.assertEqual(report['overall']['ml_available_rate'], 0.5)
         self.assertEqual(report['by_provider']['gmail']['phishing_alert_recall'], 1.0)
+        self.assertEqual(report['by_provider']['gmail']['phishing_alert_recall_95_ci'], [0.2065, 1.0])
         self.assertEqual(report['by_month']['2026-09']['phishing']['undetermined'], 1)
         self.assertEqual(report['by_provider_month']['gmail']['2026-08']['n'], 2)
         self.assertEqual(report['by_provider_month']['outlook']['2026-09']['unknown_rate'], 0.5)
@@ -96,6 +101,8 @@ class ServingEvaluationTests(unittest.TestCase):
         self.assertEqual(report['by_language']['unlabeled']['n'], 1)
         self.assertEqual(report['by_provider_language']['gmail']['zh']['phishing']['alerted'], 1)
         self.assertEqual(report['by_provider_language']['outlook']['zh']['legitimate']['alerted'], 1)
+        self.assertIsNone(report['by_language']['en']['legitimate_false_alert_rate_95_ci'])
+        self.assertEqual(report['by_language']['unlabeled']['legitimate_count'], 1)
         self.assertNotIn('private', json.dumps(report))
 
     def test_language_tags_must_be_short_codes_not_message_content(self):
@@ -127,6 +134,8 @@ class ServingEvaluationTests(unittest.TestCase):
         report = json.loads(completed.stdout)
         self.assertEqual(report['overall']['n'], 1)
         self.assertEqual(report['evaluation_scope'], 'local_serving_pipeline')
+        self.assertEqual(report['overall']['phishing_count'], 1)
+        self.assertIsNone(report['overall']['legitimate_false_alert_rate_95_ci'])
         self.assertNotIn('Private test subject', completed.stdout)
         self.assertNotIn('Synthetic fixture', completed.stdout)
 

@@ -35,6 +35,7 @@ import platform
 import random
 import re
 import time
+import warnings
 import urllib.request
 from collections import Counter
 from pathlib import Path
@@ -44,6 +45,7 @@ import numpy as np
 import pandas as pd
 import sklearn
 from sklearn.calibration import CalibratedClassifierCV
+from sklearn.exceptions import InconsistentVersionWarning
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
@@ -96,7 +98,7 @@ def save_content_pipeline_artifact(pipeline: dict, path: Path | str) -> str:
     envelope = {
         "schema": _ARTIFACT_SCHEMA,
         "python": _major_minor(platform.python_version()),
-        "scikit_learn": _major_minor(sklearn.__version__),
+        "scikit_learn": sklearn.__version__,
         "pipeline": pipeline,
     }
     payload = pickle.dumps(envelope, protocol=pickle.HIGHEST_PROTOCOL)
@@ -122,12 +124,22 @@ def load_content_pipeline_artifact(
     if not hmac.compare_digest(actual, expected):
         raise ValueError("Content-model SHA-256 digest does not match")
 
-    envelope = pickle.loads(payload)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", InconsistentVersionWarning)
+            envelope = pickle.loads(payload)
+    except InconsistentVersionWarning as exc:
+        raise ValueError(
+            "Content-model artifact scikit-learn version is incompatible: "
+            f"{exc.original_sklearn_version} != {exc.current_sklearn_version}"
+        ) from exc
     if not isinstance(envelope, dict) or envelope.get("schema") != _ARTIFACT_SCHEMA:
         raise ValueError("Unsupported content-model artifact schema")
     if envelope.get("python") != _major_minor(platform.python_version()):
         raise ValueError("Content-model artifact Python version is incompatible")
-    if envelope.get("scikit_learn") != _major_minor(sklearn.__version__):
+    if envelope.get("scikit_learn") not in {
+        sklearn.__version__, _major_minor(sklearn.__version__)
+    }:
         raise ValueError("Content-model artifact scikit-learn version is incompatible")
     pipeline = envelope.get("pipeline")
     if not isinstance(pipeline, dict) or not _PIPELINE_KEYS.issubset(pipeline):

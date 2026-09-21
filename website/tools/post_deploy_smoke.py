@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+from email.message import EmailMessage
 import json
 from pathlib import Path
+import re
 import time
 from typing import Callable
 import uuid
@@ -55,6 +57,12 @@ def _validated_base_url(value: str) -> str:
     return f"https://{hostname}"
 
 
+def _validated_commit_sha(value: str) -> str:
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", value or ""):
+        raise ValueError("A full 40-character deployment commit SHA is required")
+    return value.lower()
+
+
 def _request_json(
     request: Request,
     *,
@@ -91,6 +99,7 @@ def _read_deployment_readiness(
     base_url: str,
     *,
     expected_model_sha256: str,
+    expected_commit_sha: str,
     opener: Callable,
     require_sender_history: bool,
 ) -> tuple[dict, dict]:
@@ -104,6 +113,12 @@ def _read_deployment_readiness(
         raise RuntimeError(
             "Deployed model does not match this revision: "
             f"expected sha256:{expected_digest}, got sha256:{deployed_digest}"
+        )
+    deployed_commit = str(health.get("commit_sha") or "").lower()
+    if deployed_commit != expected_commit_sha:
+        raise RuntimeError(
+            "Deployment commit does not match this revision: "
+            f"expected {expected_commit_sha}, got {deployed_commit[:64] or 'missing'}"
         )
 
     config = _request_json(Request(base_url + "/api/config"), opener=opener)
@@ -126,6 +141,7 @@ def _wait_for_deployment_readiness(
     base_url: str,
     *,
     expected_model_sha256: str,
+    expected_commit_sha: str,
     opener: Callable,
     require_sender_history: bool,
     attempts: int,
@@ -142,6 +158,7 @@ def _wait_for_deployment_readiness(
             return _read_deployment_readiness(
                 base_url,
                 expected_model_sha256=expected_model_sha256,
+                expected_commit_sha=expected_commit_sha,
                 opener=opener,
                 require_sender_history=require_sender_history,
             )
@@ -156,6 +173,7 @@ def validate_deployment(
     base_url: str,
     *,
     expected_model_sha256: str,
+    expected_commit_sha: str,
     opener: Callable = urlopen,
     require_sender_history: bool = False,
     history_probe_id: str | None = None,
@@ -165,9 +183,11 @@ def validate_deployment(
 ) -> dict:
     """Check health, public flags, and positive/negative control predictions."""
     base_url = _validated_base_url(base_url)
+    expected_commit_sha = _validated_commit_sha(expected_commit_sha)
     health, config = _wait_for_deployment_readiness(
         base_url,
         expected_model_sha256=expected_model_sha256,
+        expected_commit_sha=expected_commit_sha,
         opener=opener,
         require_sender_history=require_sender_history,
         attempts=readiness_attempts,
@@ -207,6 +227,27 @@ def validate_deployment(
             )
         legitimate_results.append(legitimate)
 
+    mime_message = EmailMessage()
+    mime_message["Subject"] = "Urgent: verify your account"
+    mime_message.set_content(
+        "Your account will be suspended. Sign in now at "
+        "http://paypa1-secure.example/login"
+    )
+    mime_message.add_alternative(
+        "<p>Please review the project notes before our meeting tomorrow.</p>",
+        subtype="html",
+    )
+    mime_analysis = _request_json(Request(
+        base_url + "/api/analyze-eml",
+        data=mime_message.as_bytes(),
+        headers={"Content-Type": "message/rfc822"},
+        method="POST",
+    ), opener=opener)
+    if (mime_analysis.get("risk_level") not in {"high", "critical"}
+            or mime_analysis.get("ml_status") != "available"
+            or mime_analysis.get("ml_prediction") != 1):
+        raise RuntimeError(f"Raw MIME positive control was missed: {mime_analysis!r}")
+
     sender_history_probe = "not_checked"
     if require_sender_history:
         probe_id = history_probe_id or uuid.uuid4().hex
@@ -239,11 +280,13 @@ def validate_deployment(
 
     return {
         "base_url": base_url,
+        "commit_sha": health["commit_sha"],
         "model_id": health["content_model_id"],
         "verification_mode": config["verification_mode"],
         "risk_level": analysis["risk_level"],
         "legitimate_risk_level": legitimate_results[0]["risk_level"],
         "legitimate_control_count": len(legitimate_results),
+        "mime_phishing_risk_level": mime_analysis["risk_level"],
         "sender_history_probe": sender_history_probe,
     }
 
@@ -256,6 +299,7 @@ def _expected_model_sha256() -> str:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", required=True)
+    parser.add_argument("--expected-commit-sha", required=True)
     parser.add_argument("--require-sender-history", action="store_true")
     parser.add_argument("--readiness-attempts", type=int, default=6)
     parser.add_argument("--retry-delay", type=float, default=5.0)
@@ -263,6 +307,7 @@ def main() -> None:
     result = validate_deployment(
         args.base_url,
         expected_model_sha256=_expected_model_sha256(),
+        expected_commit_sha=args.expected_commit_sha,
         require_sender_history=args.require_sender_history,
         readiness_attempts=args.readiness_attempts,
         retry_delay=args.retry_delay,

@@ -21,12 +21,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Check deployed model and positive-control prediction
+      - name: Check deployed commit, model, and control predictions
         env:
           # Vercel's immutable deployment URL is protected by SSO. The public
-          # production alias is verified against the deployed commit's model SHA.
+          # production alias is verified against the commit and model SHA.
           DEPLOYMENT_URL: https://phishguard-email-analyzer.vercel.app
+          EXPECTED_COMMIT_SHA: ${{ github.event.deployment.sha }}
         run: >-
           python website/tools/post_deploy_smoke.py
           --base-url "$DEPLOYMENT_URL"
+          --expected-commit-sha "$EXPECTED_COMMIT_SHA"
           --require-sender-history

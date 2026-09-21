@@ -1,7 +1,9 @@
 import asyncio
 from collections import deque
+import hashlib
 import json
 import os
+import pickle
 import subprocess
 import tempfile
 import threading
@@ -450,6 +452,47 @@ class RateLimitBoundaryTests(unittest.TestCase):
 
 
 class ContentModelArtifactTests(unittest.TestCase):
+    def test_artifact_loaders_reject_different_sklearn_patch(self):
+        from sklearn.linear_model import LogisticRegression
+        from content_inference import load_content_pipeline_artifact
+
+        pipeline = {
+            "vectorizer": "vectorizer-fixture",
+            "clf": LogisticRegression(),
+            "decision_threshold": 0.4,
+            "metrics": {},
+            "top_terms": [],
+        }
+        other_patch = (
+            "1.9.1" if content_model.sklearn.__version__ == "1.9.0" else "1.9.0"
+        )
+        with patch("sklearn.base.__version__", other_patch):
+            payload = pickle.dumps({
+                "schema": "phishguard-content-model-v1",
+                "python": content_model._major_minor(sys.version.split()[0]),
+                "scikit_learn": content_model._major_minor(
+                    content_model.sklearn.__version__
+                ),
+                "pipeline": pipeline,
+            })
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "older-model.pkl"
+            path.write_bytes(payload)
+            digest = hashlib.sha256(payload).hexdigest()
+            for loader in (load_content_pipeline_artifact,
+                           content_model.load_content_pipeline_artifact):
+                with self.subTest(loader=loader.__module__):
+                    with self.assertRaisesRegex(ValueError, "scikit-learn"):
+                        loader(path, digest)
+
+    def test_health_exposes_only_valid_deployment_commit_sha(self):
+        with patch.dict(os.environ, {"VERCEL_GIT_COMMIT_SHA": "A" * 40}):
+            health = json.loads(asyncio.run(app.health()).body)
+        self.assertEqual(health["commit_sha"], "a" * 40)
+        with patch.dict(os.environ, {"VERCEL_GIT_COMMIT_SHA": "not-a-commit"}):
+            health = json.loads(asyncio.run(app.health()).body)
+        self.assertIsNone(health["commit_sha"])
+
     def test_committed_model_abstains_on_unsupported_text_and_passes_hard_negatives(self):
         deployment_python = (PROJECT_ROOT / ".python-version").read_text().strip()
         current_python = f"{sys.version_info.major}.{sys.version_info.minor}"
@@ -627,6 +670,7 @@ class ContentModelArtifactTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "content-model.pkl"
             digest = content_model.save_content_pipeline_artifact(pipeline, path)
+            envelope = pickle.loads(path.read_bytes())
 
             loaded = content_model.load_content_pipeline_artifact(path, digest)
             from content_inference import load_content_pipeline_artifact
@@ -636,6 +680,7 @@ class ContentModelArtifactTests(unittest.TestCase):
 
         self.assertEqual(loaded, pipeline)
         self.assertEqual(runtime_loaded, pipeline)
+        self.assertEqual(envelope["scikit_learn"], content_model.sklearn.__version__)
         self.assertIn("sha-256", str(error.exception).lower())
 
     def test_enabled_lifespan_loads_artifact_without_training(self):
