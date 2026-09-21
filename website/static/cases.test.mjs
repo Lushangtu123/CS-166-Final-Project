@@ -33,6 +33,30 @@ function setup(handler, vision = {cancel() {}, render() {}}) {
 }
 const standard = async url => ({status: 200, data: url.endsWith('/me') ? {actor: 'alice'} : url.includes('?') ? {items: [caseValue()], total: 1} : caseValue()});
 
+test('protected Preview login preserves the gateway session and still requires the analyst token', async () => {
+  for (const accepted of [true, false]) {
+    const ui = setup(async (url, options) => {
+      // The deployment gateway redirects cookieless requests to external SSO,
+      // which the application's same-origin CSP correctly blocks.
+      if (!['same-origin', 'include'].includes(options.credentials)) throw new TypeError('Failed to fetch');
+      if (!accepted || options.headers.Authorization !== 'Bearer synthetic-access-token-at-least-32-characters') {
+        return {status: 401, data: {detail: 'A valid analyst access token is required'}};
+      }
+      return standard(url);
+    });
+    await ui.login();
+    if (accepted) {
+      assert.equal(ui.el('notice').textContent, '');
+      assert.equal(ui.el('login-panel').hidden, true);
+      assert.equal(ui.el('case-list').children.length, 1);
+    } else {
+      assert.equal(ui.el('workspace').hidden, true);
+      assert.equal(ui.el('token').value, '');
+      assert.match(ui.el('notice').textContent, /valid analyst access token/);
+    }
+  }
+});
+
 test('Jev is opt-in, independent of case risk, and rendered as text', async () => {
   const ui = setup(async url => url.endsWith('/me') ? {status: 200, data: {actor: 'alice', jev_available: true}} :
     url.endsWith('/auxiliary') ? {status: 200, data: {case_id: 'case-1', case_version: caseValue().version,

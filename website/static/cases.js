@@ -37,7 +37,8 @@
   }
   async function api(path, options = {}) {
     const current = epoch;
-    const response = await fetch('/api/cases' + path, {...options, cache: 'no-store', credentials: 'omit',
+    // Preserve same-origin deployment access cookies; the API still requires the analyst bearer token.
+    const response = await fetch('/api/cases' + path, {...options, cache: 'no-store', credentials: 'same-origin',
       headers: {'Authorization': 'Bearer ' + token, ...options.headers}});
     if (current !== epoch) throw new Error('Session changed');
     const data = await response.json();
