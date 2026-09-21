@@ -11,6 +11,16 @@
     if (className) el.className = className;
     return el;
   }
+  function riskBadge(risk) {
+    const known = ['critical', 'high', 'medium', 'low', 'safe', 'unknown'];
+    const level = known.includes(risk) ? risk : 'unknown';
+    return node('span', level.toUpperCase(), 'badge risk-' + level);
+  }
+  function syncSelection() {
+    for (const row of $('case-list').children) {
+      if (row.dataset.caseId) row.setAttribute('aria-pressed', String(row.dataset.caseId === selected?.id));
+    }
+  }
   function signOut() {
     token = ''; epoch++; listEpoch++; detailEpoch++; selected = null; creation = null;
     $('token').value = ''; $('workspace').hidden = true; $('session').hidden = true; $('login-panel').hidden = false;
@@ -53,18 +63,24 @@
     for (const item of data.items) {
       const button = node('button', '', 'case-row'); button.type = 'button';
       button.setAttribute('aria-pressed', String(item.id === selected?.id));
-      button.append(node('strong', item.title), node('small', `${item.risk.toUpperCase()} · ${labels[item.status]} · ${item.verdict || 'Not reviewed'}`), node('small', new Date(item.created_at).toLocaleString()));
+      button.dataset.caseId = item.id;
+      const heading = node('span', '', 'row-heading');
+      heading.append(riskBadge(item.risk), node('span', labels[item.status], 'row-status'));
+      const footer = node('span', '', 'row-footer');
+      footer.append(node('span', item.verdict || 'Not reviewed'), node('span', new Date(item.created_at).toLocaleString(), 'row-date'));
+      button.append(heading, node('strong', item.title), footer);
       button.addEventListener('click', () => action(button, () => loadCase(item.id)));
       $('case-list').append(button);
     }
+    syncSelection();
     $('page').textContent = `Page ${Math.floor(offset / PAGE_SIZE) + 1}`;
     $('previous').disabled = offset === 0; $('next').disabled = offset + PAGE_SIZE >= data.total;
   }
   function renderCase(value) {
-    selected = value; $('detail').hidden = false; $('empty-detail').hidden = true;
+    selected = value; syncSelection(); $('detail').hidden = false; $('empty-detail').hidden = true;
     $('case-title').textContent = value.title;
     $('case-meta').textContent = `${value.id} · Revision ${value.version} · Created by ${value.created_by}`;
-    $('badges').replaceChildren(...[value.risk.toUpperCase(), labels[value.status], value.verdict || 'Not reviewed'].map(text => node('span', text, 'badge')));
+    $('badges').replaceChildren(riskBadge(value.risk), ...[labels[value.status], value.verdict || 'Not reviewed'].map(text => node('span', text, 'badge')));
     const analysis = value.analysis;
     $('analysis-summary').textContent = `${analysis.risk_label || value.risk}. ${analysis.analysis_complete === false ? 'Analysis is incomplete; inspect the warnings before deciding.' : 'Review the evidence before making a decision.'}`;
     $('evidence').replaceChildren();

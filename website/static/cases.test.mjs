@@ -68,3 +68,17 @@ test('a stale review preserves the analyst note and requests reload', async () =
   const patch = JSON.parse(ui.calls.find(call => call.options.method === 'PATCH').options.body);
   assert.equal(patch.expected_version, 1); assert.equal(patch.actor, undefined);
 });
+
+test('selected case stays visibly selected after switching cases and refreshing the queue', async () => {
+  const first = caseValue(), second = {...caseValue(), id: 'case-2', title: 'Second message', risk: 'safe'};
+  const ui = setup(async url => ({status: 200, data: url.endsWith('/me') ? {actor: 'alice'} : url.includes('?') ? {items: [first, second], total: 2} : url.endsWith('/case-2') ? second : first}));
+  await ui.login();
+  ui.el('case-list').children[0].listeners.click(); await tick();
+  assert.equal(ui.el('case-list').children[0].attrs['aria-pressed'], 'true');
+  ui.el('case-list').children[1].listeners.click(); await tick();
+  assert.equal(ui.el('case-title').textContent, 'Second message');
+  assert.equal(ui.el('case-list').children[0].attrs['aria-pressed'], 'false');
+  assert.equal(ui.el('case-list').children[1].attrs['aria-pressed'], 'true');
+  await ui.fire('refresh');
+  assert.equal(ui.el('case-list').children[1].attrs['aria-pressed'], 'true');
+});
