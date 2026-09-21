@@ -87,13 +87,32 @@ class ServingEvaluationTests(unittest.TestCase):
                 'provider': 'gmail', 'received_at': '2026-08-02',
                 'label': 'legitimate', 'eml_path': str(email_file),
             }) + '\n')
+            source.write_text(source.read_text() * 2)
             completed = subprocess.run(
                 [sys.executable, str(WEBSITE_DIR / 'tools' / 'evaluate_serving_pipeline.py'),
                  '--input', str(source)], cwd=project_root, capture_output=True, text=True,
             )
 
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            command = [sys.executable, str(WEBSITE_DIR / 'tools' / 'evaluate_serving_pipeline.py'),
+                       '--input', str(source)]
+            strict = subprocess.run(command + ['--duplicate-policy', 'error'],
+                                    cwd=project_root, capture_output=True, text=True)
+            self.assertNotEqual(strict.returncode, 0)
+            self.assertIn('Row 2: duplicate', strict.stderr)
+            self.assertEqual(strict.stdout, '')
+            self.assertNotIn(str(email_file), strict.stderr)
+            email_file.write_bytes(email_file.read_bytes().replace(b'\xff', b'\xfe'))
+            changed = subprocess.run(command, cwd=project_root, capture_output=True, text=True)
+            self.assertEqual(changed.returncode, 0, changed.stderr)
+            changed_report = json.loads(changed.stdout)
+
         self.assertEqual(completed.returncode, 0, completed.stderr)
         report = json.loads(completed.stdout)
+        self.assertEqual(report['overall'], changed_report['overall'])
+        self.assertNotEqual(report['input_integrity']['dataset_sha256'],
+                            changed_report['input_integrity']['dataset_sha256'])
+        self.assertEqual(report['input_integrity']['duplicate_rows'], 1)
         self.assertEqual(report['overall']['n'], 1)
         self.assertEqual(report['overall']['legitimate']['undetermined'], 1)
         self.assertEqual(report['overall']['complete_rate'], 0.0)
@@ -167,6 +186,93 @@ class ServingEvaluationTests(unittest.TestCase):
                         [row], lambda _row: {}, model_sha256='a' * 64,
                     )
                 self.assertNotIn('private', str(caught.exception))
+
+    def evaluation_row(self, **changes):
+        return {'provider': 'gmail', 'received_at': '2026-08-02',
+                'label': 'phishing', 'subject': 'private subject', 'body': 'private body', **changes}
+
+    def evaluate(self, rows, **options):
+        return evaluate_serving_pipeline.evaluate_records(
+            rows, lambda _: {'risk_level': 'high', 'analysis_complete': True},
+            model_sha256='a' * 64, **options)
+
+    def test_duplicate_samples_do_not_inflate_denominators_or_confidence(self):
+        calls = []
+        row = self.evaluation_row()
+        report = evaluate_serving_pipeline.evaluate_records(
+            [row.copy() for _ in range(100)],
+            lambda r: calls.append(r) or {'risk_level': 'high', 'analysis_complete': True},
+            model_sha256='a' * 64)
+        self.assertEqual(report['overall']['n'], 1)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(report['overall']['phishing_alert_recall_95_ci'], [0.2065, 1.0])
+        self.assertEqual(report['input_integrity']['duplicate_rows'], 99)
+        self.assertEqual(report['input_integrity']['input_rows'], 100)
+        self.assertEqual(report['input_integrity']['evaluated_rows'], 1)
+        self.assertTrue(report['input_integrity']['warnings'])
+        self.assertNotIn('private', json.dumps(report))
+
+    def test_conflicting_labels_and_group_metadata_are_rejected_privately(self):
+        row = self.evaluation_row()
+        for changes in ({'label': 'legitimate'}, {'provider': 'outlook'},
+                        {'language': 'en'}, {'received_at': '2026-08-03'}):
+            with self.subTest(changes=changes):
+                with self.assertRaisesRegex(ValueError, 'Row 2:') as caught:
+                    self.evaluate([row, {**row, **changes}])
+                self.assertNotIn('private', str(caught.exception))
+
+    def test_unreadable_or_invalid_eml_is_rejected_without_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'private-message.eml'
+            for data in (None, b'', b'x' * 60001):
+                if data is not None:
+                    path.write_bytes(data)
+                with self.assertRaisesRegex(RuntimeError, 'Row 1:') as caught:
+                    self.evaluate([self.evaluation_row(subject='', body='', eml_path=str(path))])
+                self.assertNotIn(directory, str(caught.exception))
+                self.assertNotIn('private-message', str(caught.exception))
+
+    def test_strict_duplicate_policy_rejects_repeated_rows(self):
+        with self.assertRaisesRegex(ValueError, 'duplicate'):
+            self.evaluate([self.evaluation_row()] * 2, duplicate_policy='error')
+
+    def test_fingerprint_tracks_content_labels_metadata_and_multiplicity(self):
+        row = self.evaluation_row()
+        digest = lambda rows: self.evaluate(rows)['input_integrity']['dataset_sha256']
+        original = digest([row])
+        self.assertRegex(original, r'^[0-9a-f]{64}$')
+        for changes in ({'body': 'changed private body'}, {'label': 'legitimate'},
+                        {'provider': 'outlook'}, {'language': 'en'}, {'received_at': '2026-08-03'}):
+            self.assertNotEqual(original, digest([{**row, **changes}]))
+        self.assertNotEqual(original, digest([row, row]))
+        other = {**row, 'subject': 'another message'}
+        self.assertEqual(digest([row, other]), digest([other, row]))
+        self.assertEqual(original, digest([{**row, 'unused': 'ignored annotation'}]))
+
+    def test_eml_fingerprint_uses_bytes_not_path_and_analyzes_same_snapshot(self):
+        import app
+        with tempfile.TemporaryDirectory() as directory:
+            first, second = Path(directory) / 'private-a.eml', Path(directory) / 'private-b.eml'
+            raw = b'Subject: Notes\n\nOriginal private bytes \xff'
+            first.write_bytes(raw)
+            second.write_bytes(raw)
+            row = self.evaluation_row(subject='', body='', eml_path=str(first), _eml_bytes=b'forged')
+            digest = self.evaluate([row])['input_integrity']['dataset_sha256']
+            moved = self.evaluate([{**row, 'eml_path': str(second)}])
+            self.assertEqual(digest, moved['input_integrity']['dataset_sha256'])
+            self.assertEqual(self.evaluate([row, {**row, 'eml_path': str(second)}])['overall']['n'], 1)
+            first.write_bytes(raw + b'changed')
+            self.assertNotEqual(digest, self.evaluate([row])['input_integrity']['dataset_sha256'])
+            first.write_bytes(raw)
+            def analyze(prepared):
+                first.write_bytes(b'Subject: Changed\n\nFile changed after preparation')
+                return evaluate_serving_pipeline.analyze_record(prepared)
+            with patch.object(app, '_content_pipeline', None), \
+                    patch.object(app, 'analyze_raw_email', wraps=app.analyze_raw_email) as parse:
+                report = evaluate_serving_pipeline.evaluate_records([row], analyze, model_sha256='a' * 64)
+            self.assertEqual(parse.call_args.args[0], raw)
+            self.assertEqual(digest, report['input_integrity']['dataset_sha256'])
+            self.assertNotIn(directory, json.dumps(report))
 
     def test_empty_cohort_is_rejected(self):
         with self.assertRaises(ValueError):

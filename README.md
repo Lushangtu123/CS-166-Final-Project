@@ -197,6 +197,15 @@ not inspected. These references add no phishing points, but add one analysis
 warning and prevent a complete Safe verdict. An otherwise Safe result becomes
 Unknown with a null combined score; independent high-risk evidence stays
 visible. MIME image attachments remain in `message_structure.attachments`.
+
+MSO conditional comments are inspected for text, links, password forms, and
+image references using one bounded expansion layer. Ordinary comments and
+solely negated MSO comments remain inert. Recognized MSO branches, including
+nested or malformed conditional content, carry an incomplete-analysis warning because client-specific rendering
+is not verified. The text model abstains on these HTML views; independent rule,
+link, and structure findings still apply, and other covered MIME views can
+still be scored.
+
 Remote `img`, `srcset`, VML `v:imagedata`/`v:fill` (including MSO conditional
 comments except solely negated `!mso` blocks; compound conditions are counted
 conservatively), SVG `image`, CSS, and
@@ -261,7 +270,10 @@ outer result incomplete. This does not unpack archives or execute attachments.
 Raw input enables these checks:
 
 - SPF, DKIM, and DMARC results from explicitly trusted authentication servers;
-- protected-brand display-name and Unicode/IDN domain impersonation;
+- protected-brand display-name and Unicode/IDN domain impersonation; display
+  names use word boundaries to avoid matching ordinary names such as Appleton
+  or Pineapple, while retaining detection of spaced, punctuated, and Unicode
+  lookalikes such as `A p p l e` and `Аpple`;
 - From / Reply-To / Return-Path domain mismatches;
 - the same sender/domain heuristics used by the sender-only workflow;
 - executable, macro-enabled, disk-image, and archive attachment extensions or
@@ -278,6 +290,11 @@ destination evidence. No link is fetched to perform these checks. Generic
 login/account words on an unrecognized hostname are weak context, not a standalone
 high-risk verdict; brand impersonation, userinfo deception, and explicit
 credential-collection wording retain stronger signals.
+HTML text, destination, form, and image collectors retain the first occurrence
+of a repeated attribute, including an empty value, matching HTML parsing rules.
+Later duplicate `action`, `formaction`, `href`, `type`, or image attributes cannot
+override the effective value during analysis.
+
 HTTP(S) authority slash/backslash variants are normalized before resolving an
 HTML base URL, so equivalent destinations keep the same host checks. Unsupported
 or malformed HTTP(S) destinations produce incomplete-analysis warnings rather
@@ -354,8 +371,8 @@ result. It does not add phishing points or
 pretend that an English-oriented model has learned Chinese phishing patterns.
 When a substantial body produces no fitted vectorizer features, the model
 abstains even if an English subject has features. It also checks a substantial
-non-Latin-script segment separately, so English padding in the same body cannot
-stand in for an unrepresented Chinese, Japanese, or Cyrillic passage. The
+non-Latin-script segment in both subject and body separately, so English
+padding cannot stand in for an unrepresented Chinese, Japanese, or Cyrillic passage. The
 current segment gate requires at least 12 letters in a same-script passage and
 zero fitted features; numbers and symbols cannot stand in for those letters.
 Scattered foreign names separated by English text do not form one passage,
@@ -809,6 +826,31 @@ the pinned Python 3.12 environment:
 ```bash
 .venv/bin/python website/tools/evaluate_serving_pipeline.py --input /absolute/path/to/consented-mail.jsonl
 ```
+
+Exact repeats are excluded from metrics by default (`--duplicate-policy drop`).
+Use `--duplicate-policy error` to reject a cohort containing any exact duplicate.
+Identity is based on effective message content within its input mode: original
+bytes for `eml_path`, exact Unicode for `raw_email`, or the subject/body pair.
+File paths, ignored fields, and row order are not identity. The same content
+with conflicting labels, providers, received dates, or language labels is rejected
+with row numbers; the evaluator does not silently pick one annotation.
+This conservative policy requires resolving ambiguous repeated content before
+comparing groups. It does not detect near-duplicate templates, campaigns, or the
+same message supplied through different input modes, nor establish independence
+from training data.
+
+The `input_integrity` section reports input/evaluated/duplicate row counts,
+the selected duplicate policy, and warnings for excluded repeats.
+`dataset_sha256` uses the versioned `phishguard-evaluation-input-v1` scheme:
+SHA-256 over a sorted multiset of record digests covering effective content,
+input mode, label, provider, received date, and language (default `unlabeled`).
+Repeated records remain in the input fingerprint even when excluded from metrics.
+Reordering rows or moving an unchanged `.eml` does not change the digest; changing
+its bytes or annotations does. Each `.eml` is read once per input row and the same
+byte snapshot is hashed and analyzed. No paths, message content, or per-message
+fingerprints appear in the report. The aggregate digest identifies data; it is
+not an anonymization guarantee. Wilson intervals still require representative,
+independent samples beyond this exact-duplicate check.
 
 The evaluator uses the committed Vercel profile and ignores ambient application
 environment variables. Authentication service IDs default to an empty trust list.

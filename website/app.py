@@ -1910,6 +1910,14 @@ def _detect_non_native_phrases(text: str) -> list[str]:
     return [m for m in markers if m in lower]
 
 
+def _first_html_attributes(attrs):
+    """Use HTML's first occurrence of each attribute, including empty values."""
+    attributes = {}
+    for name, value in attrs:
+        attributes.setdefault(name, value)
+    return attributes
+
+
 class _AnalysisHTMLParser(HTMLParser):
     _marked_declaration = re.compile(r'<!\[([a-zA-Z][-_.a-zA-Z0-9]*)')
 
@@ -1926,10 +1934,63 @@ class _AnalysisHTMLParser(HTMLParser):
         return super().parse_html_declaration(index)
 
 
+_MSO_CONDITIONAL_WARNING = (
+    'MSO conditional content has client-dependent rendering; analysis is incomplete.'
+)
+
+
+def _expand_mso_comments(text: str, parse_warnings=None) -> str:
+    """Expose one bounded layer of conditional markup to every HTML collector.
+
+    Parse actual comment tokens, not comment-like strings in attributes/scripts.
+    The expanded document is evidence only, not a verified client rendering.
+    Nested or malformed branches retain the incomplete-analysis warning.
+    """
+    comment_end = re.compile(r'--\s*>')
+    offsets = [0]
+    offsets.extend(match.end() for match in re.finditer(r'\n', text))
+
+    class ConditionalComments(_AnalysisHTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.replacements = []
+
+        def handle_comment(self, data):
+            opening = re.match(r'\[if\s+([^\]]+)\]>', data.strip(), re.IGNORECASE)
+            if not opening or not re.search(r'\bmso\b', opening.group(1), re.IGNORECASE):
+                return
+            condition = re.sub(r'\s+', '', opening.group(1).casefold())
+            if (condition.count('(') == condition.count(')')
+                    and re.fullmatch(r'\(*(?:!|not)\(*mso\)*', condition)):
+                return
+            if parse_warnings is not None and _MSO_CONDITIONAL_WARNING not in parse_warnings:
+                parse_warnings.append(_MSO_CONDITIONAL_WARNING)
+            conditional = re.fullmatch(r'\[if\s+[^\]]+\]>(.*?)<!\[endif\]',
+                                       data.strip(), flags=re.IGNORECASE | re.DOTALL)
+            if not conditional:
+                return
+            line, column = self.getpos()
+            start = offsets[line - 1] + column
+            close = comment_end.search(text, start + 4)
+            if close:
+                self.replacements.append((start, close.end(), conditional.group(1)))
+
+    scanner = ConditionalComments()
+    scanner.feed(text)
+    scanner.close()
+    parts = []
+    cursor = 0
+    for start, end, content in scanner.replacements:
+        parts.extend((text[cursor:start], content))
+        cursor = end
+    parts.append(text[cursor:])
+    return ''.join(parts)
+
+
 def _collect_html(factory, text: str, parse_warnings=None):
     collector = factory()
     try:
-        collector.feed(text)
+        collector.feed(_expand_mso_comments(text, parse_warnings))
         collector.close()
     except (AssertionError, ValueError):
         warning = 'Malformed HTML required recovery; analysis is incomplete.'
@@ -1940,7 +2001,7 @@ def _collect_html(factory, text: str, parse_warnings=None):
         # the rest of the document. Final fallback is literal text, not success.
         collector = factory()
         try:
-            collector.feed(text.replace('<![', '&lt;!['))
+            collector.feed(_expand_mso_comments(text.replace('<![', '&lt;!['), parse_warnings))
             collector.close()
         except (AssertionError, ValueError):
             collector = factory()
@@ -1972,6 +2033,7 @@ def _extract_links(text: str, *, parse_html: bool = True, parse_warnings=None,
             self.label_markup = []
 
         def handle_starttag(self, tag, attrs):
+            attrs = list(_first_html_attributes(attrs).items())
             attributes = dict(attrs)
             if tag == 'base' and self.base_href is None and 'href' in attributes:
                 self.base_href = attributes['href'] or ''
@@ -2499,6 +2561,7 @@ def _visible_content_text(text: str, parse_warnings=None) -> str:
                 self.handle_endtag(tag)
 
         def handle_starttag(self, tag, attrs):
+            attrs = list(_first_html_attributes(attrs).items())
             # A head end tag is optional: body content implicitly closes it.
             # Do not do this inside title/script/style or inert template text.
             if self.hidden == ['head'] and tag not in self.head_elements:
@@ -2665,7 +2728,7 @@ def _image_reference_counts(text: str, parse_warnings=None) -> tuple[int, int, i
                         break
 
     class ImageCollector(_AnalysisHTMLParser):
-        def __init__(self, conditional_depth=0):
+        def __init__(self):
             super().__init__(convert_charrefs=True)
             self.data_count = 0
             self.remote_count = 0
@@ -2673,7 +2736,6 @@ def _image_reference_counts(text: str, parse_warnings=None) -> tuple[int, int, i
             self.in_style = False
             self.in_script = False
             self.remote_base = None
-            self.conditional_depth = conditional_depth
 
         def is_remote(self, value):
             if remote_image.match(value):
@@ -2704,6 +2766,7 @@ def _image_reference_counts(text: str, parse_warnings=None) -> tuple[int, int, i
                     self.add_reference(value)
 
         def handle_starttag(self, tag, attrs):
+            attrs = list(_first_html_attributes(attrs).items())
             if tag == 'script':
                 self.in_script = True
                 return
@@ -2738,32 +2801,6 @@ def _image_reference_counts(text: str, parse_warnings=None) -> tuple[int, int, i
             elif tag == 'script':
                 self.in_script = False
 
-        def handle_comment(self, data):
-            # Outlook can render VML inside an MSO conditional comment. Ordinary
-            # comments are inert and must not claim image coverage.
-            if self.conditional_depth or self.in_script:
-                return
-            conditional = re.fullmatch(r'\[if\s+([^\]]+)\]>(.*?)<!\[endif\]',
-                                       data.strip(), flags=re.IGNORECASE | re.DOTALL)
-            if not conditional:
-                return
-            condition = conditional.group(1)
-            normalized_condition = re.sub(r'\s+', '', condition.casefold())
-            solely_negated_mso = (
-                normalized_condition.count('(') == normalized_condition.count(')')
-                and re.fullmatch(r'\(*(?:!|not)\(*mso\)*', normalized_condition)
-            )
-            if (not re.search(r'\bmso\b', condition, re.IGNORECASE)
-                    or solely_negated_mso):
-                return
-            nested = ImageCollector(conditional_depth=1)
-            nested.remote_base = self.remote_base
-            nested.feed(conditional.group(2))
-            nested.close()
-            self.data_count = min(20, self.data_count + nested.data_count)
-            self.remote_count = min(20, self.remote_count + nested.remote_count)
-            self.unresolved_count = min(20, self.unresolved_count + nested.unresolved_count)
-
         def handle_data(self, data):
             if self.in_style and not self.in_script:
                 self.add_css(data)
@@ -2781,6 +2818,7 @@ def _has_password_form(text: str, parse_warnings=None) -> bool:
             self.password_forms = []
 
         def handle_starttag(self, tag, attrs):
+            attrs = list(_first_html_attributes(attrs).items())
             attributes = dict(attrs)
             if tag == 'form':
                 self.depth += 1
@@ -2825,7 +2863,9 @@ def analyze_email_content(subject: str, body: str, *, content_parts: list[dict] 
             _STYLESHEET_VISIBILITY_WARNING, _INLINE_CSS_VISIBILITY_WARNING,
         ))
         return (visible, stylesheet_uncertain,
-                stylesheet_uncertain or _IMAGE_ALT_FALLBACK_WARNING in part_warnings)
+                stylesheet_uncertain or any(warning in part_warnings for warning in (
+                    _IMAGE_ALT_FALLBACK_WARNING, _MSO_CONDITIONAL_WARNING,
+                )))
 
     if content_parts is None:
         raw_parts = [subject, body]
@@ -3383,7 +3423,7 @@ async def _analyze_content(
     # 2. Optional ML text classifier (TF-IDF + selected linear model)
     rendering_uncertain = any(warning in result['analysis_warnings'] for warning in (
         _STYLESHEET_VISIBILITY_WARNING, _INLINE_CSS_VISIBILITY_WARNING,
-        _IMAGE_ALT_FALLBACK_WARNING,
+        _IMAGE_ALT_FALLBACK_WARNING, _MSO_CONDITIONAL_WARNING,
     ))
     if _content_pipeline is not None:
         views = model_view.get('mime_views', [(model_view['body'], rendering_uncertain)])

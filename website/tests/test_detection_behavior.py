@@ -1293,6 +1293,23 @@ Here is the requested update.
         self.assertEqual(result["total_score"], 0)
         self.assertEqual(result["risk_level"], "safe")
 
+    def test_brand_substrings_in_ordinary_names_are_not_impersonation(self):
+        for name in ('Alice Appleton', 'Pineapple Gardening', 'Amazonas Travel', 'Googleton Club'):
+            with self.subTest(name=name):
+                raw = f'From: {name} <alice@gmail.com>\nSubject: Meeting\n\nProject notes.'
+                structure = app.analyze_raw_email(raw)
+                self.assertEqual(structure['structure_score'], 0)
+                self.assertEqual(structure['risk_floor'], 'safe')
+
+    def test_brand_identity_boundaries_preserve_obfuscated_names(self):
+        for name in ('Apple Support', 'A p p l e Support', 'A.p.p.l.e Support',
+                     'Аpple Support', 'Ａｐｐｌｅ Support', 'App\u200ble Support'):
+            with self.subTest(name=name):
+                raw = f'From: "{name}" <alice@gmail.com>\nSubject: Meeting\n\nProject notes.'
+                structure = app.analyze_raw_email(raw)
+                self.assertGreaterEqual(structure['structure_score'], 4)
+                self.assertEqual(structure['risk_floor'], 'high')
+
     def test_protected_brand_display_name_requires_a_canonical_domain(self):
         samples = (
             "From: PayPal <billing@gmail.com>\nSubject: Receipt\n\nReview receipt.",

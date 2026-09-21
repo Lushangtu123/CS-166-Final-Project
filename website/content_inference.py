@@ -145,7 +145,7 @@ def predict_content(pipeline: dict, subject: str, body: str, *, canonical_text: 
     features = vectorizer.transform([text])
     # Subject features do not establish that a substantial body was represented
     # by the fitted model. Check the body and meaningful non-Latin segments
-    # separately, so English padding cannot mask an uncovered segment.
+    # separately in both fields, so covered text cannot mask an uncovered segment.
     context_body = (
         (body or "") if canonical_text
         else re.sub(r"<[^>]*>", " ", unescape(body or ""))
@@ -154,7 +154,8 @@ def predict_content(pipeline: dict, subject: str, body: str, *, canonical_text: 
     uncovered_body = substantial_body and vectorizer.transform([context_body]).nnz == 0
     uncovered_segment = any(
         vectorizer.transform([segment]).nnz == 0
-        for segment in non_latin_script_segments(context_body, MIN_UNCOVERED_SCRIPT_LETTERS)
+        for field in (subject or "", context_body)
+        for segment in non_latin_script_segments(field, MIN_UNCOVERED_SCRIPT_LETTERS)
     )
     if features.nnz == 0 or uncovered_body or uncovered_segment:
         return {

@@ -66,6 +66,37 @@ def _validated_record(row: dict, index: int) -> dict:
     return row
 
 
+def _read_eml(path: str) -> bytes:
+    with Path(path).open('rb') as source:
+        raw = source.read(MAX_EML_BYTES + 1)
+    if len(raw) > MAX_EML_BYTES or not raw.strip():
+        raise ValueError('Email file must contain 1 to 60,000 bytes')
+    return raw
+
+
+def _json_bytes(value) -> bytes:
+    return json.dumps(value, ensure_ascii=True, sort_keys=True,
+                      separators=(',', ':')).encode('ascii')
+
+
+def _prepare_record(row: dict) -> tuple[dict, str]:
+    """Snapshot effective input once; paths and ignored annotations are not identity."""
+    prepared = dict(row)
+    # JSONL must not be able to supply the evaluator's internal byte snapshot.
+    prepared.pop('_eml_bytes', None)
+    if 'eml_path' in prepared:
+        raw = _read_eml(prepared['eml_path'])
+        prepared['_eml_bytes'] = raw
+        payload = b'eml-bytes\0' + raw
+    elif prepared.get('raw_email'):
+        payload = b'raw-unicode\0' + _json_bytes(prepared['raw_email'])
+    else:
+        payload = b'subject-body\0' + _json_bytes([
+            prepared.get('subject', ''), prepared.get('body', ''),
+        ])
+    return prepared, hashlib.sha256(payload).hexdigest()
+
+
 def _rate_with_interval(successes: int, total: int) -> tuple[float | None, list[float] | None]:
     """Return a rate and two-sided 95% Wilson interval, or null for no data."""
     if total == 0:
@@ -131,14 +162,36 @@ def evaluate_records(
     analyze: Callable[[dict], dict],
     *,
     model_sha256: str,
+    duplicate_policy: str = 'drop',
 ) -> dict:
     """Run each row through the supplied serving analyzer and emit aggregates."""
     if not re.fullmatch(r'[0-9a-f]{64}', model_sha256):
         raise ValueError('A full lowercase model SHA-256 is required')
+    if duplicate_policy not in {'drop', 'error'}:
+        raise ValueError('duplicate_policy must be drop or error')
     outcomes = []
     dates = []
+    seen = {}
+    input_digests = []
+    duplicate_rows = 0
     for index, raw_row in enumerate(rows, 1):
         row = _validated_record(raw_row, index)
+        try:
+            row, content_digest = _prepare_record(row)
+        except Exception:
+            raise RuntimeError(f'Row {index}: message input could not be read') from None
+        metadata = [row['label'], row['provider'], row['received_at'], row.get('language', 'unlabeled')]
+        input_digests.append(hashlib.sha256(_json_bytes([content_digest, metadata])).digest())
+        if content_digest in seen:
+            previous_index, previous_metadata = seen[content_digest]
+            if metadata != previous_metadata:
+                raise ValueError(f'Row {index}: identical message content has conflicting labels or '
+                                 f'group metadata with row {previous_index}')
+            if duplicate_policy == 'error':
+                raise ValueError(f'Row {index}: duplicate message of row {previous_index}')
+            duplicate_rows += 1
+            continue
+        seen[content_digest] = (index, metadata)
         try:
             result = analyze(row)
         except Exception:
@@ -175,6 +228,21 @@ def evaluate_records(
         by_provider_month[item['provider']][item['month']].append(item)
     return {
         'evaluation_scope': 'local_serving_pipeline',
+        'input_integrity': {
+            'input_rows': len(input_digests),
+            'evaluated_rows': len(outcomes),
+            'duplicate_rows': duplicate_rows,
+            'duplicate_policy': duplicate_policy,
+            'deduplication': 'exact effective message input; conflicting labels or group metadata rejected',
+            'fingerprint_schema': 'phishguard-evaluation-input-v1',
+            # Fixed-length record digests form an order-independent multiset.
+            # Include omitted repeats so changes to the supplied cohort remain visible.
+            'dataset_sha256': hashlib.sha256(
+                b'phishguard-evaluation-input-v1\0' + b''.join(sorted(input_digests))
+            ).hexdigest(),
+            'warnings': ([f'{duplicate_rows} duplicate rows were excluded from all metrics.']
+                         if duplicate_rows else []),
+        },
         'alert_policy': 'medium/high/critical count as alerts; unknown is undetermined',
         'confidence_intervals': 'two-sided 95% Wilson score intervals',
         'temporal_isolation': 'not_verified',
@@ -213,10 +281,7 @@ def analyze_record(row: dict) -> dict:
 
     structure = None
     if 'eml_path' in row:
-        with Path(row['eml_path']).open('rb') as source:
-            raw = source.read(MAX_EML_BYTES + 1)
-        if len(raw) > MAX_EML_BYTES or not raw.strip():
-            raise ValueError('Email file must contain 1 to 60,000 bytes')
+        raw = row['_eml_bytes'] if '_eml_bytes' in row else _read_eml(row['eml_path'])
         structure = app.analyze_raw_email(
             raw, trusted_authserv_ids=app.SETTINGS.trusted_authserv_ids,
         )
@@ -271,6 +336,8 @@ def main() -> None:
                         help='Local JSONL file with consented, labeled messages')
     parser.add_argument('--trusted-authserv-id', action='append', default=[],
                         help='Explicit trusted authentication service ID; repeat for multiple IDs (default: none)')
+    parser.add_argument('--duplicate-policy', choices=('drop', 'error'), default='drop',
+                        help='Drop exact duplicates (default), or reject them; metadata conflicts always fail')
     args = parser.parse_args()
     trusted_ids = sorted({value.strip().lower() for value in args.trusted_authserv_id})
     if any(not re.fullmatch(r'[a-z0-9._-]{1,253}', value) for value in trusted_ids):
@@ -294,7 +361,7 @@ def main() -> None:
 
     with patch.object(app, '_content_pipeline', pipeline), patch.object(app, 'SETTINGS', settings):
         report = evaluate_records(_jsonl_records(args.input), analyze_record,
-                                  model_sha256=model_sha256)
+                                  model_sha256=model_sha256, duplicate_policy=args.duplicate_policy)
     report['reproducibility'] = _evaluation_metadata({
         'trusted_authserv_ids': trusted_ids,
         'observe_sender_history': False,

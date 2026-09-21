@@ -180,6 +180,29 @@ class ContentInferenceTests(unittest.TestCase):
         self.assertIsNone(result["ml_prediction"])
         self.assertEqual(result["ml_top_contributors"], [])
 
+    def test_subject_script_coverage_is_checked_separately(self):
+        pipeline = {
+            'vectorizer': _OneScriptVectorizer(),
+            'clf': _UnexpectedClassifier(),
+            'decision_threshold': 0.5,
+        }
+        subject = '本月发票的收款银行账户已经变更，请回复确认。'
+        body = 'Ваш счет за проект уже оплачен, и встреча состоится завтра.'
+        for canonical in (False, True):
+            result = predict_content(pipeline, subject, body, canonical_text=canonical)
+            self.assertEqual(result['ml_status'], 'insufficient_feature_coverage')
+            self.assertIsNone(result['ml_phishing_probability'])
+
+    def test_represented_non_latin_subject_can_still_be_scored(self):
+        pipeline = {
+            'vectorizer': _OneScriptVectorizer(),
+            'clf': _Classifier(),
+            'decision_threshold': 0.5,
+        }
+        text = 'Ваш счет за проект уже оплачен, и встреча состоится завтра.'
+        result = predict_content(pipeline, text, text, canonical_text=True)
+        self.assertEqual(result['ml_status'], 'available')
+
     def test_covered_cyrillic_cannot_mask_uncovered_han_segment(self):
         pipeline = {
             'vectorizer': _OneScriptVectorizer(),

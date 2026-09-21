@@ -390,6 +390,121 @@ class HTMLInputCoverageTests(unittest.TestCase):
         self.assertEqual(result['risk_level'], 'unknown')
         self.assertFalse(result['analysis_complete'])
 
+    def test_first_duplicate_destination_attribute_is_analyzed(self):
+        pairs = (
+            ('<form action="https://paypa1.example/submit" action="https://example.org/submit"></form>',
+             'https://paypa1.example/submit'),
+            ('<base href="https://paypa1.example/" href="https://example.org/"><a href="login">Review</a>',
+             'https://paypa1.example/login'),
+            ('<button formaction="https://paypa1.example/go" formaction="https://example.org/go">Review</button>',
+             'https://paypa1.example/go'),
+        )
+        with patch.object(app, '_content_pipeline', None):
+            for html, destination in pairs:
+                for raw in (False, True):
+                    with self.subTest(html=html, raw=raw):
+                        request = ({'raw_email': 'Content-Type: text/html\n\n' + html}
+                                   if raw else {'body': html})
+                        result = self.analyze(**request)
+                        self.assertEqual(result['risk_level'], 'high')
+                        self.assertIn(destination, [target for _, target in app._extract_links(html)])
+
+    def test_password_type_uses_first_attribute_in_both_orders(self):
+        self.assertTrue(app._has_password_form('<form><input type="password" type="text"></form>'))
+        self.assertFalse(app._has_password_form('<form><input type="text" type="password"></form>'))
+
+    def test_ignored_duplicate_image_attributes_do_not_claim_coverage(self):
+        html = '<img src="" src="https://images.example.org/a.png">'
+        self.assertEqual(app._image_reference_counts(html), (0, 0, 0))
+        reversed_html = '<img src="https://images.example.org/a.png" src="">'
+        self.assertEqual(app._image_reference_counts(reversed_html), (0, 1, 0))
+
+    def test_mso_conditional_text_links_and_forms_are_inspected(self):
+        prose = '<p>Our project meeting is tomorrow at noon in the library.</p>'
+        fragment = ('<p>Your account will be suspended. Immediately send your password.</p>'
+                    '<a href="https://paypa1.example/login">Verify password</a>'
+                    '<form action="https://collect.example/submit"><input type="password"></form>')
+        for condition in ('mso', 'gte mso 9', '(mso)|(!mso)'):
+            html = prose + f'<!--[if {condition}]>{fragment}<![endif]-->'
+            message = EmailMessage()
+            message['Subject'] = 'Project update'
+            message.set_content(html, subtype='html')
+            with patch.object(app, '_content_pipeline', None):
+                for request in ({'body': html}, {'raw_email': message.as_string()}):
+                    with self.subTest(condition=condition, request=request):
+                        result = self.analyze(**request)
+                        ordinary = self.analyze(body=prose + fragment)
+                        self.assertIn(ordinary['risk_level'], ('high', 'critical'))
+                        self.assertEqual(result['risk_level'], ordinary['risk_level'])
+                        self.assertEqual(result['url_count'], 2)
+                        self.assertFalse(result['analysis_complete'])
+                        self.assertTrue(any('conditional' in w.lower() for w in result['analysis_warnings']))
+            self.assertIn('Immediately send your password', app._visible_content_text(html))
+            self.assertTrue(app._has_password_form(html))
+
+    def test_mso_conditional_rendering_abstains_in_manual_and_mime_modes(self):
+        html = ('<p>Please review the detailed project notes before our meeting tomorrow.</p>'
+                '<!--[if mso]><p>Additional project notes for this mail client.</p><![endif]-->')
+        message = EmailMessage()
+        message['Subject'] = 'Project update'
+        message.set_content(html, subtype='html')
+        pipeline = {'decision_threshold': 0.35, 'metrics': {}}
+        with patch.object(app, '_content_pipeline', pipeline), patch.object(app, 'predict_content', side_effect=AssertionError('conditional view must abstain')) as predict:
+            for request in ({'body': html}, {'raw_email': message.as_string()}):
+                result = self.analyze(**request)
+                self.assertEqual(result['risk_level'], 'unknown')
+                self.assertEqual(result['ml_status'], 'unverified_rendering')
+                self.assertFalse(result['analysis_complete'])
+            predict.assert_not_called()
+
+    def test_inert_comments_do_not_supply_conditional_evidence(self):
+        fragment = '<a href="https://paypa1.example">Verify password</a>'
+        inert = (f'<!-- {fragment} -->',
+                 f'<!--[if !mso]>{fragment}<![endif]-->',
+                 f'<script>"<!--[if mso]>{fragment}<![endif]-->"</script>',
+                 "<span title='<!--[if mso]>hidden<![endif]-->'>Notes</span>")
+        with patch.object(app, '_content_pipeline', None):
+            for comment in inert:
+                result = self.analyze(body='<p>Please review the detailed project notes.</p>' + comment)
+                self.assertEqual(result['risk_level'], 'safe')
+                self.assertEqual(result['url_count'], 0)
+                self.assertTrue(result['analysis_complete'])
+
+    def test_multiple_conditional_comments_keep_offsets_and_base_links(self):
+        html = ('<base href="https://paypa1.example/">\n'
+                '<!--[if mso]><a href="/login">First</a><![endif]-->\n'
+                '<!--[if mso]><a href="/verify">Second</a><![endif]-->')
+        warnings = []
+        links = app._extract_links(html, parse_warnings=warnings)
+        self.assertEqual(links, [('First', 'https://paypa1.example/login'),
+                                 ('Second', 'https://paypa1.example/verify')])
+        self.assertEqual(len(warnings), 1)
+
+    def test_malformed_conditional_comment_is_not_reported_complete(self):
+        html = ('<p>Please review the detailed project notes for our meeting.</p>'
+                '<!--[if mso]><p>Client-only content without a closing condition.</p>-->')
+        with patch.object(app, '_content_pipeline', None):
+            result = self.analyze(body=html)
+        self.assertEqual(result['risk_level'], 'unknown')
+        self.assertFalse(result['analysis_complete'])
+
+    def test_uncovered_subject_abstains_despite_english_body(self):
+        pipeline = self.deployment_pipeline()
+        subject = 'Ваш банковский счет заблокирован. Срочно подтвердите пароль.'
+        body = ('Our project meeting is tomorrow at noon in the library. '
+                'Please bring your notes so we can review the assignment together. Thanks.')
+        self.assertEqual(pipeline['vectorizer'].transform([subject]).nnz, 0)
+        message = EmailMessage()
+        message['Subject'] = subject
+        message.set_content(body)
+        with patch.object(app, '_content_pipeline', pipeline):
+            for request in ({'subject': subject, 'body': body}, {'raw_email': message.as_string()}):
+                result = self.analyze(**request)
+                self.assertEqual(result['ml_status'], 'insufficient_feature_coverage')
+                self.assertEqual(result['risk_level'], 'unknown')
+                self.assertFalse(result['analysis_complete'])
+                self.assertIsNone(result['ml_phishing_probability'])
+
     def test_outlook_conditional_vml_image_is_disclosed(self):
         body = ('<p>Please see the image below.</p>'
                 '<!--[if mso]><v:rect><v:imagedata src="https://images.example.org/notice.png">'

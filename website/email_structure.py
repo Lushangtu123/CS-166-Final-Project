@@ -121,7 +121,12 @@ def _canonical_brand_domain(domain: str, canonical_domains: set[str]) -> bool:
 
 def _brand_identity_signals(display_name: str, from_domain: str) -> tuple[int, list[dict]]:
     decoded_domain = _decode_idna_domain(from_domain)
-    display_skeleton = re.sub(r"[^a-z0-9]", "", _confusable_skeleton(display_name))
+    # Preserve word boundaries so Appleton/Pineapple are not brand identities.
+    # Ignore format controls and allow separators inside an obfuscated brand.
+    display_skeleton = "".join(
+        ch for ch in _confusable_skeleton(display_name)
+        if unicodedata.category(ch) != "Cf"
+    )
     domain_skeleton = _confusable_skeleton(decoded_domain)
     domain_label_skeleton = domain_skeleton.split(".", 1)[0]
     indicators: list[dict] = []
@@ -129,7 +134,8 @@ def _brand_identity_signals(display_name: str, from_domain: str) -> tuple[int, l
 
     for brand, canonical_domains in _PROTECTED_BRAND_DOMAINS.items():
         canonical = _canonical_brand_domain(from_domain, canonical_domains)
-        if brand in display_skeleton and not canonical:
+        brand_pattern = r"(?<!\w)" + r"[\W_]*".join(brand) + r"(?!\w)"
+        if re.search(brand_pattern, display_skeleton) and not canonical:
             score += 4
             indicators.append({
                 "level": "high",

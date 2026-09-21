@@ -256,7 +256,6 @@ class HtmlRecoveryTests(unittest.TestCase):
             '<style>/* <![foo]> */</style><p>Hello</p>',
             '<!DOCTYPE html><p>Hello</p>',
             '<![CDATA[ordinary text]]><p>Hello</p>',
-            '<!--[if mso]>Hello<![endif]--><p>Hello</p>',
             '<![if !mso]><p>Hello</p><![endif]>',
         ):
             with self.subTest(body=body):
@@ -265,6 +264,14 @@ class HtmlRecoveryTests(unittest.TestCase):
                 self.assertTrue(result['analysis_complete'])
                 self.assertEqual(result['risk_level'], 'safe')
                 self.assertEqual(result['analysis_warnings'], [])
+
+    def test_supported_mso_comment_warns_about_rendering_not_malformed_html(self):
+        body = '<!--[if mso]>Hello<![endif]--><p>Hello</p>'
+        result = json.loads(asyncio.run(app.analyze_content_endpoint(
+            app.ContentRequest(raw_email='Content-Type: text/html\n\n' + body))).body)
+        self.assertFalse(result['analysis_complete'])
+        self.assertEqual(result['risk_level'], 'unknown')
+        self.assertEqual(result['analysis_warnings'], [app._MSO_CONDITIONAL_WARNING])
 
     def test_nested_html_recovery_propagates_and_valid_plain_text_is_unchanged(self):
         raw = 'Content-Type: message/rfc822\n\nContent-Type: text/html\n\n<![foo]>Hello'
