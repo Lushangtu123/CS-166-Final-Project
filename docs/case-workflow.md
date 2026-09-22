@@ -56,15 +56,23 @@ Environment changes apply to a new deployment, not an existing one.
 
 Run `python website/manage_case_access.py` in your own interactive terminal for
 each analyst. Choose `y` at the existing-token prompt if you already saved one;
-the hidden prompt regenerates its hash without changing that token. Copy the
-ENTIRE JSON line (including braces and double quotes) into Vercel, not the token
-or the hash alone. Save the generated token in a password manager and deliver it
-privately to that analyst. Merge the generated hash into the JSON map, preserving
-other analysts. The helper refuses redirected output. Do not send raw tokens in
-chat. Browser refresh signs out; tokens are not saved in localStorage or cookies.
+the hidden prompt regenerates its hash without changing that token. First paste
+the current JSON at the hidden prompt so the helper can preserve every analyst.
+It refuses to replace an existing analyst unless you explicitly type `ROTATE`;
+rotation revokes that analyst's old token on new deployments. Copy the final
+complete JSON line into Vercel, not the token or an individual hash. Save generated
+tokens in a password manager and deliver them privately. The helper refuses
+redirected output. Do not send raw tokens in chat. Browser refresh signs out;
+tokens are not saved in localStorage or cookies. Refreshing the browser requires
+the same token again, while an unchanged Production hash remains valid across code
+releases.
 
 Preview needs its own workspace and own analyst credentials. Leaving it disabled
-is the default. Deployment URLs retain their original configuration: revoking a
+is the default. Configure credentials in the intended Vercel project and scope;
+another project connected to the same GitHub repository has separate environment
+variables. Bookmark the stable Production address above and do not use a Preview
+or project-specific deployment URL for normal analyst work. Deployment URLs retain
+their original configuration: revoking a
 token for a new deployment does not revoke it on older deployments. Protect or
 remove outdated deployments through Vercel as part of revocation, and verify an
 old token returns 401 on every retained accessible deployment.

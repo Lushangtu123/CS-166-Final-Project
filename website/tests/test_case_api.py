@@ -68,6 +68,21 @@ class CaseAPITests(unittest.TestCase):
     def call(self, *args, **kwargs):
         return asyncio.run(request(*args, **kwargs))
 
+    def test_invalid_token_identifies_the_deployment_scope(self):
+        self.env['VERCEL_ENV'] = 'production'
+        app.app.state.case_service = build_case_service(self.env)
+
+        status, result, _ = self.call(
+            'GET', '/api/cases/me', token='invalid-token-that-is-still-long-enough-1234')
+
+        self.assertEqual(status, 401)
+        self.assertEqual(
+            result['detail'],
+            'A valid analyst access token is required for this production deployment. '
+            'Production and Preview credentials are separate.',
+        )
+        self.assertNotIn('invalid-token', result['detail'])
+
     def create(self):
         return self.call('POST', '/api/cases', key='00000000-0000-4000-8000-000000000001',
                          payload={'subject': 'Review', 'body': '<a href="https://paypa1.example">Review</a>'})

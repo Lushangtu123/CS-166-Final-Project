@@ -25,6 +25,7 @@ class CaseService:
     store: object
     analysts: dict = field(repr=False)
     feedback_store: object | None = field(default=None, repr=False)
+    deployment_environment: str = 'local'
 
 
 def build_case_service(env):
@@ -65,7 +66,10 @@ def build_case_service(env):
         feedback_store = CaseStore(path.with_name(path.stem + '.feedback' + path.suffix))
     else:
         raise ValueError('CASE_STORE must be sqlite or upstash')
-    return CaseService(store, analysts, feedback_store)
+    deployment_environment = env.get('VERCEL_ENV', 'local').strip().lower()
+    if deployment_environment not in {'production', 'preview', 'development', 'local'}:
+        deployment_environment = 'deployment'
+    return CaseService(store, analysts, feedback_store, deployment_environment)
 
 
 class CaseInput(BaseModel):
@@ -104,16 +108,20 @@ def make_case_router(analyze, *, visible_text, mask_inline_data):
         service = getattr(request.app.state, 'case_service', None)
         if service is None:
             raise HTTPException(404, 'Case management is not configured')
+        scope = service.deployment_environment
+        detail = f'A valid analyst access token is required for this {scope} deployment.'
+        if scope in {'production', 'preview'}:
+            detail += ' Production and Preview credentials are separate.'
         auth = request.headers.get('authorization', '')
         if not auth.startswith('Bearer ') or not 32 <= len(auth[7:]) <= 256:
-            raise HTTPException(401, 'A valid analyst access token is required', headers={'WWW-Authenticate': 'Bearer'})
+            raise HTTPException(401, detail, headers={'WWW-Authenticate': 'Bearer'})
         digest = hashlib.sha256(auth[7:].encode()).hexdigest()
         actor = None
         for candidate, expected in service.analysts.items():
             if hmac.compare_digest(digest, expected):
                 actor = candidate
         if actor is None:
-            raise HTTPException(401, 'A valid analyst access token is required')
+            raise HTTPException(401, detail)
         return service.store, actor
 
     async def call(fn, *args, **kwargs):
