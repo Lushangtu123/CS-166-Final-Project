@@ -5,6 +5,8 @@ from pathlib import Path
 import sys
 import threading
 import time
+import ssl
+from urllib.error import HTTPError, URLError
 import unittest
 from unittest.mock import Mock, patch
 
@@ -23,6 +25,35 @@ def answer():
 
 
 class JevTests(unittest.TestCase):
+    def test_provider_diagnostics_are_safe_distinct_and_never_retry(self):
+        for error, reason in [
+            *[(HTTPError('https://api.typesafe.ai/private-secret', code, 'private-secret', {}, io.BytesIO(b'private-secret')), reason)
+              for code, reason in [(401, 'provider_authentication'), (403, 'provider_access_denied'),
+                                   (422, 'provider_request_invalid'), (429, 'provider_rate_limited'),
+                                   (529, 'provider_overloaded'), (500, 'provider_http_error')]],
+            (TimeoutError('private-secret'), 'provider_timeout'),
+            (URLError(TimeoutError('private-secret')), 'provider_timeout'),
+            (URLError(ssl.SSLCertVerificationError('private-secret')), 'provider_tls_error'),
+            (URLError('private-secret'), 'provider_network_error'),
+        ]:
+            with self.subTest(reason=reason):
+                client, opener = self.client(); opener.side_effect = error
+                with self.assertLogs('jev', level='WARNING') as logs:
+                    result = client.evaluate('private-secret', 'private-secret')
+                self.assertEqual(result['reason'], reason)
+                self.assertEqual(result['status'], 'unavailable')
+                self.assertFalse(result['affects_risk'])
+                self.assertEqual(opener.call_count, 1)
+                self.assertNotIn('private-secret', json.dumps(result) + str(logs.output))
+
+    def test_malformed_provider_response_is_distinct_from_network_failure(self):
+        client, opener = self.client()
+        opener.return_value = io.BytesIO(b'private-secret invalid JSON')
+        with self.assertLogs('jev', level='WARNING') as logs:
+            result = client.evaluate('subject', 'body')
+        self.assertEqual(result['reason'], 'provider_invalid_response')
+        self.assertNotIn('private-secret', str(logs.output) + json.dumps(result))
+
     def client(self, payload=None):
         opener = Mock(return_value=io.BytesIO(json.dumps(payload or answer()).encode()))
         return JevClient.from_env({'PHISHGUARD_JEV_ENABLED': 'true', 'TYPESAFE_API_KEY': 'synthetic-test-key'}, opener=opener), opener

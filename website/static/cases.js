@@ -148,7 +148,22 @@
         $('jev-status').textContent = 'The case changed. Reload it before requesting another opinion.'; return;
       }
       if (result.status !== 'available') {
-        $('jev-status').textContent = 'Auxiliary analysis was unavailable or skipped. The original detection result is unchanged.'; return;
+        const reasons = {
+          provider_authentication: 'TypeSafe rejected the API key. Ask the administrator to check the deployment key.',
+          provider_access_denied: 'TypeSafe denied access. Ask the administrator to check account and model access.',
+          provider_request_invalid: 'TypeSafe rejected the request format. Contact the administrator.',
+          provider_rate_limited: 'TypeSafe rate limit reached. Wait before making another request.',
+          provider_overloaded: 'TypeSafe is temporarily overloaded.',
+          provider_timeout: 'TypeSafe timed out. No automatic retry was made.',
+          provider_tls_error: 'The secure connection to TypeSafe could not be verified. Contact the administrator.',
+          provider_network_error: 'The server could not connect to TypeSafe.',
+          provider_http_error: 'TypeSafe returned a service error. Contact the administrator.',
+          provider_invalid_response: 'TypeSafe returned an unexpected response. Contact the administrator.',
+          local_capacity_exhausted: 'Auxiliary analysis is busy. Wait for current requests to finish.',
+          call_budget_exhausted: 'The auxiliary request allowance for this server has been reached.'
+        };
+        const message = Object.hasOwn(reasons, result.reason) ? reasons[result.reason] : 'Auxiliary analysis was unavailable or skipped.';
+        $('jev-status').textContent = message + ' The original detection result is unchanged.'; return;
       }
       $('jev-status').textContent = `${result.model} · Model opinions, not verified findings. Risk and verdict are unchanged.${result.evidence_incomplete ? ' Original evidence is incomplete; this opinion cannot fill missing images or correct OCR.' : ''}`;
       const names = {credential_request: 'Request for authentication secrets', payment_redirection: 'New or changed payment destination', authority_pressure: 'Pressure to bypass normal checks', phishing_intent: 'Deceptive intent', insufficient_evidence: 'Insufficient evidence'};

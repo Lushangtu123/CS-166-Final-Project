@@ -33,6 +33,21 @@ function setup(handler, vision = {cancel() {}, render() {}}) {
 }
 const standard = async url => ({status: 200, data: url.endsWith('/me') ? {actor: 'alice'} : url.includes('?') ? {items: [caseValue()], total: 1} : caseValue()});
 
+test('Jev failure shows actionable safe guidance without retrying or changing risk', async () => {
+  for (const [reason, message] of [['provider_authentication', /API key/], ['provider_timeout', /timed out/],
+                                  ['provider_request_invalid', /request format/], ['private-secret', /unavailable or skipped/]]) {
+    const ui = setup(async url => url.endsWith('/me') ? {status: 200, data: {actor: 'alice', jev_available: true}} :
+      url.endsWith('/auxiliary') ? {status: 200, data: {case_id: 'case-1', case_version: 1, status: 'unavailable', reason}} : standard(url));
+    await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
+    const original = ui.el('analysis-summary').textContent;
+    ui.el('jev-consent').checked = true; await ui.fire('jev-run');
+    assert.match(ui.el('jev-status').textContent, message);
+    assert(!ui.el('jev-status').textContent.includes('private-secret'));
+    assert.equal(ui.el('analysis-summary').textContent, original);
+    assert.equal(ui.calls.filter(call => call.url.endsWith('/auxiliary')).length, 1);
+  }
+});
+
 test('protected Preview login preserves the gateway session and still requires the analyst token', async () => {
   for (const accepted of [true, false]) {
     const ui = setup(async (url, options) => {
