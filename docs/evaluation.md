@@ -4,11 +4,13 @@
 
 The public **Report an issue** flow now has a separate, optional consent for
 private evaluation of retained content or original EML. Only a report with both
-source-retention and evaluation consent, a closed analyst review, and a human
-`phishing` or `legitimate` verdict can enter a curation draft. Older reports,
-source-free reports, images, sender-only reports, open reviews and uncertain
-verdicts are excluded. Reports with the same retained message and conflicting
-human labels are excluded together; matching duplicates count once.
+source-retention and evaluation consent, a closed analyst review with structured
+reason and evidence basis, and a human `phishing` or `legitimate` verdict can
+enter a curation draft. Older reports,
+source-free reports, images, sender-only reports, legacy unstructured reviews,
+reporter-only evidence, open reviews and uncertain verdicts are excluded.
+Reports with the same retained message and conflicting human labels are excluded
+together; matching duplicates count once.
 
 First make and verify a private archive using the commands in
 [case-workflow.md](case-workflow.md#storage-limits-and-responsibility), then run:
@@ -21,14 +23,41 @@ First make and verify a private archive using the commands in
 
 The draft is an owner-only local file outside Git. It contains original message
 text or base64-encoded EML bytes, a human verdict, timestamps, the reported
-risk and model ID;
-it omits analyst notes. Treat it as sensitive. It is **not yet an evaluation
+risk and model ID; it omits analyst notes. Treat it as sensitive. It is **not yet an evaluation
 cohort**: user reports are selected by perceived errors, provider and email
 arrival date are unknown, the analyst verdict still needs independent label
-review, and training/campaign overlap has not been checked. Curate those fields,
-split by campaign/family, and obtain a fresh untouched holdout before running
-`evaluate_serving_pipeline.py`. Never copy the draft into public fixtures or use
-it to claim production accuracy.
+review, and training/campaign overlap has not been checked. A separate local
+cohort builder accepts a second reviewer's annotations and enforces that their
+ID differs from every analyst who reviewed that case. It also checks dates,
+provider, language, message fingerprints and family separation across
+development and holdout inputs. The identities and labels are self-attested;
+the tool cannot prove independence, consent or training-set isolation.
+
+Create a private owner-only annotations JSONL outside Git. Each selected draft
+record needs one line like this, with independently verified values:
+
+```json
+{"id":"00000000-0000-4000-8000-000000000001","label":"legitimate","provider":"gmail","received_at":"2026-09-21","language":"en","family_id":"campaign-1","cohort_role":"holdout","independent_reviewer":"reviewer-b"}
+```
+
+Then run:
+
+```sh
+.venv/bin/python website/tools/build_private_cohort.py \
+  --draft /absolute/private/path/reviewed-feedback-draft.jsonl \
+  --annotations /absolute/private/path/annotations.jsonl \
+  --output-dir /absolute/private/path/cohort
+.venv/bin/python website/tools/evaluate_serving_pipeline.py \
+  --input /absolute/private/path/cohort/holdout.jsonl
+```
+
+The builder writes new owner-only `development.jsonl`, `holdout.jsonl`, EML
+files and a lineage record. Annotations may select a subset of the draft, but
+one family cannot be split across roles; conflicting independent labels stop
+the build for manual resolution. `received_at` must come from verified provider
+or organization evidence, not an untrusted mail `Date` header. Keep the
+holdout untouched while developing rules and review training overlap before
+claiming independent performance. Never copy private inputs into public fixtures.
 
 The first goal is to measure changes honestly with a small, repeatable local
 workflow. These tools do not certify enterprise readiness, train a new model,

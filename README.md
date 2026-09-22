@@ -968,8 +968,11 @@ Upstash storage; the feature is disabled until configured. See
 limits, retention and production setup. That guide includes a single-analyst
 credential recovery mode, a private Production login check, and read-only case
 and feedback archive export with an isolated local recovery drill. Separately
-consented, closed user feedback can be exported as a private curation draft;
-it does not automatically train or validate the model. See [evaluation scope](docs/evaluation.md).
+consented, closed user feedback with structured analyst review can be exported
+as a private curation draft and combined with independent annotations into
+private development and holdout inputs. An archive-first, confirmation-gated
+operator tool can remove one eligible closed record and its indexes. These
+tools do not automatically train or validate the model. See [evaluation scope](docs/evaluation.md).
 
 ## Image and QR recognition
 

@@ -158,9 +158,11 @@ class UpstashCaseStore:
             raise CaseInvalid('Case exceeds the 750 KB storage limit')
         return raw
 
-    def update(self, case_id, *, actor, expected_version, status, verdict, note):
+    def update(self, case_id, *, actor, expected_version, status, verdict, note,
+               feedback_reason=None, evidence_basis=None):
         case = self.get(case_id)
-        changes = validate_review(case, expected_version, status, verdict, note)
+        changes = validate_review(case, expected_version, status, verdict, note,
+                                  feedback_reason, evidence_basis)
         if len(case['events']) >= 200:
             raise CaseInvalid('Case reached its 200-event limit; contact the administrator')
         timestamp = now()

@@ -78,3 +78,22 @@ class CloudCaseTests(unittest.TestCase):
         self.assertEqual(result['total'], 1)
         self.assertEqual(result['items'][0]['id'], '1')
         self.assertEqual(store.execute.call_args.args[:3], ('EVAL', LIST_SCRIPT, 1))
+
+    def test_feedback_review_fields_are_saved_in_atomic_cloud_history(self):
+        store = self.store()
+        current = {'id': '00000000-0000-4000-8000-000000000001', 'title': 'Feedback',
+                   'risk': 'high', 'status': 'in_progress', 'verdict': None, 'version': 2,
+                   'created_at': '2026-09-22T00:00:00Z', 'updated_at': '2026-09-22T00:00:00Z',
+                   'created_by': 'user_feedback', 'input_sha256': 'a' * 64,
+                   'source': {'subject': 'Synthetic', 'body': 'Example'},
+                   'analysis': {'risk_level': 'high'},
+                   'provenance': {'record_kind': 'user_feedback', 'source_consent': True},
+                   'events': [{'actor': 'user_feedback', 'happened_at': '2026-09-22T00:00:00Z',
+                               'action': 'created', 'changes': {}, 'note': ''}]}
+        store.get = Mock(return_value=current)
+        store.execute = Mock(side_effect=lambda *command: ['ok', command[6]])
+        saved = store.update(current['id'], actor='alice', expected_version=2,
+                             status='closed', verdict='legitimate', note='Checked message',
+                             feedback_reason='false_alert', evidence_basis='retained_message')
+        self.assertEqual(saved['events'][-1]['changes']['feedback_reason']['to'], 'false_alert')
+        self.assertEqual(store.execute.call_args.args[:3], ('EVAL', UPDATE_SCRIPT, 1))

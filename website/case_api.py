@@ -83,6 +83,8 @@ class CaseReview(BaseModel):
     status: str
     verdict: str | None = None
     note: str = Field(default='', max_length=4000)
+    feedback_reason: str | None = None
+    evidence_basis: str | None = None
 
 
 class AuxiliaryConsent(BaseModel):

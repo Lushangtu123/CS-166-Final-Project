@@ -1,8 +1,11 @@
 import base64
 import copy
+from datetime import date
 import hashlib
+import io
 import json
 import os
+from contextlib import redirect_stdout
 from pathlib import Path
 import sys
 import tempfile
@@ -14,6 +17,7 @@ from case_store import CaseStore
 from tools.case_archive import (create_archive, read_archive, restore_local,
                                 validate_archive, validate_namespace, write_archive)
 from tools.export_reviewed_feedback import build_reviewed_draft
+from tools.case_retention import PURGE_SCRIPT, main as retention_main, purge_one, retention_candidates
 
 
 STAMP = '2026-09-22T20:00:00Z'
@@ -35,7 +39,11 @@ def record(number, *, feedback=False, consent=True, verdict='legitimate', status
             {'actor': 'user_feedback' if feedback else 'analyst', 'happened_at': STAMP,
              'action': 'created', 'changes': {'status': {'from': None, 'to': 'pending'}}, 'note': ''},
             {'actor': 'analyst', 'happened_at': STAMP, 'action': 'reviewed',
-             'changes': {'status': {'from': 'pending', 'to': status}}, 'note': 'Reviewed synthetic mail'},
+             'changes': {'status': {'from': 'pending', 'to': status},
+                         'feedback_reason': {'from': None, 'to': 'false_alert'},
+                         'evidence_basis': {'from': None, 'to': 'retained_message'}} if feedback
+                        else {'status': {'from': 'pending', 'to': status}},
+             'note': 'Reviewed synthetic mail'},
         ],
     }
 
@@ -145,6 +153,10 @@ class CaseArchiveTests(unittest.TestCase):
         self.assertEqual(len(draft), 1)
         self.assertEqual(draft[0]['label'], 'legitimate')
         self.assertEqual(draft[0]['body'], 'Synthetic body')
+        self.assertEqual(draft[0]['review_reason'], 'false_alert')
+        self.assertEqual(draft[0]['reviewed_by'], 'analyst')
+        self.assertEqual(draft[0]['case_reviewer_ids'], ['analyst'])
+        self.assertTrue(draft[0]['evaluation_consent'])
         self.assertNotIn('events', draft[0])
         self.assertEqual(counts['no_evaluation_consent'], 1)
         self.assertEqual(counts['not_closed_or_labeled'], 1)
@@ -175,6 +187,60 @@ class CaseArchiveTests(unittest.TestCase):
         rows, _counts = build_reviewed_draft(archive_with(feedback_fields=fields(item)))
         self.assertEqual(rows[0]['subject'], '')
         self.assertEqual(rows[0]['body'], 'Synthetic body')
+
+    def test_legacy_or_report_only_review_is_not_exported(self):
+        legacy = record(1, feedback=True)
+        legacy['events'][1]['changes'].pop('feedback_reason')
+        report_only = record(2, feedback=True)
+        report_only['events'][1]['changes']['evidence_basis']['to'] = 'report_only'
+        rows, counts = build_reviewed_draft(archive_with(feedback_fields=fields(legacy, report_only)))
+        self.assertEqual(rows, [])
+        self.assertEqual(counts['unstructured_review'], 2)
+
+    def test_retention_selects_only_closed_records_before_cutoff(self):
+        old = record(1, feedback=True)
+        open_record = record(2, feedback=True, status='in_progress')
+        archive = archive_with(feedback_fields=fields(old, open_record))
+        self.assertEqual(retention_candidates(archive, 'feedback', date(2026, 9, 23)), [old['id']])
+        self.assertEqual(retention_candidates(archive, 'feedback', date(2026, 9, 22)), [])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_archive(Path(tmp) / 'archive.json', archive)
+            output = io.StringIO()
+            with redirect_stdout(output):
+                retention_main(['--archive', str(path), '--kind', 'feedback', '--before', '2026-09-23'])
+            self.assertIn(old['id'], output.getvalue())
+
+    def test_cloud_purge_compares_all_three_archived_fields_before_deletion(self):
+        item = record(1, feedback=True)
+        archive = archive_with(feedback_fields=fields(item))
+        class FakeStore:
+            key = archive['source_keys']['feedback']
+            def __init__(self):
+                self.fields = dict(archive['namespaces']['feedback'])
+                self.commands = []
+            def execute(self, *command):
+                self.commands.append(command)
+                if command[0] == 'HGET':
+                    return self.fields.get(command[2])
+                self.assertion = command[1] == PURGE_SCRIPT and command[2] == 1
+                names, expected = command[4:7], command[7:10]
+                if any(self.fields.get(name) != raw for name, raw in zip(names, expected)):
+                    return 'changed'
+                for name in names:
+                    del self.fields[name]
+                return 'deleted'
+        store = FakeStore()
+        names = purge_one(store, archive, kind='feedback', case_id=item['id'], before=date(2026, 9, 23))
+        self.assertTrue(store.assertion)
+        self.assertEqual(len(names), 3)
+        self.assertEqual(store.fields, {})
+        changed = FakeStore()
+        changed.fields['r:' + item['id']] = '{}'
+        with self.assertRaisesRegex(ValueError, 'changed after archiving'):
+            purge_one(changed, archive, kind='feedback', case_id=item['id'], before=date(2026, 9, 23))
+        self.assertEqual(len(changed.fields), 3)
+        with self.assertRaisesRegex(ValueError, 'not older'):
+            purge_one(FakeStore(), archive, kind='feedback', case_id=item['id'], before=date(2026, 9, 22))
 
 
 if __name__ == '__main__':

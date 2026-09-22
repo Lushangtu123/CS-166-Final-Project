@@ -139,6 +139,13 @@
     const transitions = {pending: ['pending', 'in_progress'], in_progress: ['in_progress', 'closed'], closed: ['in_progress']};
     $('review-status').replaceChildren(...transitions[value.status].map(status => { const option = node('option', labels[status]); option.value = status; return option; }));
     $('verdict').value = value.verdict || ''; $('note').value = '';
+    $('feedback-review-fields').hidden = value.kind !== 'feedback';
+    const reviewFields = {feedback_reason: '', evidence_basis: ''};
+    if (value.kind === 'feedback') for (const event of value.events) {
+      for (const key of Object.keys(reviewFields)) if (event.changes?.[key]) reviewFields[key] = event.changes[key].to || '';
+    }
+    $('feedback-reason').value = reviewFields.feedback_reason;
+    $('evidence-basis').value = reviewFields.evidence_basis;
     $('history').replaceChildren(...value.events.map(event => {
       const li = node('li', '');
       li.append(node('strong', `${event.actor} · ${event.action}`), node('p', new Date(event.happened_at).toLocaleString(), 'muted'));
@@ -260,6 +267,10 @@
     event.preventDefault(); if (!selected) return;
     const id = selected.id, version = selected.version, turn = detailEpoch;
     const payload = {expected_version: version, status: $('review-status').value, verdict: $('verdict').value || null, note: $('note').value};
+    if (selected.kind === 'feedback') {
+      payload.feedback_reason = $('feedback-reason').value;
+      payload.evidence_basis = $('evidence-basis').value;
+    }
     action(event.submitter, async () => {
       try {
         const value = await api('/' + encodeURIComponent(id), {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});

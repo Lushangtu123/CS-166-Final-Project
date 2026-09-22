@@ -22,6 +22,9 @@ class CaseNotFound(Exception):
 STATUSES = {'pending', 'in_progress', 'closed'}
 VERDICTS = {'phishing', 'legitimate', 'uncertain'}
 RISKS = {'safe', 'low', 'medium', 'high', 'critical', 'unknown'}
+FEEDBACK_REASONS = {'false_alert', 'missed_threat', 'risk_level', 'evidence_error',
+                    'no_issue_found', 'insufficient_evidence', 'other'}
+EVIDENCE_BASES = {'retained_message', 'external_verification', 'report_only'}
 
 
 def now():
@@ -130,10 +133,12 @@ class CaseStore:
         db.execute('INSERT INTO case_events(case_id,actor,happened_at,action,changes,note) '
                    'VALUES (?,?,?,?,?,?)', (case_id, actor, timestamp, action, json.dumps(changes), note))
 
-    def update(self, case_id, *, actor, expected_version, status, verdict, note):
+    def update(self, case_id, *, actor, expected_version, status, verdict, note,
+               feedback_reason=None, evidence_basis=None):
         with self.connection(write=True) as db:
             current = self._get(db, case_id)
-            changes = validate_review(current, expected_version, status, verdict, note)
+            changes = validate_review(current, expected_version, status, verdict, note,
+                                      feedback_reason, evidence_basis)
             timestamp = now()
             db.execute('UPDATE cases SET status=?,verdict=?,version=version+1,updated_at=? WHERE id=?',
                        (status, verdict, timestamp, case_id))
@@ -162,7 +167,18 @@ class CaseStore:
             return {'items': [dict(row) for row in rows], 'total': count}
 
 
-def validate_review(current, expected_version, status, verdict, note):
+def feedback_review_fields(case):
+    fields = {'feedback_reason': None, 'evidence_basis': None}
+    for event in case.get('events', []):
+        for key in fields:
+            change = event.get('changes', {}).get(key)
+            if isinstance(change, dict):
+                fields[key] = change.get('to')
+    return fields
+
+
+def validate_review(current, expected_version, status, verdict, note,
+                    feedback_reason=None, evidence_basis=None):
     """Shared domain rules; adapters enforce the version again atomically."""
     if status not in STATUSES or verdict is not None and verdict not in VERDICTS:
         raise CaseInvalid('Invalid status or verdict')
@@ -176,8 +192,31 @@ def validate_review(current, expected_version, status, verdict, note):
         raise CaseInvalid('Start work before closing, or reopen a closed case')
     if status == 'closed' and verdict is None:
         raise CaseInvalid('A human verdict is required to close a case')
+    feedback = current.get('provenance', {}).get('record_kind') == 'user_feedback'
+    if feedback:
+        previous = feedback_review_fields(current)
+        reason = (feedback_reason or None) if feedback_reason is not None else previous['feedback_reason']
+        basis = (evidence_basis or None) if evidence_basis is not None else previous['evidence_basis']
+        if reason is not None and reason not in FEEDBACK_REASONS or \
+                basis is not None and basis not in EVIDENCE_BASES:
+            raise CaseInvalid('Invalid feedback review reason or evidence basis')
+        if status == 'closed' and (reason is None or basis is None):
+            raise CaseInvalid('Choose a feedback reason and evidence basis before closing')
+        if status == 'closed' and not note.strip():
+            raise CaseInvalid('Explain the feedback verdict in a review note before closing')
+        if status == 'closed' and basis == 'report_only' and verdict != 'uncertain':
+            raise CaseInvalid('Reporter-only evidence cannot support a definite verdict')
+        if status == 'closed' and basis == 'retained_message' and \
+                current['provenance'].get('source_consent') is not True:
+            raise CaseInvalid('The original message was not retained for review')
+    elif feedback_reason is not None or evidence_basis is not None:
+        raise CaseInvalid('Feedback review fields are only valid for user feedback')
     changes = {key: {'from': current[key], 'to': value}
                for key, value in (('status', status), ('verdict', verdict)) if current[key] != value}
+    if feedback:
+        for key, value in (('feedback_reason', reason), ('evidence_basis', basis)):
+            if value != previous[key]:
+                changes[key] = {'from': previous[key], 'to': value}
     if not changes and not note.strip():
         raise CaseInvalid('Provide a change or a note')
     if verdict != current['verdict'] and not note.strip():

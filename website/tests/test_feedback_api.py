@@ -94,6 +94,56 @@ class FeedbackAPITests(unittest.TestCase):
         self.assertEqual(self.call('GET', '/api/cases?kind=case')[1]['total'], 0)
         self.assertEqual(self.call('GET', '/api/cases?kind=feedback&status=in_progress')[1]['total'], 1)
 
+    def test_feedback_closure_requires_structured_reason_and_evidence(self):
+        value = payload(include_source=True, evaluation_consent=True,
+                        source={'subject': 'Synthetic', 'body': 'Routine mail'})
+        _, receipt, _ = self.submit(value)
+        path = '/api/cases/' + receipt['id']
+        self.assertEqual(self.call('PATCH', path, payload={
+            'expected_version': 1, 'status': 'in_progress', 'note': 'Investigating'})[0], 200)
+        closure = {'expected_version': 2, 'status': 'closed', 'verdict': 'legitimate',
+                   'note': 'Checked the saved message'}
+        self.assertEqual(self.call('PATCH', path, payload=closure)[0], 422)
+        self.assertEqual(self.call('PATCH', path, payload={**closure,
+            'note': '', 'feedback_reason': 'false_alert', 'evidence_basis': 'retained_message'})[0], 422)
+        self.assertEqual(self.call('PATCH', path, payload={**closure,
+            'feedback_reason': 'false_alert', 'evidence_basis': 'report_only'})[0], 422)
+        status, saved, _ = self.call('PATCH', path, payload={**closure,
+            'feedback_reason': 'false_alert', 'evidence_basis': 'retained_message'})
+        self.assertEqual(status, 200)
+        self.assertEqual(saved['events'][-1]['changes']['feedback_reason']['to'], 'false_alert')
+        self.assertEqual(saved['events'][-1]['changes']['evidence_basis']['to'], 'retained_message')
+
+    def test_source_free_feedback_cannot_claim_retained_message(self):
+        _, receipt, _ = self.submit()
+        path = '/api/cases/' + receipt['id']
+        self.assertEqual(self.call('PATCH', path, payload={
+            'expected_version': 1, 'status': 'in_progress', 'note': 'Investigating'})[0], 200)
+        closure = {'expected_version': 2, 'status': 'closed', 'verdict': 'phishing',
+                   'note': 'Source was not supplied', 'feedback_reason': 'missed_threat'}
+        self.assertEqual(self.call('PATCH', path, payload={**closure,
+            'evidence_basis': 'retained_message'})[0], 422)
+        self.assertEqual(self.call('PATCH', path, payload={**closure,
+            'evidence_basis': 'report_only'})[0], 422)
+        self.assertEqual(self.call('PATCH', path, payload={**closure,
+            'verdict': 'uncertain', 'evidence_basis': 'report_only'})[0], 200)
+
+    def test_in_progress_feedback_can_clear_an_incorrect_reason(self):
+        _, receipt, _ = self.submit()
+        path = '/api/cases/' + receipt['id']
+        self.assertEqual(self.call('PATCH', path, payload={
+            'expected_version': 1, 'status': 'in_progress', 'note': 'Initial triage',
+            'feedback_reason': 'evidence_error', 'evidence_basis': 'report_only'})[0], 200)
+        status, saved, _ = self.call('PATCH', path, payload={
+            'expected_version': 2, 'status': 'in_progress', 'note': 'Need more information',
+            'feedback_reason': '', 'evidence_basis': ''})
+        self.assertEqual(status, 200)
+        self.assertIsNone(saved['events'][-1]['changes']['feedback_reason']['to'])
+        self.assertIsNone(saved['events'][-1]['changes']['evidence_basis']['to'])
+        self.assertEqual(self.call('PATCH', path, payload={
+            'expected_version': 3, 'status': 'closed', 'verdict': 'uncertain',
+            'note': 'Still cannot confirm'})[0], 422)
+
     def test_consented_eml_keeps_original_bytes_but_image_keeps_only_extraction(self):
         raw = b'Subject: Synthetic\n\nnon-utf8 \xff'
         value = payload(input_mode='eml', include_source=True,

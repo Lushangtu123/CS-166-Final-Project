@@ -152,6 +152,9 @@ class CaseAPITests(unittest.TestCase):
         self.assertEqual(self.call('GET', '/api/cases?risk=high')[1]['total'], 1)
         self.assertEqual(self.call('GET', '/api/cases?created_from=invalid')[0], 422)
         self.assertEqual(self.call('GET', '/api/cases?created_from=2026-10-01&created_to=2026-01-01')[0], 422)
+        self.assertEqual(self.call('PATCH', path, payload={
+            'expected_version': 2, 'status': 'in_progress', 'note': 'Unexpected feedback fields',
+            'feedback_reason': 'false_alert'})[0], 422)
 
     def test_original_eml_bytes_and_no_client_verdict_override(self):
         raw = b'Subject: Uploaded\nContent-Type: text/html\n\n<a href="https://paypa1.example">Review</a>'

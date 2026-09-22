@@ -214,6 +214,22 @@ test('a stale review preserves the analyst note and requests reload', async () =
   assert.equal(patch.expected_version, 1); assert.equal(patch.actor, undefined);
 });
 
+test('feedback review sends structured reason and evidence basis without changing case reviews', async () => {
+  const feedback = {...caseValue(), id: 'feedback-1', kind: 'feedback', provenance: {record_kind: 'user_feedback', source_consent: true},
+    events: [...caseValue().events, {actor: 'alice', action: 'reviewed', happened_at: '2026-09-21T00:00:00Z',
+      changes: {feedback_reason: {from: null, to: 'false_alert'}, evidence_basis: {from: null, to: 'retained_message'}}, note: ''}]};
+  const ui = setup(async url => ({status: 200, data: url.endsWith('/me') ? {actor: 'alice'} :
+    url.includes('?') ? {items: [feedback], total: 1} : feedback}));
+  await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
+  assert.equal(ui.el('feedback-review-fields').hidden, false);
+  assert.equal(ui.el('feedback-reason').value, 'false_alert');
+  assert.equal(ui.el('evidence-basis').value, 'retained_message');
+  await ui.fire('review-form', 'submit');
+  const patch = JSON.parse(ui.calls.find(call => call.options.method === 'PATCH').options.body);
+  assert.equal(patch.feedback_reason, 'false_alert');
+  assert.equal(patch.evidence_basis, 'retained_message');
+});
+
 test('selected case stays visibly selected after switching cases and refreshing the queue', async () => {
   const first = caseValue(), second = {...caseValue(), id: 'case-2', title: 'Second message', risk: 'safe'};
   const ui = setup(async url => ({status: 200, data: url.endsWith('/me') ? {actor: 'alice'} : url.includes('?') ? {items: [first, second], total: 2} : url.endsWith('/case-2') ? second : first}));

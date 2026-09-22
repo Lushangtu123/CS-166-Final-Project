@@ -30,6 +30,12 @@ For content or original EML, users may separately opt into **private detection
 evaluation**. This requires retaining original input; private review consent alone
 does not grant evaluation use. Existing reports remain ineligible. Evaluation
 consent does not retrain the model or send content to TypeSafe.
+Feedback closure now requires a structured review reason, evidence basis and
+explanatory note in the existing case history. A definite verdict based only on the reporter's claim
+is rejected. Select **Retained message** only when the original input was saved;
+otherwise use external verification or close as **Uncertain**. Existing closed
+feedback without these fields remains readable, but is excluded from new
+evaluation drafts until it is reopened and reviewed again.
 
 1. Open a case and inspect detection evidence, warnings and saved message text.
 2. Set **In progress**, choose a human verdict and explain it in a note.
@@ -139,7 +145,27 @@ malicious replacement. The local drill does **not** restore the production Redis
 database. Test an Upstash restore separately in an isolated database before
 claiming cloud disaster recovery; native whole-database import can replace the
 target database and must not be run against the shared Production database.
-There is still no automatic record expiry or deletion policy.
+There is still no automatic expiry or deletion schedule. Set a retention policy
+for your organization before removing real records. To inspect closed records
+last updated before a cutoff, use a freshly verified private archive:
+
+```sh
+.venv/bin/python website/tools/case_retention.py \
+  --archive /absolute/private/path/cases-archive.json \
+  --kind feedback --before 2026-01-01
+```
+
+For a single eligible record, add `--record-id <UUID>` and
+`--case-workspace production-cases`; if configured, also add
+`--feedback-workspace <name>`. The tool
+requires an interactive `DELETE <UUID>` confirmation, compares the archived
+record, summary and creation index to current Upstash values inside one atomic
+Lua operation, deletes exactly those three fields, then checks they are absent.
+It never purges open or recently updated records. If the connection fails after
+the mutation, inspect the cloud record before any retry. The private archive,
+evaluation drafts and other copies still retain the deleted content; apply the
+chosen retention policy to each copy separately. These controls were tested with
+synthetic stores; no Production record has been deleted by this workflow.
 Database administrators can alter records directly; application history is not
 an externally immutable audit trail.
 
