@@ -55,6 +55,30 @@ function loadFrontend(overrides = {}) {
   return { context, elements };
 }
 
+test('feedback diagnostics retain signal identifiers without source-bearing messages', () => {
+  const {context} = loadFrontend();
+  const sender = context.feedbackAnalysis({verdict:'high', risk_score:70, label:'High Sender Risk',
+    risk_indicators:[{level:'high', msg:'Address alice@example.test is suspicious'}],
+    feature_breakdown:[{name:'known_provider', value:-1}, {name:'address_length', value:1}]}, true);
+  assert.deepEqual(Array.from(sender.evidence_codes), ['known_provider']);
+  assert.doesNotMatch(JSON.stringify(sender), /alice@example\.test/);
+  const content = context.feedbackAnalysis({risk_level:'medium', risk_label:'Medium Risk',
+    category_results:[{key:'credential_request', matched:['private phrase']}],
+    extra_indicators:[{level:'high', msg:'Private destination https://example.test'}]});
+  assert.deepEqual(Array.from(content.evidence_codes), ['credential_request']);
+  assert.doesNotMatch(JSON.stringify(content), /private phrase|https:\/\/example\.test/);
+});
+
+test('public reporting actions follow the server availability flag', () => {
+  const {context} = loadFrontend();
+  const rows = [{hidden:true}, {hidden:true}];
+  context.document.querySelectorAll = selector => selector === '.result-report' ? rows : [];
+  context.applyPublicConfig({feedback_enabled:true});
+  assert.deepEqual(rows.map(row => row.hidden), [false, false]);
+  context.applyPublicConfig({feedback_enabled:false});
+  assert.deepEqual(rows.map(row => row.hidden), [true, true]);
+});
+
 test('a pending score animation cannot overwrite a newer zero score', () => {
   let frames = [];
   const { context } = loadFrontend({

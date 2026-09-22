@@ -121,7 +121,7 @@ collection. The request contains:
     "risk_label": "High risk",
     "analysis_complete": true,
     "model_id": "sha256:...",
-    "evidence_summary": []
+    "evidence_codes": []
   },
   "source": null
 }

@@ -59,13 +59,14 @@
   async function loadList() {
     const turn = ++listEpoch;
     const params = new URLSearchParams({limit: PAGE_SIZE, offset});
+    if ($('filter-kind').value) params.set('kind', $('filter-kind').value);
     for (const [id, key] of [['filter-status', 'status'], ['filter-risk', 'risk'], ['filter-from', 'created_from'], ['filter-to', 'created_to']]) {
       if ($(id).value) params.set(key, $(id).value);
     }
     const data = await api('?' + params);
     if (turn !== listEpoch) return;
     total = data.total;
-    $('case-list').replaceChildren(); $('count').textContent = `${data.total} matching cases`;
+    $('case-list').replaceChildren(); $('count').textContent = `${data.total} matching records`;
     if (!data.items.length) $('case-list').append(node('p', 'No cases match these filters.'));
     for (const item of data.items) {
       const button = node('button', '', 'case-row'); button.type = 'button';
@@ -73,6 +74,7 @@
       button.dataset.caseId = item.id;
       const heading = node('span', '', 'row-heading');
       heading.append(riskBadge(item.risk), node('span', labels[item.status], 'row-status'));
+      if (item.kind === 'feedback') heading.append(node('span', 'USER FEEDBACK', 'badge feedback-badge'));
       const footer = node('span', '', 'row-footer');
       footer.append(node('span', item.verdict || 'Not reviewed'), node('span', new Date(item.created_at).toLocaleString(), 'row-date'));
       button.append(heading, node('strong', item.title), footer);
@@ -86,13 +88,24 @@
   function renderCase(value) {
     clearJev();
     selected = value; syncSelection(); $('detail').hidden = false; $('empty-detail').hidden = true;
+    $('jev-panel').hidden = !jevAvailable || value.kind === 'feedback';
     $('case-title').textContent = value.title;
     $('case-meta').textContent = `${value.id} · Revision ${value.version} · Created by ${value.created_by}`;
     $('badges').replaceChildren(riskBadge(value.risk), ...[labels[value.status], value.verdict || 'Not reviewed'].map(text => node('span', text, 'badge')));
+    if (value.kind === 'feedback') $('badges').append(node('span', 'USER FEEDBACK', 'badge feedback-badge'));
+    $('feedback-context').hidden = value.kind !== 'feedback';
+    $('feedback-context').textContent = value.kind === 'feedback'
+      ? `User report: ${(value.provenance?.report_type || 'other').replaceAll('_', ' ')} · Original input ${value.provenance?.source_consent ? 'included' : 'not included'}.${value.provenance?.note ? ' Reporter note: ' + value.provenance.note : ''} This diagnostic snapshot was supplied by the browser; verify before relying on it.`
+      : '';
     const analysis = value.analysis;
     window.PhishGuardVision?.render($('visual-evidence'), analysis.visual_analysis);
     $('analysis-summary').textContent = `${analysis.risk_label || value.risk}. ${analysis.analysis_complete === false ? 'Analysis is incomplete; inspect the warnings before deciding.' : 'Review the evidence before making a decision.'}`;
     $('evidence').replaceChildren();
+    if (value.kind === 'feedback') {
+      for (const code of analysis.evidence_codes || []) {
+        $('evidence').append(node('li', 'Reported signal: ' + code.replaceAll('_', ' ')));
+      }
+    }
     for (const evidence of [...(analysis.analysis_warnings || []), ...(analysis.extra_indicators || [])]) {
       $('evidence').append(node('li', typeof evidence === 'string' ? evidence : (evidence.msg || evidence.message || JSON.stringify(evidence))));
     }
@@ -100,8 +113,12 @@
       if (category.count > 0) $('evidence').append(node('li', `${category.label}: ${category.description} Matched: ${(category.matched || []).join(', ')}`));
     }
     $('analysis-json').textContent = JSON.stringify({analysis, provenance: value.provenance, input_sha256: value.input_sha256}, null, 2);
-    $('source').textContent = `${value.source.subject}\n\n${value.source.body}`;
-    $('source-note').textContent = value.source.text_truncated ? 'Saved text was truncated. See analysis warnings for other coverage limitations.' : 'Message text is displayed without rendering HTML or loading external content.';
+    $('source').textContent = value.kind === 'feedback' && !value.provenance?.source_consent
+      ? '' : `${value.source.subject || ''}\n\n${value.source.body || ''}`;
+    $('source-note').textContent = value.kind === 'feedback' && !value.provenance?.source_consent
+      ? 'Original input was not included. Review is limited to the diagnostic summary and reporter note.'
+      : value.source.text_truncated ? 'Saved text was truncated. See analysis warnings for other coverage limitations.'
+      : 'Message text is displayed without rendering HTML or loading external content.';
     const transitions = {pending: ['pending', 'in_progress'], in_progress: ['in_progress', 'closed'], closed: ['in_progress']};
     $('review-status').replaceChildren(...transitions[value.status].map(status => { const option = node('option', labels[status]); option.value = status; return option; }));
     $('verdict').value = value.verdict || ''; $('note').value = '';

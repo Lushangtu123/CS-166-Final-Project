@@ -249,6 +249,7 @@ class VerificationFeatureGateTests(unittest.TestCase):
 
         response = asyncio.run(app.get_public_config())
         payload = json.loads(response.body)
+        self.assertIsInstance(payload.pop("feedback_enabled"), bool)
 
         self.assertEqual(payload, {
             "deployment_profile": app.SETTINGS.app_env,

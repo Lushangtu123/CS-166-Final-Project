@@ -46,6 +46,7 @@ from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
 from config import load_settings
 from case_api import build_case_service, make_case_router
+from feedback_api import make_feedback_router
 from disposable_registry import REGISTRY_DOMAIN_RE as _REGISTRY_DOMAIN_RE
 from disposable_registry import load_disposable_registry, load_privacy_relay_registry
 from request_limits import RequestBodyLimitMiddleware
@@ -1109,7 +1110,8 @@ allowed_hosts = _build_allowed_hosts(
 )
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
 app.add_middleware(RequestBodyLimitMiddleware, max_bytes=MAX_REQUEST_BYTES,
-                   path_limits={path: MAX_VISUAL_REQUEST_BYTES for path in VISUAL_PATHS})
+                   path_limits={**{path: MAX_VISUAL_REQUEST_BYTES for path in VISUAL_PATHS},
+                                '/api/feedback': 100_000})
 
 _rate_limit_lock = threading.Lock()
 _rate_limit_buckets: dict[str, deque[float]] = {}
@@ -1180,7 +1182,9 @@ async def security_middleware(request: Request, call_next):
     content_length = request.headers.get("content-length")
     if content_length:
         try:
-            if int(content_length) > (MAX_VISUAL_REQUEST_BYTES if request.url.path in VISUAL_PATHS else MAX_REQUEST_BYTES):
+            limit = (MAX_VISUAL_REQUEST_BYTES if request.url.path in VISUAL_PATHS
+                     else 100_000 if request.url.path == '/api/feedback' else MAX_REQUEST_BYTES)
+            if int(content_length) > limit:
                 return _with_security_headers(JSONResponse(
                     status_code=413,
                     content={"detail": "Request body is too large"},
@@ -1224,6 +1228,23 @@ async def security_middleware(request: Request, call_next):
                 },
             ))
 
+        if request.url.path == '/api/feedback':
+            feedback_key = bucket_key + ':feedback'
+            with _rate_limit_lock:
+                allowed = _record_rate_limit_hit(
+                    feedback_key, now=now, buckets=_rate_limit_buckets,
+                    limit=5, capacity=RATE_LIMIT_BUCKET_CAPACITY, window_seconds=3600.0)
+            if not allowed:
+                return _with_security_headers(JSONResponse(
+                    status_code=429, content={'detail': 'Too many reports; try again later'},
+                    headers={'Retry-After': '3600'}))
+            feedback_decision = await _sender_history_store.check_rate_limit(
+                feedback_key, limit=5, window_seconds=3600)
+            if feedback_decision is not None and not feedback_decision.allowed:
+                return _with_security_headers(JSONResponse(
+                    status_code=429, content={'detail': 'Too many reports; try again later'},
+                    headers={'Retry-After': str(feedback_decision.retry_after)}))
+
     response = _with_security_headers(await call_next(request))
     if request.url.path in {'/static/vision-worker.mjs', '/static/vendor/vision/worker.min.js'}:
         response.headers['Content-Security-Policy'] = (
@@ -1235,8 +1256,9 @@ async def security_middleware(request: Request, call_next):
 @app.middleware("http")
 async def private_case_responses(request: Request, call_next):
     response = await call_next(request)
-    if request.url.path == '/cases' or request.url.path.startswith('/api/cases'):
+    if request.url.path == '/cases' or request.url.path.startswith('/api/cases') or request.url.path == '/api/feedback':
         response.headers['Cache-Control'] = 'no-store'
+    if request.url.path == '/cases' or request.url.path.startswith('/api/cases'):
         response.headers['Content-Security-Policy'] = (
             "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; "
             "connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
@@ -1337,6 +1359,8 @@ async def get_public_config():
         "sender_history_enabled": SETTINGS.sender_history_enabled,
         "sender_history_configured": SETTINGS.sender_history_ready,
         "sender_history_available": SETTINGS.sender_history_ready,
+        "feedback_enabled": (getattr(app.state, 'case_service', None) is not None
+                             and not getattr(app.state, 'case_configuration_error', False)),
         "full_version_local_only": True,
     })
 
@@ -4269,6 +4293,7 @@ async def _analyze_case(payload, raw):
 
 app.include_router(make_case_router(_analyze_case, visible_text=_visible_content_text,
                                    mask_inline_data=_mask_inline_data_payloads))
+app.include_router(make_feedback_router())
 
 
 if __name__ == "__main__":

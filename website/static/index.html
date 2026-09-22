@@ -17,7 +17,7 @@
       document.documentElement.dataset.themeMode = stored || 'auto';
     })();
   </script>
-  <link rel="stylesheet" href="/static/style.css?v=28" />
+  <link rel="stylesheet" href="/static/style.css?v=30" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -185,6 +185,7 @@
 
     <!-- Result Area -->
     <div id="result-area" class="result-area hidden">
+      <div class="result-report" hidden><button type="button" class="report-trigger" onclick="openFeedback('sender')">Report an issue <span aria-hidden="true">↗</span></button></div>
 
       <div class="verdict-banner" id="verdict-banner">
         <div class="vb-left">
@@ -457,19 +458,21 @@
           ></textarea>
         </div>
         <p class="raw-email-status content-privacy-notice">
-          Content is processed on this server. This application does not retain the
-          message body or attachment content. When sender history is enabled, a
+          Content is processed on this server. Ordinary analysis does not retain the
+          message body or attachment content. A report is saved only if you submit one;
+          original input is included only with your explicit consent. When sender history is enabled, a
           pseudonymous sender observation may be retained for abuse detection.
           Remove unrelated personal content before submitting an email.
         </p>
         <div class="content-input-actions">
+          <button id="cancel-content-scan" type="button" class="btn btn-ghost" hidden>Cancel scan</button>
+          <button class="btn-ghost" onclick="clearContent()">Clear</button>
           <button class="btn btn-primary btn-analyze" id="content-analyze-btn" onclick="runContentAnalysis()">
             <span id="content-btn-text">Analyze Content</span>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
           </button>
-          <button class="btn-ghost" onclick="clearContent()">Clear</button>
         </div>
-        <p id="visual-progress" class="raw-email-status" role="status"></p><button id="cancel-content-scan" type="button" class="btn btn-ghost">Cancel scan</button>
+        <p id="visual-progress" class="raw-email-status" role="status"></p>
         <p id="content-error" class="request-error hidden" role="alert"></p>
 
         <div class="quick-examples">
@@ -482,6 +485,7 @@
 
       <!-- Content Result Area -->
       <div id="content-result-area" class="content-result-area hidden">
+        <div class="result-report" hidden><button type="button" class="report-trigger" onclick="openFeedback('content')">Report an issue <span aria-hidden="true">↗</span></button></div>
         <section id="visual-evidence" class="visual-evidence" hidden></section>
 
         <!-- Risk Banner -->
@@ -811,9 +815,34 @@
   </div>
 </footer>
 
+<dialog id="feedback-dialog" class="feedback-dialog" aria-labelledby="feedback-title">
+  <form id="feedback-form">
+    <div class="feedback-head"><div><p class="feedback-eyebrow">HELP IMPROVE DETECTION</p><h2 id="feedback-title">Report an issue</h2></div><button type="button" id="feedback-close" class="feedback-close" aria-label="Close report">×</button></div>
+    <div id="feedback-fields">
+      <p class="feedback-intro">Tell our analysts what looks wrong. A report does not change this result.</p>
+      <label for="feedback-type">What happened?</label>
+      <select id="feedback-type" required>
+        <option value="" disabled selected>Select an issue type</option>
+        <option value="false_positive">False positive · legitimate email flagged</option>
+        <option value="false_negative">False negative · suspicious email missed</option>
+        <option value="incorrect_risk">Risk level looks inaccurate</option>
+        <option value="incorrect_evidence">Evidence looks incorrect</option>
+        <option value="other">Other issue</option>
+      </select>
+      <label for="feedback-note">Details <span class="feedback-optional">optional</span></label>
+      <textarea id="feedback-note" rows="4" maxlength="2000" placeholder="What should our analysts check?"></textarea>
+      <label class="feedback-consent"><input id="feedback-consent" type="checkbox"><span>Include the original input for private review.</span></label>
+      <p class="feedback-privacy">By default, we save only the risk summary, issue type and your note. Checking this box also saves the address or email text you analyzed. For images, only extracted text and QR evidence are saved; the image file is never saved.</p>
+    </div>
+    <p id="feedback-error" class="request-error hidden" role="alert"></p>
+    <div id="feedback-success" class="feedback-success hidden" role="status"></div>
+    <div class="feedback-actions"><button type="button" id="feedback-cancel" class="btn-ghost">Cancel</button><button type="submit" id="feedback-submit" class="btn btn-primary">Submit report</button></div>
+  </form>
+</dialog>
 <script src="/static/vision.js?v=4"></script>
 <script src="/static/file-intake.js?v=1"></script>
-<script src="/static/app.js?v=30"></script>
+<script src="/static/feedback.js?v=3"></script>
+<script src="/static/app.js?v=33"></script>
 <!-- Vercel's same-origin page-view and web-vitals collectors. No email input is sent as a custom event. -->
 <script>
   window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };

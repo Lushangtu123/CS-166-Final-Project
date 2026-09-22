@@ -8,6 +8,25 @@ subject/body, an original `.eml` file, or a PNG/JPEG/WebP image. Creation saves 
 evidence; the public analyzer does not automatically create cases. Everyone
 configured for this workspace can read and review its cases.
 
+Users can select **Report an issue** after either public analysis result.
+Reports are saved to a separate private feedback namespace and appear in the
+same analyst queue with a **USER FEEDBACK** badge. Use the **Type** filter to
+show feedback only. Each report records its issue type, note, client-reported
+diagnostic summary, and whether the user consented to retain original input.
+The report does not change the prediction or retrain the model. An analyst
+should verify the evidence before recording a human verdict.
+The public report action appears only while the case workspace is configured.
+
+Reports omit the sender address, email text, raw EML, OCR text, QR payloads and
+image bytes by default. With explicit consent, they can retain the address,
+manual text, an original EML up to 60 KB, or extracted OCR/QR text. Images
+themselves are never saved. Feedback has its own 100-record Upstash capacity,
+separate from formal cases. The public endpoint accepts at most five reports
+per client per hour; it has no public read route. Set
+`CASE_FEEDBACK_WORKSPACE` only if the derived feedback namespace must differ
+from the default; changing it selects different feedback data. Local SQLite
+uses a sibling `.feedback` database. Include that file in backups.
+
 1. Open a case and inspect detection evidence, warnings and saved message text.
 2. Set **In progress**, choose a human verdict and explain it in a note.
 3. Set **Closed** after review. A verdict is mandatory for closure.
@@ -52,7 +71,8 @@ old token returns 401 on every retained accessible deployment.
 
 ## Storage, limits and responsibility
 
-This is a single-organization team pilot: 100 cases, 200 events per case, 750 KB
+This is a single-organization team pilot: 100 cases and 100 feedback reports,
+200 events per record, 750 KB
 encoded case limit. It has no automatic expiry/deletion, mailbox actions, SSO,
 roles, tenant isolation, or guaranteed provider SLA. A full workspace requires an
 administrator-managed archive/export/migration before accepting more cases.
@@ -65,7 +85,8 @@ storage encryption, backup/recovery, retention and access policies. Do not enabl
 eviction to solve capacity issues: it can erase the entire workspace hash.
 
 Before production use, establish a backup procedure for the dedicated
-`phishguard:cases:v1:<workspace>` hash and test restoration to a separate namespace.
+`phishguard:cases:v1:<workspace>` and derived feedback hashes and test
+restoration to separate namespaces.
 Database administrators can alter records directly; application history is not
 an externally immutable audit trail.
 

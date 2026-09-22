@@ -52,6 +52,7 @@ async function postRequest(url, body, contentType) {
 }
 
 function invalidateSender() {
+  window.PhishGuardFeedback?.clear('sender');
   _senderRequestId++;
   _verificationRequestId++;
   _verifyEmail = null;
@@ -64,10 +65,13 @@ function invalidateSender() {
 }
 
 function invalidateContent() {
+  window.PhishGuardFeedback?.clear('content');
   window.PhishGuardVision?.cancel();
   window.PhishGuardVision?.render(document.getElementById('visual-evidence'), null);
   const progress = document.getElementById('visual-progress');
   if (progress) progress.textContent = '';
+  const cancel = document.getElementById('cancel-content-scan');
+  if (cancel) cancel.hidden = true;
   _contentRequestId++;
   document.getElementById('content-result-area').classList.add('hidden');
   document.getElementById('content-loading-area').classList.add('hidden');
@@ -375,6 +379,7 @@ let _publicConfig = {};
 
 function applyPublicConfig(config) {
   _publicConfig = config;
+  document.querySelectorAll('.result-report').forEach(row => { row.hidden = config.feedback_enabled !== true; });
   const enabled = typeof config.domain_verification_enabled === 'boolean'
     ? config.domain_verification_enabled
     : config.email_verification_enabled === true;
@@ -609,6 +614,29 @@ function switchDemoTab(tabName) {
   document.getElementById('panel-' + tabName).classList.remove('hidden');
 }
 
+function openFeedback(kind) { window.PhishGuardFeedback?.open(kind); }
+
+function feedbackAnalysis(data, sender = false) {
+  const codes = sender
+    ? (data.feature_breakdown || []).filter(item => item.value === -1).map(item => item.name)
+    : [...(data.category_results || []).map(item => item.key),
+       ...(data.extra_indicators || []).map(item => item.code || item.key)];
+  return {
+    risk_level: sender ? data.verdict : data.risk_level,
+    risk_score: sender ? data.risk_score : (data.combined_phishing_score ?? null),
+    risk_label: sender ? data.label : data.risk_label,
+    analysis_complete: sender ? null : data.analysis_complete ?? null,
+    model_id: sender ? null : (data.content_model_id || null),
+    evidence_codes: [...new Set(codes.filter(code => typeof code === 'string' && /^[a-z0-9_-]{1,48}$/.test(code)))].slice(0, 20),
+  };
+}
+function encodeFeedbackEmail(buffer) {
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+  return btoa(binary);
+}
+
 // ── Quick examples ────────────────────────────────────────────────────────────
 function setExample(email) {
   const input = document.getElementById('email-input');
@@ -651,6 +679,10 @@ async function runEmailAnalysis() {
     const data = await postJSON('/api/analyze-email', { email });
     if (requestId !== _senderRequestId) return;
     renderResult(data);
+    window.PhishGuardFeedback?.set('sender', {
+      inputMode: 'sender', fingerprintInput: email,
+      analysis: feedbackAnalysis(data, true), buildSource: () => ({email}),
+    });
   } catch (e) {
     if (requestId === _senderRequestId) setError('email-error', e.message);
   } finally {
@@ -1067,12 +1099,15 @@ async function runContentAnalysis() {
 
   try {
     let data;
+    let recognitionPayload = null;
     if (_visualFile) {
       if (!window.PhishGuardVision) throw new Error('Image recognition is unavailable. Reload the page.');
+      document.getElementById('cancel-content-scan').hidden = false;
       const payload = await window.PhishGuardVision.recognize(_visualFile, message => {
         if (requestId === _contentRequestId) document.getElementById('visual-progress').textContent = message;
       }, document.getElementById('content-ocr-language').value || 'eng');
       if (requestId !== _contentRequestId) return;
+      recognitionPayload = payload;
       data = await postJSON('/api/analyze-visual', payload);
     } else {
       data = _rawEmailSource
@@ -1082,6 +1117,18 @@ async function runContentAnalysis() {
     if (requestId !== _contentRequestId) return;
     renderContentResult(data);
     window.PhishGuardVision?.render(document.getElementById('visual-evidence'), data.visual_analysis);
+    const rawSnapshot = _rawEmailSource;
+    const mode = _visualFile && /\.eml$/i.test(_visualFile.name) ? 'eml'
+      : _visualFile ? 'image' : rawSnapshot ? 'eml' : 'content';
+    window.PhishGuardFeedback?.set('content', {
+      inputMode: mode, fingerprintInput: rawSnapshot || subject + '\0' + body,
+      analysis: feedbackAnalysis(data),
+      buildSource: () => mode === 'eml' ? {eml_base64: encodeFeedbackEmail(rawSnapshot)}
+        : mode === 'image' ? {
+          ocr_text: (recognitionPayload?.observations || []).map(item => item.ocr_text || '').join('\n').slice(0, 12000),
+          qr_text: (recognitionPayload?.observations || []).flatMap(item => item.qr_payloads || []).join('\n').slice(0, 4000),
+        } : {subject, body},
+    });
   } catch (e) {
     if (requestId === _contentRequestId) setError('content-error', e.message);
   } finally {
@@ -1090,6 +1137,7 @@ async function runContentAnalysis() {
       btnText.textContent = 'Analyze Content';
       document.getElementById('visual-progress').textContent = '';
       document.getElementById('content-loading-area').classList.add('hidden');
+      document.getElementById('cancel-content-scan').hidden = true;
     }
   }
 }
