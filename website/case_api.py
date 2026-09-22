@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from case_store import CaseStore, CaseConflict, CaseInvalid, CaseNotFound, RISKS, STATUSES
-from case_cloud import UpstashCaseStore, CaseUnavailable
+from case_cloud import UpstashCaseStore, CaseUnavailable, feedback_workspace_name
 from visual_evidence import VisualRequest
 from jev import JevClient, prepare_case_input
 
@@ -52,9 +52,7 @@ def build_case_service(env):
         token = env.get('CASE_REDIS_REST_TOKEN') or env.get('UPSTASH_REDIS_REST_TOKEN', '')
         workspace = env.get('CASE_WORKSPACE', '')
         store = UpstashCaseStore(url, token, workspace)
-        default_feedback_workspace = (workspace + '-feedback' if len(workspace) <= 55 else
-                                      workspace[:43].rstrip('-') + '-' + hashlib.sha256(workspace.encode()).hexdigest()[:8] + '-feedback')
-        feedback_workspace = env.get('CASE_FEEDBACK_WORKSPACE') or default_feedback_workspace
+        feedback_workspace = env.get('CASE_FEEDBACK_WORKSPACE') or feedback_workspace_name(workspace)
         feedback_store = UpstashCaseStore(url, token, feedback_workspace)
         if feedback_store.key == store.key:
             raise ValueError('CASE_FEEDBACK_WORKSPACE must differ from CASE_WORKSPACE')

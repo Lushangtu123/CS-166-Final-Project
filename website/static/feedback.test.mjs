@@ -44,6 +44,7 @@ test('default report stores only a fingerprint and bounded analysis', async () =
   const body = JSON.parse(ui.requests[0].options.body);
   assert.equal(body.source, null);
   assert.equal(body.include_source, false);
+  assert.equal(body.evaluation_consent, false);
   assert.match(body.input_fingerprint, /^sha256:[0-9a-f]{64}$/);
   assert.equal(body.note, '');
   assert.match(ui.element('feedback-success').textContent, /report-1/);
@@ -65,6 +66,23 @@ test('consent is required before source builder runs', async () => {
   assert.equal(reads, 1);
   const body = JSON.parse(ui.requests[0].options.body);
   assert.equal(body.source.email, 'user@example.com');
+  assert.equal(body.evaluation_consent, false);
+  assert.equal(ui.element('feedback-evaluation-consent-row').hidden, true);
+});
+
+test('private evaluation requires separate consent and original email input', async () => {
+  const ui = setup(ok);
+  ui.feedback.set('content', context(() => ({subject:'Synthetic mail', body:'Private email text'})));
+  ui.feedback.open('content');
+  assert.equal(ui.element('feedback-evaluation-consent').disabled, true);
+  ui.element('feedback-consent').checked = true;
+  ui.element('feedback-consent').listeners.change();
+  assert.equal(ui.element('feedback-evaluation-consent').disabled, false);
+  ui.element('feedback-evaluation-consent').checked = true;
+  await ui.submit();
+  const body = JSON.parse(ui.requests[0].options.body);
+  assert.equal(body.include_source, true);
+  assert.equal(body.evaluation_consent, true);
 });
 
 test('failed report retries the exact body and key; invalidated context cannot submit', async () => {

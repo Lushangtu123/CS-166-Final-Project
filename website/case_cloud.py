@@ -53,6 +53,12 @@ SUMMARY_FIELDS = ('id', 'title', 'risk', 'status', 'verdict', 'version',
                   'created_at', 'updated_at', 'created_by')
 
 
+def feedback_workspace_name(workspace):
+    if len(workspace) <= 55:
+        return workspace + '-feedback'
+    return workspace[:43].rstrip('-') + '-' + hashlib.sha256(workspace.encode()).hexdigest()[:8] + '-feedback'
+
+
 def encoded(value):
     return json.dumps(value, separators=(',', ':'), ensure_ascii=True)
 

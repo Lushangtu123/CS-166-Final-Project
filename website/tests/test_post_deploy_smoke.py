@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 import sys
 import unittest
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 
 WEBSITE_DIR = Path(__file__).resolve().parents[1]
@@ -43,6 +43,23 @@ class _Response:
 
 
 class PostDeploySmokeTests(unittest.TestCase):
+    def test_case_auth_boundary_requires_anonymous_denial(self):
+        requests = []
+        def rejected(request, timeout):
+            requests.append((request.full_url, timeout))
+            raise HTTPError(request.full_url, 401, 'unauthorized', {}, None)
+        post_deploy_smoke._check_case_auth_boundary('https://project.vercel.app', opener=rejected)
+        self.assertEqual(requests, [('https://project.vercel.app/api/cases/me', 20)])
+        for status in (404, 503):
+            with self.subTest(status=status):
+                def failed(request, timeout):
+                    raise HTTPError(request.full_url, status, 'not ready', {}, None)
+                with self.assertRaisesRegex(RuntimeError, f'HTTP {status}'):
+                    post_deploy_smoke._check_case_auth_boundary('https://project.vercel.app', opener=failed)
+        with self.assertRaisesRegex(RuntimeError, 'allowed anonymous'):
+            post_deploy_smoke._check_case_auth_boundary(
+                'https://project.vercel.app', opener=lambda *_args, **_kwargs: _Response({}))
+
     def test_smoke_checks_health_config_and_prediction(self):
         self.assertIsNotNone(post_deploy_smoke, "post-deploy smoke module is missing")
         requests = []
@@ -283,6 +300,7 @@ class PostDeploySmokeTests(unittest.TestCase):
         self.assertIn("DEPLOYMENT_URL:", source)
         self.assertIn('--base-url "$DEPLOYMENT_URL"', source)
         self.assertIn("--require-sender-history", source)
+        self.assertIn("--require-cases", source)
         self.assertNotIn(
             '--base-url "${{ github.event.deployment_status.target_url }}"',
             source,

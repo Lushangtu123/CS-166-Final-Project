@@ -32,3 +32,4 @@ jobs:
           --base-url "$DEPLOYMENT_URL"
           --expected-commit-sha "$EXPECTED_COMMIT_SHA"
           --require-sender-history
+          --require-cases

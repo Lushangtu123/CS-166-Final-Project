@@ -19,6 +19,9 @@ window.PhishGuardFeedback = (() => {
     if (!contexts[kind]) return;
     active = kind; version++; pending = false; submitted = false; retry = null;
     $('feedback-form').reset();
+    $('feedback-evaluation-consent-row').hidden = !['content', 'eml'].includes(contexts[kind].inputMode);
+    $('feedback-evaluation-consent').checked = false;
+    $('feedback-evaluation-consent').disabled = true;
     $('feedback-error').textContent = '';
     $('feedback-error').classList.add('hidden');
     $('feedback-success').textContent = '';
@@ -62,7 +65,9 @@ window.PhishGuardFeedback = (() => {
         const include = $('feedback-consent').checked;
         const payload = {
           report_type: $('feedback-type').value, note: $('feedback-note').value.trim(),
-          include_source: include, input_mode: context.inputMode,
+          include_source: include,
+          evaluation_consent: include && ['content', 'eml'].includes(context.inputMode) && $('feedback-evaluation-consent').checked,
+          input_mode: context.inputMode,
           input_fingerprint: await fingerprint(context.fingerprintInput),
           analysis: context.analysis, source: include ? consentedSource(context) : null,
         };
@@ -97,9 +102,14 @@ window.PhishGuardFeedback = (() => {
     $('feedback-cancel').addEventListener('click', close);
     $('feedback-close').addEventListener('click', close);
     $('feedback-dialog').addEventListener('close', () => { active = null; version++; retry = null; });
-    for (const id of ['feedback-type', 'feedback-note', 'feedback-consent']) {
+    for (const id of ['feedback-type', 'feedback-note', 'feedback-consent', 'feedback-evaluation-consent']) {
       $('feedback-form').addEventListener(id === 'feedback-note' ? 'input' : 'change', () => { retry = null; });
     }
+    $('feedback-consent').addEventListener('change', () => {
+      const allowed = $('feedback-consent').checked && !($('feedback-evaluation-consent-row').hidden);
+      $('feedback-evaluation-consent').disabled = !allowed;
+      if (!allowed) $('feedback-evaluation-consent').checked = false;
+    });
   }
   document.addEventListener('DOMContentLoaded', setup);
   return {set, clear, open};

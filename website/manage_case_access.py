@@ -6,6 +6,7 @@ merged replacement. It refuses to overwrite an existing analyst unless the
 administrator explicitly confirms a rotation.
 """
 from getpass import getpass
+import argparse
 import hashlib
 import json
 import re
@@ -59,18 +60,29 @@ def merge_credential(existing, actor, digest, *, allow_rotation=False):
     return merged, True
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--recover-single-analyst', action='store_true',
+                        help='Rebuild a one-analyst JSON mapping from a saved token when the old Secret cannot be read')
+    args = parser.parse_args([] if argv is None else argv)
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise SystemExit('Run this command in your own interactive terminal; do not redirect credential output.')
     actor = input('Analyst ID (letters, digits, _, ., -): ').strip()
     if not ACTOR_PATTERN.fullmatch(actor):
         raise SystemExit('Invalid analyst ID')
-    raw = getpass(
-        'Paste the current CASE_ANALYST_TOKEN_HASHES JSON (hidden; use {} only for first setup): ').strip()
-    try:
-        existing = parse_existing_mapping(raw)
-    except ValueError as exc:
-        raise SystemExit(str(exc)) from None
+    if args.recover_single_analyst:
+        print('This output REPLACES the entire mapping. Any other analyst token will stop working after deployment.')
+        if input('Type ONLY ANALYST if this is the sole Production analyst: ').strip() != 'ONLY ANALYST':
+            raise SystemExit('Recovery cancelled; no mapping was generated.')
+        existing = {}
+    else:
+        print('The next JSON input is hidden: pasted characters will not appear on screen.')
+        raw = getpass(
+            'Paste the current CASE_ANALYST_TOKEN_HASHES JSON (use {} only for first setup): ').strip()
+        try:
+            existing = parse_existing_mapping(raw)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from None
     reuse = input('Use a token you already saved? [y/N]: ').strip().lower()
     rotation_confirmed = False
     if reuse == 'y':
@@ -106,4 +118,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    main(sys.argv[1:])

@@ -832,7 +832,9 @@
       <label for="feedback-note">Details <span class="feedback-optional">optional</span></label>
       <textarea id="feedback-note" rows="4" maxlength="2000" placeholder="What should our analysts check?"></textarea>
       <label class="feedback-consent"><input id="feedback-consent" type="checkbox"><span>Include the original input for private review.</span></label>
-      <p class="feedback-privacy">By default, we save only the risk summary, issue type and your note. Checking this box also saves the address or email text you analyzed. For images, only extracted text and QR evidence are saved; the image file is never saved.</p>
+      <label class="feedback-consent" id="feedback-evaluation-consent-row"><input id="feedback-evaluation-consent" type="checkbox"><span>Also allow this email and the analyst's verdict to be used in private detection evaluation.</span></label>
+      <p class="feedback-privacy">By default, we save only the risk summary, issue type and your note. The original-input checkbox also saves the address or email text you analyzed. For images, only extracted text and QR evidence are saved; the image file is never saved.</p>
+      <p class="feedback-privacy">Evaluation is separate from private review. It requires both checkboxes, does not retrain the model automatically, and does not send your email to an external AI provider.</p>
     </div>
     <p id="feedback-error" class="request-error hidden" role="alert"></p>
     <div id="feedback-success" class="feedback-success hidden" role="status"></div>
@@ -841,7 +843,7 @@
 </dialog>
 <script src="/static/vision.js?v=4"></script>
 <script src="/static/file-intake.js?v=1"></script>
-<script src="/static/feedback.js?v=3"></script>
+<script src="/static/feedback.js?v=4"></script>
 <script src="/static/app.js?v=33"></script>
 <!-- Vercel's same-origin page-view and web-vitals collectors. No email input is sent as a custom event. -->
 <script>

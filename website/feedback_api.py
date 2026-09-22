@@ -37,6 +37,7 @@ class FeedbackInput(BaseModel):
     report_type: Literal['false_positive', 'false_negative', 'incorrect_risk', 'incorrect_evidence', 'other']
     note: str = Field(default='', max_length=2000)
     include_source: bool = Field(strict=True)
+    evaluation_consent: bool = Field(default=False, strict=True)
     input_mode: Literal['sender', 'content', 'eml', 'image']
     input_fingerprint: str
     analysis: FeedbackAnalysis
@@ -46,6 +47,8 @@ class FeedbackInput(BaseModel):
     def valid_source(self):
         if not re.fullmatch(r'sha256:[0-9a-f]{64}', self.input_fingerprint):
             raise ValueError('Invalid input fingerprint')
+        if self.evaluation_consent and (not self.include_source or self.input_mode not in {'content', 'eml'}):
+            raise ValueError('Private evaluation requires original email content and separate consent')
         if not self.include_source:
             if self.source is not None:
                 raise ValueError('Original input requires explicit consent')
@@ -107,6 +110,7 @@ def make_feedback_router():
         analysis['risk_label'] = analysis['risk_label'] or analysis['risk_level'].title() + ' risk'
         provenance = {'record_kind': 'user_feedback', 'report_type': payload.report_type,
                       'note': payload.note, 'source_consent': payload.include_source,
+                      'evaluation_consent': payload.evaluation_consent,
                       'input_mode': payload.input_mode, 'input_fingerprint': payload.input_fingerprint,
                       'diagnostic_schema': 1, 'client_reported': True}
         try:

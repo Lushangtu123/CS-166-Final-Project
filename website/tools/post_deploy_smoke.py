@@ -10,6 +10,7 @@ import re
 import time
 from typing import Callable
 import uuid
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
@@ -169,6 +170,19 @@ def _wait_for_deployment_readiness(
     raise AssertionError("readiness retry loop exited unexpectedly")
 
 
+def _check_case_auth_boundary(base_url: str, *, opener: Callable) -> None:
+    """Confirm that Production cases are configured and deny anonymous access."""
+    request = Request(base_url + "/api/cases/me")
+    try:
+        with opener(request, timeout=20) as response:
+            raise RuntimeError(
+                f"Case login unexpectedly allowed anonymous access (HTTP {getattr(response, 'status', '2xx')})"
+            )
+    except HTTPError as exc:
+        if exc.code != 401:
+            raise RuntimeError(f"Case login boundary returned HTTP {exc.code}, expected 401") from None
+
+
 def validate_deployment(
     base_url: str,
     *,
@@ -176,6 +190,7 @@ def validate_deployment(
     expected_commit_sha: str,
     opener: Callable = urlopen,
     require_sender_history: bool = False,
+    require_cases: bool = False,
     history_probe_id: str | None = None,
     readiness_attempts: int = 1,
     retry_delay: float = 0,
@@ -194,6 +209,8 @@ def validate_deployment(
         retry_delay=retry_delay,
         sleeper=sleeper,
     )
+    if require_cases:
+        _check_case_auth_boundary(base_url, opener=opener)
 
     analysis = _request_json(Request(
         base_url + "/api/analyze-content",
@@ -288,6 +305,7 @@ def validate_deployment(
         "legitimate_control_count": len(legitimate_results),
         "mime_phishing_risk_level": mime_analysis["risk_level"],
         "sender_history_probe": sender_history_probe,
+        "case_auth_boundary": "anonymous_denied" if require_cases else "not_checked",
     }
 
 
@@ -301,6 +319,7 @@ def main() -> None:
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--expected-commit-sha", required=True)
     parser.add_argument("--require-sender-history", action="store_true")
+    parser.add_argument("--require-cases", action="store_true")
     parser.add_argument("--readiness-attempts", type=int, default=6)
     parser.add_argument("--retry-delay", type=float, default=5.0)
     args = parser.parse_args()
@@ -309,6 +328,7 @@ def main() -> None:
         expected_model_sha256=_expected_model_sha256(),
         expected_commit_sha=args.expected_commit_sha,
         require_sender_history=args.require_sender_history,
+        require_cases=args.require_cases,
         readiness_attempts=args.readiness_attempts,
         retry_delay=args.retry_delay,
     )

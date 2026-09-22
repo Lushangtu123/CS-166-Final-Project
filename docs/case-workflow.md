@@ -26,6 +26,10 @@ per client per hour; it has no public read route. Set
 `CASE_FEEDBACK_WORKSPACE` only if the derived feedback namespace must differ
 from the default; changing it selects different feedback data. Local SQLite
 uses a sibling `.feedback` database. Include that file in backups.
+For content or original EML, users may separately opt into **private detection
+evaluation**. This requires retaining original input; private review consent alone
+does not grant evaluation use. Existing reports remain ineligible. Evaluation
+consent does not retrain the model or send content to TypeSafe.
 
 1. Open a case and inspect detection evidence, warnings and saved message text.
 2. Set **In progress**, choose a human verdict and explain it in a note.
@@ -67,6 +71,19 @@ tokens are not saved in localStorage or cookies. Refreshing the browser requires
 the same token again, while an unchanged Production hash remains valid across code
 releases.
 
+Vercel Secret values cannot be read back after saving. If the old JSON was not
+kept and **exactly one analyst** should retain access, run
+`python website/manage_case_access.py --recover-single-analyst` in your own
+terminal. It asks for the saved token through a hidden prompt and emits a complete
+one-analyst JSON map. Replacing Production with that map revokes every other
+analyst token on the next deployment. Never use this recovery mode for a team.
+After redeploying, run `python website/tools/verify_case_login.py` in your own
+terminal. It sends the hidden token only to the fixed Production `/api/cases/me`
+endpoint, reports the analyst ID or a safe error, and does not print the token.
+The automatic deployment smoke also requires anonymous `/api/cases/me` to return
+401; this confirms the access boundary, **not** that a particular saved token
+matches the current Secret. A positive check still requires a token holder.
+
 Preview needs its own workspace and own analyst credentials. Leaving it disabled
 is the default. Configure credentials in the intended Vercel project and scope;
 another project connected to the same GitHub repository has separate environment
@@ -92,9 +109,37 @@ access. Before retaining sensitive company mail, choose and verify the required
 storage encryption, backup/recovery, retention and access policies. Do not enable
 eviction to solve capacity issues: it can erase the entire workspace hash.
 
-Before production use, establish a backup procedure for the dedicated
-`phishguard:cases:v1:<workspace>` and derived feedback hashes and test
-restoration to separate namespaces.
+Before production use, run and schedule backups for the dedicated
+`phishguard:cases:v1:<workspace>` and derived feedback hashes. The following
+read-only export captures both namespaces, including idempotency indexes. Supply
+the Upstash REST URL and standard token through the local process environment;
+never put them in command arguments, chat, Git, or a shell transcript. Save the
+archive on encrypted private storage **outside this repository**:
+
+```sh
+.venv/bin/python website/tools/case_archive.py export \
+  --case-workspace production-cases \
+  --output /absolute/private/path/cases-archive.json
+.venv/bin/python website/tools/case_archive.py verify \
+  --archive /absolute/private/path/cases-archive.json
+.venv/bin/python website/tools/case_archive.py restore-local \
+  --archive /absolute/private/path/cases-archive.json \
+  --output-dir /absolute/private/path/restore-check
+```
+
+Pass `--feedback-workspace` if Production overrides the derived name. Files are
+created with owner-only permissions and are never overwritten. The local recovery
+drill builds separate case and feedback SQLite databases and compares every
+restored record. The original request keys cannot be recovered from their Redis
+hashes, so these local copies verify record recovery rather than original
+idempotent retry behavior. Export checks index consistency, but Upstash scans
+are not an atomic snapshot; pause case and feedback writes during export and retry if it
+reports a change. The SHA-256 in the archive detects accidental corruption, not
+malicious replacement. The local drill does **not** restore the production Redis
+database. Test an Upstash restore separately in an isolated database before
+claiming cloud disaster recovery; native whole-database import can replace the
+target database and must not be run against the shared Production database.
+There is still no automatic record expiry or deletion policy.
 Database administrators can alter records directly; application history is not
 an externally immutable audit trail.
 

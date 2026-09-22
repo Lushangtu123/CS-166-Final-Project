@@ -96,6 +96,28 @@ class CaseAccessManagerTests(unittest.TestCase):
             'bob': digest(existing_token),
         })
 
+    def test_single_analyst_recovery_uses_saved_token_without_old_secret(self):
+        token = 'synthetic-existing-token-with-at-least-32-characters'
+        with patch('manage_case_access.sys.stdin.isatty', return_value=True), \
+             patch('manage_case_access.sys.stdout.isatty', return_value=True), \
+             patch('builtins.input', side_effect=['analyst', 'ONLY ANALYST', 'y']), \
+             patch('manage_case_access.getpass', return_value=token), \
+             patch('builtins.print') as output:
+            main(['--recover-single-analyst'])
+        emitted = [call.args[0] for call in output.call_args_list
+                   if len(call.args) == 1 and call.args[0].startswith('{')]
+        self.assertEqual(emitted, [json.dumps({'analyst': digest(token)}, separators=(',', ':'))])
+        self.assertNotIn(token, '\n'.join(str(call) for call in output.call_args_list))
+
+    def test_single_analyst_recovery_requires_explicit_scope_confirmation(self):
+        with patch('manage_case_access.sys.stdin.isatty', return_value=True), \
+             patch('manage_case_access.sys.stdout.isatty', return_value=True), \
+             patch('builtins.input', side_effect=['analyst', '']), \
+             patch('manage_case_access.getpass') as secret_input:
+            with self.assertRaisesRegex(SystemExit, 'cancelled'):
+                main(['--recover-single-analyst'])
+        secret_input.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

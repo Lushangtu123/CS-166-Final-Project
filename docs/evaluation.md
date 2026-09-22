@@ -1,5 +1,35 @@
 # Reproducible evaluation for a personal project
 
+## Reviewed user feedback draft
+
+The public **Report an issue** flow now has a separate, optional consent for
+private evaluation of retained content or original EML. Only a report with both
+source-retention and evaluation consent, a closed analyst review, and a human
+`phishing` or `legitimate` verdict can enter a curation draft. Older reports,
+source-free reports, images, sender-only reports, open reviews and uncertain
+verdicts are excluded. Reports with the same retained message and conflicting
+human labels are excluded together; matching duplicates count once.
+
+First make and verify a private archive using the commands in
+[case-workflow.md](case-workflow.md#storage-limits-and-responsibility), then run:
+
+```sh
+.venv/bin/python website/tools/export_reviewed_feedback.py \
+  --archive /absolute/private/path/cases-archive.json \
+  --output /absolute/private/path/reviewed-feedback-draft.jsonl
+```
+
+The draft is an owner-only local file outside Git. It contains original message
+text or base64-encoded EML bytes, a human verdict, timestamps, the reported
+risk and model ID;
+it omits analyst notes. Treat it as sensitive. It is **not yet an evaluation
+cohort**: user reports are selected by perceived errors, provider and email
+arrival date are unknown, the analyst verdict still needs independent label
+review, and training/campaign overlap has not been checked. Curate those fields,
+split by campaign/family, and obtain a fresh untouched holdout before running
+`evaluate_serving_pipeline.py`. Never copy the draft into public fixtures or use
+it to claim production accuracy.
+
 The first goal is to measure changes honestly with a small, repeatable local
 workflow. These tools do not certify enterprise readiness, train a new model,
 change production thresholds, or require a paid service. Start with owned controls,

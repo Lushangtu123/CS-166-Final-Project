@@ -75,16 +75,19 @@ class FeedbackAPITests(unittest.TestCase):
         self.assertNotIn('This seems legitimate', json.dumps(report['source']))
         self.assertTrue(report['provenance']['client_reported'])
         self.assertFalse(report['provenance']['source_consent'])
+        self.assertFalse(report['provenance']['evaluation_consent'])
         self.assertEqual(self.call('POST', '/api/cases/' + receipt['id'] + '/auxiliary',
                                    payload={'allow_external_processing': True})[0], 422)
 
     def test_explicit_source_is_reviewable_and_separate_from_cases(self):
-        value = payload(include_source=True, source={'subject': 'Payroll notice', 'body': 'Routine update'})
+        value = payload(include_source=True, evaluation_consent=True,
+                        source={'subject': 'Payroll notice', 'body': 'Routine update'})
         status, receipt, _ = self.submit(value)
         self.assertEqual(status, 201)
         report = self.call('GET', '/api/cases/' + receipt['id'])[1]
         self.assertEqual(report['source']['body'], 'Routine update')
         self.assertTrue(report['provenance']['source_consent'])
+        self.assertTrue(report['provenance']['evaluation_consent'])
         update = {'expected_version': 1, 'status': 'in_progress', 'verdict': 'legitimate',
                   'note': 'Checked the original content'}
         self.assertEqual(self.call('PATCH', '/api/cases/' + receipt['id'], payload=update)[0], 200)
@@ -110,6 +113,9 @@ class FeedbackAPITests(unittest.TestCase):
 
     def test_consent_and_size_validation(self):
         bad = [
+            payload(evaluation_consent=True),
+            payload(input_mode='image', include_source=True, evaluation_consent=True,
+                    source={'ocr_text': 'example'}),
             payload(source={'body': 'private'}),
             payload(include_source=True, source=None),
             payload(include_source=True, source={'unknown': 'secret'}),

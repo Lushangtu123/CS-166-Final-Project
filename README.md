@@ -965,7 +965,11 @@ The optional `/cases` workspace adds authenticated case creation, evidence revie
 human verdicts, status changes and operation history. Vercel requires persistent
 Upstash storage; the feature is disabled until configured. See
 [case workflow and deployment instructions](docs/case-workflow.md) for access,
-limits, retention and production setup.
+limits, retention and production setup. That guide includes a single-analyst
+credential recovery mode, a private Production login check, and read-only case
+and feedback archive export with an isolated local recovery drill. Separately
+consented, closed user feedback can be exported as a private curation draft;
+it does not automatically train or validate the model. See [evaluation scope](docs/evaluation.md).
 
 ## Image and QR recognition
 
