@@ -94,7 +94,7 @@ def make_feedback_router():
             raise HTTPException(422, 'A UUID Idempotency-Key header is required') from None
         canonical = json.dumps(payload.model_dump(), sort_keys=True, separators=(',', ':'))
         digest = hashlib.sha256(canonical.encode()).hexdigest()
-        source = {'subject': 'User feedback · ' + payload.report_type, 'body': ''}
+        source = {'subject': '', 'body': ''}
         if payload.source:
             if payload.input_mode == 'sender':
                 source['body'] = payload.source['email']
@@ -112,6 +112,7 @@ def make_feedback_router():
                       'note': payload.note, 'source_consent': payload.include_source,
                       'evaluation_consent': payload.evaluation_consent,
                       'input_mode': payload.input_mode, 'input_fingerprint': payload.input_fingerprint,
+                      'source_schema': 2,
                       'diagnostic_schema': 1, 'client_reported': True}
         try:
             saved = await run_in_threadpool(service.feedback_store.create, actor='user_feedback',

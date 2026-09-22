@@ -94,6 +94,30 @@ class FeedbackAPITests(unittest.TestCase):
         self.assertEqual(self.call('GET', '/api/cases?kind=case')[1]['total'], 0)
         self.assertEqual(self.call('GET', '/api/cases?kind=feedback&status=in_progress')[1]['total'], 1)
 
+    def test_body_only_feedback_keeps_report_title_out_of_evaluation_input(self):
+        from test_case_archive import archive_with, fields
+        from test_build_private_cohort import annotation
+        from tools.export_reviewed_feedback import build_reviewed_draft
+        from tools.build_private_cohort import build_cohort
+        for index, source in enumerate(({'body': 'Routine update'}, {'subject': '', 'body': 'Routine update'},
+                                       {'subject': 'User feedback · false_positive', 'body': 'An actual subject'})):
+            with self.subTest(source=source):
+                status, receipt, _ = self.submit(payload(include_source=True, evaluation_consent=True, source=source),
+                                                key=f'00000000-0000-4000-8000-{index:012d}')
+                self.assertEqual(status, 201)
+                path = '/api/cases/' + receipt['id']
+                self.assertEqual(self.call('PATCH', path, payload={'expected_version': 1,
+                    'status': 'in_progress', 'note': 'Checking original'})[0], 200)
+                status, saved, _ = self.call('PATCH', path, payload={'expected_version': 2,
+                    'status': 'closed', 'verdict': 'legitimate', 'note': 'Reviewed original message',
+                    'feedback_reason': 'false_alert', 'evidence_basis': 'retained_message'})
+                self.assertEqual(status, 200)
+                self.assertEqual(saved['source']['subject'], source.get('subject', ''))
+                self.assertEqual(saved['title'], source.get('subject') or 'User feedback · false_positive')
+                rows, _ = build_reviewed_draft(archive_with(feedback_fields=fields(saved)))
+                cohort = build_cohort(rows, [annotation(rows[0], reviewer='bob')])
+                self.assertEqual(cohort['development'][0]['subject'], source.get('subject', ''))
+
     def test_feedback_closure_requires_structured_reason_and_evidence(self):
         value = payload(include_source=True, evaluation_consent=True,
                         source={'subject': 'Synthetic', 'body': 'Routine mail'})

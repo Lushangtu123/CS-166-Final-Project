@@ -32,6 +32,13 @@ request can try again after expiry and subject to that day's allowance. Do not
 delete receipts or switch namespaces to retry an uncertain call. The daily count
 limits attempts, not money; keep provider-side spending controls.
 
+One exception is `local_capacity_exhausted`: the adapter could not acquire a
+worker slot and made no TypeSafe request. The server atomically releases that
+pending claim and its same-day allowance, allowing a later manual retry. It
+does not refund another day's budget, a different claim, or any completed result.
+If releasing the claim fails, the request remains protected against duplicates.
+Older cached failures keep their original expiry; they are not migrated or erased.
+
 Receipts hold hashes, claim IDs, timestamps and structured model results, never
 email text, tokens or raw provider responses. They are not analyst review history
 and are excluded from case archive/restore/purge tools. Redis makes receipts
@@ -47,6 +54,12 @@ not a provider connectivity test or an automatic rollback. CI also runs the Lua
 control tests against its own disposable Redis, using random synthetic namespaces.
 
 ## Opening and reviewing cases
+
+While a review save is in progress, newer edits to the note or review selections
+remain in the form after the saved revision arrives. The notice identifies them
+as unsaved. The next save uses the new revision. If a draft status is no longer
+allowed, select an available status before saving. Switching/reloading cases or
+leaving the page still requires saving or copying your draft first.
 
 Use the homepage **Case login** button (also visible on mobile) to open
 `https://phishguard-email-analyzer.vercel.app/cases` and sign in with your

@@ -203,6 +203,16 @@ class CaseArchiveTests(unittest.TestCase):
         self.assertEqual(rows[0]['subject'], '')
         self.assertEqual(rows[0]['body'], 'Synthetic body')
 
+    def test_ambiguous_legacy_feedback_subject_is_counted_and_excluded(self):
+        legacy, submitted = record(1, feedback=True), record(2, feedback=True)
+        legacy['source']['subject'] = submitted['source']['subject'] = 'User feedback · false_positive'
+        submitted['provenance']['source_schema'] = 2
+        rows, counts = build_reviewed_draft(archive_with(feedback_fields=fields(legacy, submitted)))
+        self.assertEqual(counts['ambiguous_legacy_subject'], 1)
+        self.assertEqual([row['id'] for row in rows], [submitted['id']])
+        self.assertEqual(rows[0]['source_schema'], 2)
+        self.assertEqual(rows[0]['subject'], 'User feedback · false_positive')
+
     def test_legacy_or_report_only_review_is_not_exported(self):
         legacy = record(1, feedback=True)
         legacy['events'][1]['changes'].pop('feedback_reason')

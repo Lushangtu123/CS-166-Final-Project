@@ -96,6 +96,31 @@ class JevRedisTests(unittest.TestCase):
         self.control.finish('b' * 64, second['claim'], {'status': 'different'}, 1)
         self.assertEqual(self.control.reserve('b' * 64, 1)['result']['status'], 'available')
 
+    def test_real_lua_release_unsent_is_idempotent_and_claim_bound(self):
+        first = self.control.reserve('c' * 64, 2)
+        with ThreadPoolExecutor(8) as pool:
+            list(pool.map(lambda _: self.control.release_unsent('c' * 64, first['claim'], 2), range(8)))
+        self.assertEqual(self.control.snapshot(2)['used'], 0)
+        new = self.control.reserve('c' * 64, 2)
+        with self.assertRaises(CaseUnavailable):
+            self.control.release_unsent('c' * 64, first['claim'], 2)
+        self.control.finish('c' * 64, new['claim'], {'status': 'unavailable', 'reason': 'provider_timeout'}, 2)
+        with self.assertRaises(CaseUnavailable):
+            self.control.release_unsent('c' * 64, new['claim'], 2)
+        self.assertEqual(self.control.snapshot(2)['used'], 1)
+        self.assertEqual(self.control.reserve('c' * 64, 2)['status'], 'cached')
+
+    def test_real_lua_release_previous_day_does_not_refund_current_day(self):
+        first = self.control.reserve('d' * 64, 2)
+        field = 'r:' + 'd' * 64
+        entry = json.loads(self.store.execute('HGET', self.control.key, field))
+        # The receipt was reserved yesterday. Simulate one unrelated attempt today.
+        entry['expires_at'] -= DAY
+        self.store.execute('HSET', self.control.key, field, json.dumps(entry))
+        self.control.release_unsent('d' * 64, first['claim'], 2)
+        self.assertEqual(self.control.snapshot(2)['used'], 1)
+        self.assertEqual(self.control.reserve('d' * 64, 2)['status'], 'reserved')
+
 
 if __name__ == '__main__':
     unittest.main()

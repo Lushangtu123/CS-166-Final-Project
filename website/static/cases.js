@@ -2,6 +2,9 @@
 (() => {
   const $ = id => document.getElementById(id);
   const labels = {pending: 'Pending', in_progress: 'In progress', closed: 'Closed'};
+  const transitions = {pending: ['pending', 'in_progress'], in_progress: ['in_progress', 'closed'], closed: ['in_progress']};
+  const reviewFields = {status: 'review-status', verdict: 'verdict', note: 'note',
+    feedback_reason: 'feedback-reason', evidence_basis: 'evidence-basis'};
   let token = '', epoch = 0, listEpoch = 0, detailEpoch = 0, offset = 0, selected = null;
   let creation = null, inputVersion = 0, total = 0;
   let jevAvailable = false, jevTurn = 0, createPending = false;
@@ -138,8 +141,8 @@
       ? 'Original input was not included. Review is limited to the diagnostic summary and reporter note.'
       : value.source.text_truncated ? 'Saved text was truncated. See analysis warnings for other coverage limitations.'
       : 'Message text is displayed without rendering HTML or loading external content.';
-    const transitions = {pending: ['pending', 'in_progress'], in_progress: ['in_progress', 'closed'], closed: ['in_progress']};
     $('review-status').replaceChildren(...transitions[value.status].map(status => { const option = node('option', labels[status]); option.value = status; return option; }));
+    $('review-status').value = transitions[value.status][0];
     $('verdict').value = value.verdict || ''; $('note').value = '';
     $('feedback-review-fields').hidden = value.kind !== 'feedback';
     const reviewFields = {feedback_reason: '', evidence_basis: ''};
@@ -249,7 +252,7 @@
           provider_network_error: 'The server could not connect to TypeSafe.',
           provider_http_error: 'TypeSafe returned a service error. Contact the administrator.',
           provider_invalid_response: 'TypeSafe returned an unexpected response. Contact the administrator.',
-          local_capacity_exhausted: 'Auxiliary analysis is busy. Wait for current requests to finish.',
+          local_capacity_exhausted: 'Auxiliary analysis is busy. This attempt did not reach TypeSafe. Wait for current requests to finish.',
           call_budget_exhausted: 'The auxiliary request allowance has been reached.',
           daily_quota_exhausted: 'The workspace daily allowance is exhausted. Wait for the UTC reset.',
           request_pending: 'An identical request is still running or its outcome is unknown. No additional provider call was made.',
@@ -312,7 +315,11 @@
   });
   $('review-form').addEventListener('submit', event => {
     event.preventDefault(); if (!selected) return;
+    if (!transitions[selected.status].includes($('review-status').value)) {
+      notice('The saved case no longer supports this status. Choose an available status; your edits are still here.', true); return;
+    }
     const id = selected.id, version = selected.version, turn = detailEpoch;
+    const submittedFields = Object.fromEntries(Object.entries(reviewFields).map(([key, element]) => [key, $(element).value]));
     const payload = {expected_version: version, status: $('review-status').value, verdict: $('verdict').value || null, note: $('note').value};
     if (selected.kind === 'feedback') {
       payload.feedback_reason = $('feedback-reason').value;
@@ -321,7 +328,19 @@
     action(event.submitter, async () => {
       try {
         const value = await api('/' + encodeURIComponent(id), {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
-        if (turn === detailEpoch) { renderCase(value); notice('Review saved.'); }
+        if (turn === detailEpoch) {
+          const edits = Object.entries(reviewFields).filter(([key, element]) =>
+            $(element).value !== submittedFields[key]).map(([key, element]) => [key, $(element).value]);
+          renderCase(value);
+          for (const [key, text] of edits) {
+            if (key === 'status' && !transitions[value.status].includes(text)) {
+              const option = node('option', `${labels[text] || text} (no longer available)`);
+              option.value = text; option.disabled = true; $('review-status').append(option);
+            }
+            $(reviewFields[key]).value = text;
+          }
+          notice(edits.length ? 'Review saved. Your newer edits are still unsaved.' : 'Review saved.');
+        }
         await loadList();
       } catch (error) {
         if (error.status === 409) throw new Error('Another analyst changed this case. Your note is still here. Copy it, reload the case, then review the latest version before saving.');

@@ -9,7 +9,7 @@ import re
 import uuid
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 
-from case_store import CaseConflict, CaseInvalid, CaseNotFound, RISKS, now, validate_review
+from case_store import CaseConflict, CaseInvalid, CaseNotFound, RISKS, now, validate_review, case_title
 
 
 class CaseUnavailable(Exception):
@@ -142,7 +142,7 @@ class UpstashCaseStore:
         if analysis.get('risk_level') not in RISKS:
             raise CaseInvalid('Invalid analysis risk')
         timestamp, case_id = now(), str(uuid.uuid4())
-        case = dict(id=case_id, title=(source.get('subject', '').strip() or 'Untitled message')[:200],
+        case = dict(id=case_id, title=case_title(source, provenance),
                     risk=analysis['risk_level'], status='pending', verdict=None, version=1,
                     created_at=timestamp, updated_at=timestamp, created_by=actor,
                     input_sha256=input_sha256, source=source, analysis=analysis, provenance=provenance,

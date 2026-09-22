@@ -65,6 +65,28 @@ class JevControlTests(unittest.TestCase):
         preview.reserve(identity(1), 1)
         self.assertEqual(production.reserve(identity(1), 1)['status'], 'reserved')
 
+    def test_release_unsent_is_atomic_idempotent_and_cannot_release_another_claim(self):
+        first = self.control.reserve(identity(1), 2)
+        with ThreadPoolExecutor(8) as pool:
+            list(pool.map(lambda _: self.control.release_unsent(identity(1), first['claim'], 2), range(8)))
+        self.assertEqual(self.control.snapshot(2)['used'], 0)
+        new = self.control.reserve(identity(1), 2)
+        with self.assertRaises(CaseUnavailable):
+            self.control.release_unsent(identity(1), first['claim'], 2)
+        self.assertEqual(self.control.snapshot(2)['used'], 1)
+        self.control.finish(identity(1), new['claim'], {'status': 'unavailable', 'reason': 'provider_timeout'}, 2)
+        with self.assertRaises(CaseUnavailable):
+            self.control.release_unsent(identity(1), new['claim'], 2)
+        self.assertEqual(self.control.reserve(identity(1), 2)['status'], 'cached')
+
+    def test_release_yesterdays_unsent_request_does_not_refund_today(self):
+        first = self.control.reserve(identity(1), 1)
+        self.now = 11 * DAY
+        self.control.reserve(identity(2), 1)
+        self.control.release_unsent(identity(1), first['claim'], 1)
+        self.assertEqual(self.control.snapshot(1)['used'], 1)
+        self.assertEqual(self.control.reserve(identity(1), 1)['status'], 'quota_exhausted')
+
     def test_identity_tracks_actor_case_model_questions_and_redacted_input(self):
         from unittest.mock import patch
         prepared = {'subject': 'Notice', 'body': 'Write alice@example.test https://example.test/?secret=1'}

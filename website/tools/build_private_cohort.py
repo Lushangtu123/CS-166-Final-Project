@@ -21,7 +21,7 @@ WEBSITE_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WEBSITE_DIR))
 
 from tools.case_archive import PROJECT_ROOT, _canonical, write_private_bytes
-from case_store import FEEDBACK_REASONS
+from case_store import FEEDBACK_REASONS, ambiguous_feedback_subject
 
 
 MAX_INPUT_BYTES = 160_000_000
@@ -77,6 +77,8 @@ def build_cohort(draft, annotations):
     by_id = {}
     fingerprints = set()
     for row in draft:
+        if row.get('input_mode') == 'content' and ambiguous_feedback_subject(row.get('subject'), row.get('source_schema')):
+            raise ValueError('Draft contains an ambiguous legacy feedback subject; verify the original source and regenerate the draft.')
         case_id = row.get('id')
         try:
             if not isinstance(case_id, str) or str(UUID(case_id)) != case_id:

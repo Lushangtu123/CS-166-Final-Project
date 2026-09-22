@@ -34,6 +34,15 @@ def annotation(item, *, role='development', family='family-one', reviewer='bob')
 
 
 class PrivateCohortTests(unittest.TestCase):
+    def test_old_draft_cannot_evaluate_a_possibly_generated_feedback_subject(self):
+        item = draft(1)
+        item['subject'] = 'User feedback · false_positive'
+        item['content_sha256'] = hashlib.sha256(b'content\0' + _canonical({'subject': item['subject'], 'body': item['body']})).hexdigest()
+        with self.assertRaisesRegex(ValueError, 'ambiguous legacy feedback subject'):
+            build_cohort([item], [annotation(item)])
+        item['source_schema'] = 2
+        self.assertEqual(build_cohort([item], [annotation(item)])['development'][0]['subject'], item['subject'])
+
     def test_private_cohort_creates_evaluator_inputs_and_lineage(self):
         content = draft(1)
         eml = draft(2, mode='eml')

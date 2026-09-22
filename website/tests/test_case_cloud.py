@@ -11,6 +11,16 @@ from case_store import CaseConflict, CaseInvalid, CaseNotFound
 
 
 class CloudCaseTests(unittest.TestCase):
+    def test_feedback_display_title_does_not_modify_source(self):
+        store = self.store()
+        store.execute = Mock(side_effect=lambda *cmd: ['ok', cmd[7]])
+        source = {'subject': '', 'body': 'Original text'}
+        saved = store.create(actor='user_feedback', request_key='key', input_sha256='a' * 64,
+                             source=source, analysis={'risk_level': 'high'},
+                             provenance={'record_kind': 'user_feedback', 'report_type': 'false_negative', 'source_schema': 2})
+        self.assertEqual(saved['title'], 'User feedback · false_negative')
+        self.assertEqual(saved['source'], {'subject': '', 'body': 'Original text'})
+
     def store(self, opener=None):
         return UpstashCaseStore('https://test-case.upstash.io', 'synthetic-token', 'test-workspace', opener=opener)
 

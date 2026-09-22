@@ -288,6 +288,9 @@ def make_case_router(analyze, *, visible_text, mask_inline_data):
             return {**base, **receipt, 'status': 'skipped',
                     'reason': 'request_pending' if reservation['status'] == 'pending' else 'daily_quota_exhausted'}
         result = await run_in_threadpool(client.evaluate, **prepared)
+        if result.get('status') == 'unavailable' and result.get('reason') == 'local_capacity_exhausted':
+            quota = await call(control.release_unsent, request_id, reservation['claim'], limit)
+            return {**result, **base, 'quota': quota, 'receipt_expires_at': None, 'reused': False}
         await call(control.finish, request_id, reservation['claim'], result, limit)
         # Transient duplicate-control receipt only; no case mutation or automatic verdict.
         return {**result, **base, **receipt, 'reused': False}

@@ -15,6 +15,17 @@ of all eligible duplicates' `case_reviewer_ids` and their `source_case_ids`.
 An analyst who reviewed any of those duplicates cannot be the independent
 reviewer. Regenerate older drafts from the private archive before using this check.
 
+New feedback uses `source_schema: 2`: a missing subject stays empty in the
+retained message, while the queue receives a separate report title. Exported
+rows preserve this marker. Older records with subjects exactly matching generated
+titles such as `User feedback · false_positive` are ambiguous: the title may
+have been injected by the old handler, or may genuinely belong to the email.
+The exporter excludes them and counts `ambiguous_legacy_subject`; the cohort
+builder also rejects such rows in existing drafts without schema 2. Verify the
+original email and re-submit/review it through the corrected flow before evaluation.
+Do not simply strip the title or add the schema marker to an old draft. Other
+legacy messages remain eligible under the existing consent and review checks.
+
 First make and verify a private archive using the commands in
 [case-workflow.md](case-workflow.md#storage-limits-and-responsibility), then run:
 
@@ -369,6 +380,9 @@ TypeSafe; failures and uncertain outcomes also consume it. Identical inputs,
 actor, case, pinned model and questions reuse a 24-hour receipt, even across a
 midnight reset. This limits attempts, not monetary spending; retain provider/account
 controls. CLI calls keep their separate explicit budget and do not use web receipts.
+The web server releases a reservation only for a confirmed local worker-capacity
+rejection before provider I/O; this allows a later deliberate retry. Provider
+timeouts, HTTP errors and unknown outcomes retain their existing receipts.
 Missing or invalid configuration disables the optional feature without breaking
 existing analysis. The production `--require-jev` smoke gate checks only safe
 configuration flags and never calls TypeSafe. See [operations](case-workflow.md#jev-availability-and-request-controls).

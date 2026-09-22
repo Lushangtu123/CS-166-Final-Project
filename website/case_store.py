@@ -27,6 +27,24 @@ FEEDBACK_REASONS = {'false_alert', 'missed_threat', 'risk_level', 'evidence_erro
 EVIDENCE_BASES = {'retained_message', 'external_verification', 'report_only'}
 
 
+def case_title(source, provenance):
+    title = source.get('subject', '').strip()
+    if not title and provenance.get('record_kind') == 'user_feedback':
+        title = 'User feedback · ' + provenance.get('report_type', 'other')
+    return (title or 'Untitled message')[:200]
+
+
+def ambiguous_feedback_subject(subject, source_schema):
+    """Old feedback sometimes mixed a display title into original message text.
+
+    Do not strip it: it may have been a real subject. Recheck the original source.
+    New source schema 2 separates display titles from explicitly supplied subjects.
+    """
+    return not (type(source_schema) is int and source_schema == 2) and subject in (
+        'User feedback · false_positive', 'User feedback · false_negative',
+        'User feedback · incorrect_risk', 'User feedback · incorrect_evidence', 'User feedback · other')
+
+
 def now():
     return datetime.now(timezone.utc).isoformat(timespec='microseconds').replace('+00:00', 'Z')
 
@@ -121,7 +139,7 @@ class CaseStore:
             if existing:
                 return existing
             case_id, timestamp = str(uuid.uuid4()), now()
-            title = (source.get('subject', '').strip() or 'Untitled message')[:200]
+            title = case_title(source, provenance)
             db.execute('INSERT INTO cases VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)', (
                 case_id, title, analysis['risk_level'], 'pending', None, 1,
                 timestamp, timestamp, actor, request_key, input_sha256,

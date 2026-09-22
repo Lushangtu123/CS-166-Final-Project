@@ -133,6 +133,54 @@ class CaseAPITests(unittest.TestCase):
         self.assertTrue(second[1]['reused'])
         client.evaluate.assert_called_once()
 
+    def test_local_capacity_failure_releases_allowance_for_manual_retry(self):
+        import io
+        import jev
+        import threading
+        from case_api import jev_control
+        from tests.test_jev import answer
+        from unittest.mock import Mock
+        _, case, _ = self.create()
+        path = '/api/cases/' + case['id'] + '/auxiliary'
+        opener = Mock(return_value=io.BytesIO(json.dumps(answer()).encode()))
+        client = jev.JevClient('synthetic', enabled=True, max_calls=1, opener=opener)
+        with patch('case_api.jev_client', return_value=client), patch.dict('os.environ', {'PHISHGUARD_JEV_DAILY_LIMIT': '1'}):
+            # Exercise the real adapter's local rejection before any provider I/O.
+            with patch('jev._INFLIGHT', threading.BoundedSemaphore(0)):
+                status, result, _ = self.call('POST', path, payload={'allow_external_processing': True})
+            self.assertEqual(status, 200)
+            self.assertEqual(result['reason'], 'local_capacity_exhausted')
+            opener.assert_not_called()
+            self.assertEqual(jev_control(app.app.state.case_service).snapshot(1)['used'], 0)
+            self.assertIsNone(result['receipt_expires_at'])
+            status, result, _ = self.call('POST', path, payload={'allow_external_processing': True})
+            self.assertEqual(status, 200)
+            self.assertEqual(result['status'], 'available')
+            self.assertFalse(result['reused'])
+            self.assertEqual(result['quota']['used'], 1)
+            opener.assert_called_once()
+
+    def test_uncertain_release_failure_keeps_pending_receipt_and_does_not_retry(self):
+        from case_api import jev_control
+        from case_cloud import CaseUnavailable
+        from jev import JevClient
+        from unittest.mock import Mock
+        _, case, _ = self.create()
+        path = '/api/cases/' + case['id'] + '/auxiliary'
+        control = jev_control(app.app.state.case_service)
+        client = JevClient('synthetic', enabled=True)
+        client.evaluate = Mock(return_value={'status': 'unavailable', 'reason': 'local_capacity_exhausted', 'affects_risk': False})
+        with patch('case_api.jev_client', return_value=client):
+            with patch.object(control, 'release_unsent', side_effect=CaseUnavailable('private error')):
+                status, result, _ = self.call('POST', path, payload={'allow_external_processing': True})
+                self.assertEqual(status, 503)
+                self.assertNotIn('private error', json.dumps(result))
+            status, result, _ = self.call('POST', path, payload={'allow_external_processing': True})
+            self.assertEqual(status, 200)
+            self.assertEqual(result['reason'], 'request_pending')
+            self.assertEqual(result['quota']['used'], 1)
+        client.evaluate.assert_called_once()
+
     def test_me_explains_configuration_without_exposing_key(self):
         with patch.dict('os.environ', {'PHISHGUARD_JEV_ENABLED': 'true', 'TYPESAFE_API_KEY': ''}):
             status, result, _ = self.call('GET', '/api/cases/me')

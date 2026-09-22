@@ -251,6 +251,10 @@ class JevClient:
             reason = (error.reason if isinstance(error, _ProviderFailure) else
                       'provider_invalid_response' if isinstance(error, (ValueError, KeyError, TypeError)) else
                       'provider_failure')
+            if isinstance(error, _ProviderFailure) and reason == 'local_capacity_exhausted':
+                # The worker slot was rejected before any provider I/O occurred.
+                with self._lock:
+                    self._calls -= 1
             _LOGGER.warning('Jev auxiliary unavailable: %s', reason)
             return {**base, 'status': 'unavailable', 'reason': reason,
                     'latency_ms': round((time.monotonic() - started) * 1000, 1)}

@@ -35,6 +35,20 @@ if ARGV[1] == 'snapshot' then return cjson.encode(result) end
 local field = 'r:' .. ARGV[3]
 local raw = redis.call('HGET', KEYS[1], field)
 local entry = raw and cjson.decode(raw) or nil
+if ARGV[1] == 'release_unsent' then
+  if not entry then result.status='released'; return cjson.encode(result) end
+  if entry.claim ~= ARGV[4] or entry.result then
+    return cjson.encode({status='lost'})
+  end
+  -- Derive reservation day from the original 24-hour expiry, including old receipts.
+  if math.floor((entry.expires_at - 86400) / 86400) == day then
+    used = math.max(0, used - 1)
+    redis.call('HSET', KEYS[1], 'count', used)
+  end
+  redis.call('HDEL', KEYS[1], field)
+  result.status='released'; result.used=used
+  return cjson.encode(result)
+end
 if ARGV[1] == 'finish' then
   if not entry or entry.expires_at <= now or entry.claim ~= ARGV[4] then
     return cjson.encode({status='lost'})
@@ -87,6 +101,8 @@ class JevControl:
                                                      operation, limit, request_id, claim, result))
                 if not isinstance(value, dict):
                     raise ValueError()
+                if operation == 'release_unsent' and value.get('status') == 'lost':
+                    return value
                 if operation == 'finish':
                     if value.get('status') not in {'saved', 'lost'}:
                         raise ValueError()
@@ -96,7 +112,8 @@ class JevControl:
                         raise ValueError()
                     if value['daily_limit'] != limit:
                         raise ValueError()
-                    if operation != 'snapshot' and value.get('status') not in {'reserved', 'cached', 'pending', 'quota_exhausted'}:
+                    statuses = {'released'} if operation == 'release_unsent' else {'reserved', 'cached', 'pending', 'quota_exhausted'}
+                    if operation != 'snapshot' and value.get('status') not in statuses:
                         raise ValueError()
                     if value.get('status') in {'reserved', 'cached', 'pending'} and (
                             type(value.get('expires_at')) is not int or value['expires_at'] <= 0):
@@ -116,6 +133,16 @@ class JevControl:
                 return value
             entry = db.execute('SELECT * FROM jev_receipts WHERE scope=? AND request_id=?',
                                (self.scope, request_id)).fetchone()
+            if operation == 'release_unsent':
+                if not entry:
+                    return {**value, 'status': 'released'}
+                if entry['claim'] != claim or entry['result'] is not None:
+                    return {'status': 'lost'}
+                if (entry['expires_at'] - DAY) // DAY == day:
+                    used = max(0, used - 1)
+                    db.execute('UPDATE jev_budget SET used=? WHERE scope=? AND day=?', (used, self.scope, day))
+                db.execute('DELETE FROM jev_receipts WHERE scope=? AND request_id=?', (self.scope, request_id))
+                return {**value, 'used': used, 'status': 'released'}
             if operation == 'finish':
                 if not entry or entry['expires_at'] <= now or entry['claim'] != claim:
                     return {'status': 'lost'}
@@ -151,3 +178,10 @@ class JevControl:
             raise CaseUnavailable('Auxiliary receipt exceeds limit')
         if self._run('finish', limit, request_id, claim, encoded)['status'] != 'saved':
             raise CaseUnavailable('Auxiliary reservation expired')
+
+    def release_unsent(self, request_id, claim, limit):
+        """Only for a matching pending claim proven to have made no provider call."""
+        result = self._run('release_unsent', limit, request_id, claim)
+        if result['status'] != 'released':
+            raise CaseUnavailable('Auxiliary reservation changed')
+        return {key: result[key] for key in ('used', 'daily_limit', 'reset_at')}

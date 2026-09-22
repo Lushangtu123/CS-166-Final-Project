@@ -1031,6 +1031,8 @@ The panel displays disabled, invalid-configuration and storage-control states;
 All web instances share the workspace/environment budget through existing
 Upstash storage (or SQLite locally). Identical requests by the same analyst reuse
 a structured receipt for 24 hours, including failures and uncertain outcomes.
+Confirmed local worker-capacity rejections make no provider call and release
+their reservation for a later manual retry.
 No email text is added to these receipts. See [operations](docs/case-workflow.md#jev-availability-and-request-controls)
 for retention and reset behavior. Production smoke checks configuration without
 contacting TypeSafe; this does not verify provider access or model accuracy.

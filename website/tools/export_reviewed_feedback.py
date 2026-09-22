@@ -16,7 +16,7 @@ WEBSITE_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WEBSITE_DIR))
 
 from tools.case_archive import read_archive, validate_archive, write_private_bytes, _canonical
-from case_store import feedback_review_fields
+from case_store import feedback_review_fields, ambiguous_feedback_subject
 
 
 def _source_row(record):
@@ -46,6 +46,7 @@ def _source_row(record):
         'id': record['id'],
         'label': record['verdict'],
         'input_mode': mode,
+        'source_schema': record['provenance'].get('source_schema', 1),
         'content_sha256': fingerprint,
         'reported_at': record['created_at'],
         'reviewed_at': record['updated_at'],
@@ -68,7 +69,7 @@ def build_reviewed_draft(archive):
     records, _requests = validate_archive(archive)['feedback']
     counts = {'total': len(records), 'no_evaluation_consent': 0, 'not_closed_or_labeled': 0,
               'unstructured_review': 0, 'invalid_source': 0, 'duplicates': 0,
-              'conflicting_labels': 0}
+              'conflicting_labels': 0, 'ambiguous_legacy_subject': 0}
     groups = {}
     for record in records.values():
         provenance = record['provenance']
@@ -84,6 +85,10 @@ def build_reviewed_draft(archive):
         if not review['feedback_reason'] or review['evidence_basis'] not in {
                 'retained_message', 'external_verification'}:
             counts['unstructured_review'] += 1
+            continue
+        if provenance.get('input_mode') == 'content' and ambiguous_feedback_subject(
+                record['source'].get('subject'), provenance.get('source_schema')):
+            counts['ambiguous_legacy_subject'] += 1
             continue
         try:
             row = _source_row(record)

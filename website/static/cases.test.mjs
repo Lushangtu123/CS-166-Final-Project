@@ -35,6 +35,28 @@ function setup(handler, vision = {cancel() {}, render() {}}) {
 }
 const standard = async url => ({status: 200, data: url.endsWith('/me') ? {actor: 'alice'} : url.includes('?') ? {items: [caseValue()], total: 1} : caseValue()});
 
+test('saving a review preserves later edits and the next save uses the new revision', async () => {
+  let release;
+  const ui = setup(async (url, options) => options?.method === 'PATCH'
+    ? await new Promise(resolve => { release = resolve; }) : standard(url));
+  await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
+  ui.el('review-status').value = 'in_progress'; ui.el('note').value = 'First note';
+  await ui.fire('review-form', 'submit');
+  ui.el('note').value = 'New note typed while saving';
+  ui.el('verdict').value = 'uncertain';
+  release({status: 200, data: {...caseValue(), version: 2, status: 'in_progress'}}); await tick();
+  assert.equal(ui.el('note').value, 'New note typed while saving');
+  assert.equal(ui.el('verdict').value, 'uncertain');
+  assert.match(ui.el('notice').textContent, /unsaved/i);
+  await ui.fire('review-form', 'submit');
+  const sent = ui.calls.filter(c => c.options.method === 'PATCH').map(c => JSON.parse(c.options.body));
+  assert.equal(sent[1].expected_version, 2);
+  assert.equal(sent[1].note, 'New note typed while saving');
+  release({status: 200, data: {...caseValue(), version: 3, status: 'in_progress', verdict: 'uncertain'}}); await tick();
+  assert.equal(ui.el('note').value, '');
+  assert.equal(ui.el('notice').textContent, 'Review saved.');
+});
+
 test('authenticated analysts can open and close the create-case drawer without losing the draft', async () => {
   const ui = setup(standard); await ui.login();
   assert.equal(typeof ui.el('open-compose').listeners.click, 'function');
@@ -328,4 +350,38 @@ test('failed status refresh disables Jev without clearing unsaved notes', async 
   assert.equal(ui.el('note').value, 'Keep this note');
   assert.equal(ui.el('jev-run').disabled, true);
   assert.match(ui.el('jev-availability').textContent, /controls are unavailable/);
+});
+
+test('review edits made during a failed save survive without a success notice', async () => {
+  let release;
+  const ui = setup(async (url, options) => options?.method === 'PATCH'
+    ? await new Promise(resolve => { release = resolve; }) : standard(url));
+  await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
+  ui.el('note').value = 'Submitted';
+  await ui.fire('review-form', 'submit'); ui.el('note').value = 'Unsaved after request';
+  release({status: 503, data: {detail: 'Storage unavailable'}}); await tick();
+  assert.equal(ui.el('note').value, 'Unsaved after request');
+  assert.equal(ui.el('notice').textContent, 'Storage unavailable');
+});
+
+test('new feedback choices survive saving and unavailable status requires a new choice', async () => {
+  let release;
+  const feedback = {...caseValue(), kind: 'feedback', status: 'in_progress'};
+  const ui = setup(async (url, options) => options?.method === 'PATCH'
+    ? await new Promise(resolve => { release = resolve; })
+    : {status: 200, data: url.endsWith('/me') ? {actor: 'alice'} : url.includes('?') ? {items: [feedback], total: 1} : feedback});
+  await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
+  ui.el('review-status').value = 'closed'; ui.el('note').value = 'Closing';
+  await ui.fire('review-form', 'submit');
+  ui.el('feedback-reason').value = 'missed_threat';
+  ui.el('evidence-basis').value = 'external_verification';
+  ui.el('review-status').value = 'pending'; // A no-longer-valid draft cannot silently change the saved state.
+  release({status: 200, data: {...feedback, status: 'closed', version: 2}}); await tick();
+  assert.equal(ui.el('note').value, ''); // The submitted note was saved, not a new draft.
+  assert.equal(ui.el('feedback-reason').value, 'missed_threat');
+  assert.equal(ui.el('evidence-basis').value, 'external_verification');
+  assert.equal(ui.el('review-status').value, 'pending');
+  await ui.fire('review-form', 'submit');
+  assert.match(ui.el('notice').textContent, /Choose an available status/);
+  assert.equal(ui.calls.filter(c => c.options.method === 'PATCH').length, 1);
 });
