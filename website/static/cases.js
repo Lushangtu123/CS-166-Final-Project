@@ -5,6 +5,7 @@
   let token = '', epoch = 0, listEpoch = 0, detailEpoch = 0, offset = 0, selected = null;
   let creation = null, inputVersion = 0, total = 0;
   let jevAvailable = false, jevTurn = 0, createPending = false;
+  let jevConfig = {status: 'disabled'}, jevBusy = false, jevStatusTurn = 0;
   const PAGE_SIZE = 25;
   function notice(text = '', error = false) { $('notice').textContent = text; $('notice').dataset.error = String(error); }
   function node(tag, text, className) {
@@ -38,7 +39,8 @@
     }
   }
   function signOut() {
-    jevAvailable = false; clearJev();
+    jevAvailable = false; jevConfig = {status: 'disabled'}; jevStatusTurn++; clearJev();
+    $('jev-panel').hidden = true; $('jev-availability').textContent = '';
     window.PhishGuardVision?.cancel();
     closeComposer({reset: true, force: true});
     $('vision-progress').textContent = '';
@@ -105,7 +107,7 @@
   function renderCase(value) {
     clearJev();
     selected = value; syncSelection(); $('detail').hidden = false; $('empty-detail').hidden = true;
-    $('jev-panel').hidden = !jevAvailable || value.kind === 'feedback';
+    renderJevAvailability();
     $('case-title').textContent = value.title;
     $('case-meta').textContent = `${value.id} · Revision ${value.version} · Created by ${value.created_by}`;
     $('badges').replaceChildren(riskBadge(value.risk), ...[labels[value.status], value.verdict || 'Not reviewed'].map(text => node('span', text, 'badge')));
@@ -164,8 +166,7 @@
     event.preventDefault(); const button = event.submitter;
     token = $('token').value.trim(); epoch++;
     action(button, async () => {
-      const me = await api('/me'); $('token').value = ''; $('actor').textContent = me.actor;
-      jevAvailable = me.jev_available === true;
+      const me = await refreshJev(); $('token').value = ''; $('actor').textContent = me.actor;
       $('login-panel').hidden = true; $('session').hidden = false; $('workspace').hidden = false;
       notice(); await loadList();
     });
@@ -178,16 +179,50 @@
     closeComposer();
   });
   $('logout').addEventListener('click', signOut);
+  function renderJevAvailability() {
+    $('jev-panel').hidden = !token || !selected || selected.kind === 'feedback';
+    const messages = {
+      disabled: 'Jev is disabled for this deployment. An administrator can enable it and redeploy.',
+      configuration_error: 'Jev configuration is incomplete or invalid. Check this deployment’s API key and daily limit, then redeploy.',
+      control_unavailable: 'Jev request controls are unavailable. No new request can be sent. Refresh to check again.',
+      quota_exhausted: 'The workspace daily allowance is exhausted. An existing opinion can still be retrieved; new requests resume after the UTC reset.',
+      available: 'Jev is configured. Each new request requires your permission. Provider access is checked only when requested.'
+    };
+    let message = messages[jevConfig.status] || 'Jev status is unavailable. Refresh to check again.';
+    if (Number.isInteger(jevConfig.used) && Number.isInteger(jevConfig.daily_limit)) {
+      message += ` Workspace attempts today: ${jevConfig.used}/${jevConfig.daily_limit}.`;
+    }
+    if (Number.isInteger(jevConfig.reset_at)) message += ` Resets ${new Date(jevConfig.reset_at * 1000).toLocaleString()}.`;
+    $('jev-availability').textContent = message;
+    $('jev-run').disabled = !jevAvailable || jevBusy;
+    $('jev-consent').disabled = !jevAvailable || jevBusy;
+  }
+  async function refreshJev() {
+    const turn = ++jevStatusTurn;
+    try {
+      const me = await api('/me');
+      if (turn !== jevStatusTurn) return me;
+      jevAvailable = me.jev_available === true;
+      jevConfig = me.jev || {status: jevAvailable ? 'available' : 'disabled'};
+      renderJevAvailability();
+      return me;
+    } catch (error) {
+      if (turn === jevStatusTurn && token) {
+        jevAvailable = false; jevConfig = {status: 'control_unavailable'}; renderJevAvailability();
+      }
+      throw error;
+    }
+  }
   function clearJev() {
-    jevTurn++; $('jev-panel').hidden = !jevAvailable;
+    jevTurn++; jevBusy = false;
     $('jev-consent').checked = false; $('jev-status').textContent = '';
-    $('jev-results').replaceChildren(); $('jev-run').disabled = false;
+    $('jev-results').replaceChildren(); renderJevAvailability();
   }
   $('jev-run').addEventListener('click', async () => {
-    if (!selected || !jevAvailable) return;
+    if (!selected || !jevAvailable || jevBusy) return;
     if (!$('jev-consent').checked) { $('jev-status').textContent = 'Confirm permission to send this message first.'; return; }
     const turn = ++jevTurn, session = epoch, id = selected.id, version = selected.version;
-    $('jev-run').disabled = true; $('jev-results').replaceChildren(); $('jev-status').textContent = 'Requesting auxiliary opinion…';
+    jevBusy = true; renderJevAvailability(); $('jev-results').replaceChildren(); $('jev-status').textContent = 'Requesting auxiliary opinion…';
     try {
       const result = await api('/' + encodeURIComponent(id) + '/auxiliary', {
         method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({allow_external_processing: true})});
@@ -195,6 +230,13 @@
       if (result.case_id !== id || result.case_version !== version) {
         $('jev-status').textContent = 'The case changed. Reload it before requesting another opinion.'; return;
       }
+      if (result.quota) {
+        jevStatusTurn++;
+        jevConfig = {...result.quota, status: result.quota.used >= result.quota.daily_limit ? 'quota_exhausted' : 'available'};
+        renderJevAvailability();
+      }
+      const receiptNote = result.receipt_expires_at
+        ? ` This request record is reused until ${new Date(result.receipt_expires_at * 1000).toLocaleString()}; submitting again will not start another provider call during that period.` : '';
       if (result.status !== 'available') {
         const reasons = {
           provider_authentication: 'TypeSafe rejected the API key. Ask the administrator to check the deployment key.',
@@ -208,12 +250,17 @@
           provider_http_error: 'TypeSafe returned a service error. Contact the administrator.',
           provider_invalid_response: 'TypeSafe returned an unexpected response. Contact the administrator.',
           local_capacity_exhausted: 'Auxiliary analysis is busy. Wait for current requests to finish.',
-          call_budget_exhausted: 'The auxiliary request allowance for this server has been reached.'
+          call_budget_exhausted: 'The auxiliary request allowance has been reached.',
+          daily_quota_exhausted: 'The workspace daily allowance is exhausted. Wait for the UTC reset.',
+          request_pending: 'An identical request is still running or its outcome is unknown. No additional provider call was made.',
+          empty_or_oversized_text: 'Saved text is empty or exceeds the 12,000-character auxiliary limit.',
+          legacy_source_format: 'This older case lacks separate readable email text. Create a new case from the original email.'
         };
         const message = Object.hasOwn(reasons, result.reason) ? reasons[result.reason] : 'Auxiliary analysis was unavailable or skipped.';
-        $('jev-status').textContent = message + ' The original detection result is unchanged.'; return;
+        $('jev-status').textContent = message + ' The original detection result is unchanged.' + receiptNote; return;
       }
       $('jev-status').textContent = `${result.model} · Model opinions, not verified findings. Risk and verdict are unchanged.${result.evidence_incomplete ? ' Original evidence is incomplete; this opinion cannot fill missing images or correct OCR.' : ''}`;
+      if (result.reused) $('jev-status').textContent += ' Reused the previous request; no new provider call.';
       const names = {credential_request: 'Request for authentication secrets', payment_redirection: 'New or changed payment destination', authority_pressure: 'Pressure to bypass normal checks', phishing_intent: 'Deceptive intent', insufficient_evidence: 'Insufficient evidence'};
       for (const [key, label] of Object.entries(names)) {
         const probability = result.probabilities?.[key];
@@ -224,7 +271,7 @@
     } catch (error) {
       if (turn === jevTurn && session === epoch) $('jev-status').textContent = error.message || 'Auxiliary analysis failed. The original detection result is unchanged.';
     } finally {
-      if (turn === jevTurn) { $('jev-run').disabled = false; $('jev-consent').checked = false; }
+      if (turn === jevTurn) { jevBusy = false; $('jev-consent').checked = false; renderJevAvailability(); }
     }
   });
   window.addEventListener('pagehide', signOut);
@@ -283,8 +330,11 @@
     });
   });
   $('filters').addEventListener('submit', event => { event.preventDefault(); offset = 0; action(event.submitter, loadList); });
-  $('refresh').addEventListener('click', event => action(event.currentTarget, loadList));
-  $('reload-case').addEventListener('click', event => { if (selected) action(event.currentTarget, () => loadCase(selected.id)); });
+  $('refresh').addEventListener('click', event => action(event.currentTarget, async () => { await refreshJev(); await loadList(); }));
+  $('reload-case').addEventListener('click', event => { if (selected) {
+    const id = selected.id, turn = detailEpoch;
+    action(event.currentTarget, async () => { await refreshJev(); if (turn === detailEpoch) await loadCase(id); });
+  } });
   for (const [id, delta] of [['previous', -PAGE_SIZE], ['next', PAGE_SIZE]]) $(id).addEventListener('click', async event => {
     const button = event.currentTarget; offset = Math.max(0, offset + delta);
     await action(button, loadList);

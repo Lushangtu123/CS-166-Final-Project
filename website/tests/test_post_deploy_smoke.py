@@ -43,6 +43,29 @@ class _Response:
 
 
 class PostDeploySmokeTests(unittest.TestCase):
+    def test_jev_configuration_gate_is_read_only_and_requires_both_contracts(self):
+        health = {'status': 'ok', 'content_model_loaded': True, 'commit_sha': 'c' * 40,
+                  'content_model_artifact_sha256': 'a' * 64, 'jev_enabled': True, 'jev_configured': True}
+        config = {'verification_mode': 'lite', 'content_model_enabled': True,
+                  'jev_enabled': True, 'jev_configured': True}
+        calls = []
+        def opener(request, timeout):
+            calls.append((request.get_method(), request.full_url))
+            return _Response(health if request.full_url.endswith('/health') else config)
+        def check():
+            return post_deploy_smoke._read_deployment_readiness('https://project.vercel.app',
+                expected_commit_sha='c' * 40, expected_model_sha256='a' * 64, opener=opener,
+                require_sender_history=False, require_jev=True)
+        check()
+        for payload in (health, config):
+            for field in ('jev_enabled', 'jev_configured'):
+                for value in (False, None):
+                    payload[field] = value
+                    with self.assertRaisesRegex(RuntimeError, 'Jev'):
+                        check()
+                payload[field] = True
+        self.assertTrue(all(method == 'GET' and url.endswith(('/health', '/api/config')) for method, url in calls))
+
     def test_case_auth_boundary_requires_anonymous_denial(self):
         requests = []
         def rejected(request, timeout):
@@ -301,6 +324,7 @@ class PostDeploySmokeTests(unittest.TestCase):
         self.assertIn('--base-url "$DEPLOYMENT_URL"', source)
         self.assertIn("--require-sender-history", source)
         self.assertIn("--require-cases", source)
+        self.assertIn("--require-jev", source)
         self.assertNotIn(
             '--base-url "${{ github.event.deployment_status.target_url }}"',
             source,

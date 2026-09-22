@@ -168,6 +168,21 @@ class CaseArchiveTests(unittest.TestCase):
         self.assertEqual(rows, [])
         self.assertEqual(counts['conflicting_labels'], 2)
 
+    def test_duplicate_messages_preserve_all_reviewers_for_independence_check(self):
+        from tools.build_private_cohort import build_cohort
+        from tests.test_build_private_cohort import annotation
+        first, second = record(1, feedback=True), record(2, feedback=True)
+        first['events'][-1]['actor'] = 'alice'
+        second['events'][-1]['actor'] = 'bob'
+        rows, counts = build_reviewed_draft(archive_with(feedback_fields=fields(first, second)))
+        self.assertEqual(counts['duplicates'], 1)
+        self.assertEqual(rows[0]['case_reviewer_ids'], ['alice', 'bob'])
+        self.assertEqual(rows[0]['source_case_ids'], [first['id'], second['id']])
+        for reviewer in ('alice', 'bob'):
+            with self.assertRaisesRegex(ValueError, 'independent reviewer'):
+                build_cohort(rows, [annotation(rows[0], reviewer=reviewer)])
+        self.assertEqual(len(build_cohort(rows, [annotation(rows[0], reviewer='charlie')])['development']), 1)
+
     def test_original_eml_is_a_draft_but_legacy_consent_is_not(self):
         eml = record(1, feedback=True)
         eml['provenance']['input_mode'] = 'eml'

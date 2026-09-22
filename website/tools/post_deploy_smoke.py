@@ -103,6 +103,7 @@ def _read_deployment_readiness(
     expected_commit_sha: str,
     opener: Callable,
     require_sender_history: bool,
+    require_jev: bool = False,
 ) -> tuple[dict, dict]:
     """Perform the retry-safe, read-only portion of deployment validation."""
     health = _request_json(Request(base_url + "/health"), opener=opener)
@@ -135,6 +136,10 @@ def _read_deployment_readiness(
                 raise RuntimeError(f"Sender history is not configured in {name}: {payload!r}")
             if payload.get("sender_history_available") is not True:
                 raise RuntimeError(f"Sender history is not available in {name}: {payload!r}")
+    if require_jev:
+        for name, payload in (("health", health), ("config", config)):
+            if payload.get("jev_enabled") is not True or payload.get("jev_configured") is not True:
+                raise RuntimeError(f"Jev configuration is not ready in {name}; check deployment environment variables")
     return health, config
 
 
@@ -148,6 +153,7 @@ def _wait_for_deployment_readiness(
     attempts: int,
     retry_delay: float,
     sleeper: Callable[[float], None],
+    require_jev: bool = False,
 ) -> tuple[dict, dict]:
     if attempts < 1:
         raise ValueError("readiness_attempts must be at least 1")
@@ -162,6 +168,7 @@ def _wait_for_deployment_readiness(
                 expected_commit_sha=expected_commit_sha,
                 opener=opener,
                 require_sender_history=require_sender_history,
+                require_jev=require_jev,
             )
         except Exception:
             if attempt + 1 >= attempts:
@@ -191,6 +198,7 @@ def validate_deployment(
     opener: Callable = urlopen,
     require_sender_history: bool = False,
     require_cases: bool = False,
+    require_jev: bool = False,
     history_probe_id: str | None = None,
     readiness_attempts: int = 1,
     retry_delay: float = 0,
@@ -205,6 +213,7 @@ def validate_deployment(
         expected_commit_sha=expected_commit_sha,
         opener=opener,
         require_sender_history=require_sender_history,
+        require_jev=require_jev,
         attempts=readiness_attempts,
         retry_delay=retry_delay,
         sleeper=sleeper,
@@ -306,6 +315,7 @@ def validate_deployment(
         "mime_phishing_risk_level": mime_analysis["risk_level"],
         "sender_history_probe": sender_history_probe,
         "case_auth_boundary": "anonymous_denied" if require_cases else "not_checked",
+        "jev_configuration": "configured_without_provider_call" if require_jev else "not_checked",
     }
 
 
@@ -320,6 +330,7 @@ def main() -> None:
     parser.add_argument("--expected-commit-sha", required=True)
     parser.add_argument("--require-sender-history", action="store_true")
     parser.add_argument("--require-cases", action="store_true")
+    parser.add_argument("--require-jev", action="store_true", help="Check enabled configuration without calling TypeSafe")
     parser.add_argument("--readiness-attempts", type=int, default=6)
     parser.add_argument("--retry-delay", type=float, default=5.0)
     args = parser.parse_args()
@@ -329,6 +340,7 @@ def main() -> None:
         expected_commit_sha=args.expected_commit_sha,
         require_sender_history=args.require_sender_history,
         require_cases=args.require_cases,
+        require_jev=args.require_jev,
         readiness_attempts=args.readiness_attempts,
         retry_delay=args.retry_delay,
     )

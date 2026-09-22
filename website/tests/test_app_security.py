@@ -247,11 +247,14 @@ class VerificationFeatureGateTests(unittest.TestCase):
     def test_public_config_reports_verification_disabled(self):
         self.assertTrue(hasattr(app, "get_public_config"))
 
-        response = asyncio.run(app.get_public_config())
+        with patch.dict(os.environ, {'PHISHGUARD_JEV_ENABLED': 'false'}):
+            response = asyncio.run(app.get_public_config())
         payload = json.loads(response.body)
         self.assertIsInstance(payload.pop("feedback_enabled"), bool)
 
         self.assertEqual(payload, {
+            "jev_enabled": False,
+            "jev_configured": False,
             "deployment_profile": app.SETTINGS.app_env,
             "email_verification_enabled": False,
             "verification_mode": "off",

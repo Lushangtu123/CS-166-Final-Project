@@ -17,7 +17,8 @@ from starlette.concurrency import run_in_threadpool
 from case_store import CaseStore, CaseConflict, CaseInvalid, CaseNotFound, RISKS, STATUSES
 from case_cloud import UpstashCaseStore, CaseUnavailable, feedback_workspace_name
 from visual_evidence import VisualRequest
-from jev import JevClient, prepare_case_input
+from jev import JevClient, prepare_case_input, configuration as jev_configuration
+from jev_control import JevControl, request_identity
 
 
 @dataclass
@@ -26,6 +27,7 @@ class CaseService:
     analysts: dict = field(repr=False)
     feedback_store: object | None = field(default=None, repr=False)
     deployment_environment: str = 'local'
+    jev_control: object | None = field(default=None, repr=False)
 
 
 def build_case_service(env):
@@ -93,10 +95,22 @@ class AuxiliaryConsent(BaseModel):
 
 
 def jev_client(request):
-    # One budget per process lifetime. Fleet-wide cost limits belong at the provider.
-    if not hasattr(request.app.state, 'jev_client'):
-        request.app.state.jev_client = JevClient.from_env(os.environ)
-    return request.app.state.jev_client
+    # Web requests must reserve the shared budget before evaluate(). CLI keeps its cap.
+    return JevClient.from_env(os.environ, max_calls=None)
+
+
+def jev_control(service):
+    if service.jev_control is None:
+        service.jev_control = JevControl(service.store, service.deployment_environment)
+    return service.jev_control
+
+
+def public_jev_status(app):
+    config = jev_configuration(os.environ)
+    return {'jev_enabled': os.environ.get('PHISHGUARD_JEV_ENABLED') == 'true',
+            'jev_configured': (config['status'] == 'available'
+                               and getattr(app.state, 'case_service', None) is not None
+                               and not getattr(app.state, 'case_configuration_error', False))}
 
 
 def make_case_router(analyze, *, visible_text, mask_inline_data):
@@ -153,7 +167,18 @@ def make_case_router(analyze, *, visible_text, mask_inline_data):
 
     @router.get('/me')
     async def me(request: Request, access=Depends(identity)):
-        return {'actor': access[1], 'jev_available': jev_client(request).enabled}
+        config = jev_configuration(os.environ)
+        if config['status'] == 'available':
+            try:
+                control = await run_in_threadpool(jev_control, request.app.state.case_service)
+                config.update(await run_in_threadpool(control.snapshot, config['daily_limit']))
+                if config['used'] >= config['daily_limit']:
+                    config['status'] = 'quota_exhausted'
+            except (CaseUnavailable, sqlite3.Error, OSError):
+                config['status'] = 'control_unavailable'
+        # Quota-exhausted analysts may still retrieve a previously saved receipt.
+        return {'actor': access[1], 'jev_available': config['status'] in {'available', 'quota_exhausted'},
+                'jev': config}
 
     @router.get('')
     async def listing(request: Request, status: str | None = None, risk: str | None = None,
@@ -245,9 +270,27 @@ def make_case_router(analyze, *, visible_text, mask_inline_data):
         except ValueError:
             return {'case_id': case_id, 'case_version': case['version'], 'status': 'skipped',
                     'reason': 'legacy_source_format', 'affects_risk': False}
+        base = {'case_id': case_id, 'case_version': case['version'], 'affects_risk': False}
+        try:
+            request_id = request_identity(access[1], case_id, prepared)
+        except ValueError as error:
+            return {**base, 'status': 'skipped', 'reason': str(error)}
+        limit = jev_configuration(os.environ)['daily_limit']
+        if limit is None:
+            raise HTTPException(503, 'Auxiliary daily limit configuration is invalid')
+        control = await call(jev_control, request.app.state.case_service)
+        reservation = await call(control.reserve, request_id, limit)
+        quota = {key: reservation[key] for key in ('used', 'daily_limit', 'reset_at')}
+        receipt = {'quota': quota, 'receipt_expires_at': reservation.get('expires_at')}
+        if reservation['status'] == 'cached':
+            return {**reservation['result'], **base, **receipt, 'reused': True}
+        if reservation['status'] != 'reserved':
+            return {**base, **receipt, 'status': 'skipped',
+                    'reason': 'request_pending' if reservation['status'] == 'pending' else 'daily_quota_exhausted'}
         result = await run_in_threadpool(client.evaluate, **prepared)
-        # An ephemeral opinion: no case mutation, score replacement, or automatic verdict.
-        return {'case_id': case_id, 'case_version': case['version'], **result}
+        await call(control.finish, request_id, reservation['claim'], result, limit)
+        # Transient duplicate-control receipt only; no case mutation or automatic verdict.
+        return {**result, **base, **receipt, 'reused': False}
 
     @router.patch('/{case_id}')
     async def update(case_id: str, payload: CaseReview, request: Request, access=Depends(identity)):

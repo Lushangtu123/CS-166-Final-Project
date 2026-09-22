@@ -90,6 +90,17 @@ def _encoded(value):
 QUESTIONS_SHA256 = hashlib.sha256(_encoded(QUESTIONS)).hexdigest()
 
 
+def configuration(env):
+    flag = env.get('PHISHGUARD_JEV_ENABLED', 'false')
+    key = env.get('TYPESAFE_API_KEY', '')
+    valid_key = isinstance(key, str) and 1 <= len(key) <= 512 and key.isascii() and not any(c.isspace() for c in key)
+    raw_limit = env.get('PHISHGUARD_JEV_DAILY_LIMIT', '20')
+    valid_limit = isinstance(raw_limit, str) and re.fullmatch(r'[0-9]{1,4}', raw_limit) and 1 <= int(raw_limit) <= 1000
+    status = ('disabled' if flag == 'false' else 'available'
+              if flag == 'true' and valid_key and valid_limit else 'configuration_error')
+    return {'status': status, 'daily_limit': int(raw_limit) if valid_limit else None}
+
+
 def _redact(text):
     # Data minimization only, NOT full anonymization. Free prose may contain PII.
     def redact_url(match):
@@ -125,6 +136,15 @@ def prepare_case_input(source, analysis, *, visible_text, mask_inline_data):
             'evidence_incomplete': (analysis.get('analysis_complete') is not True
                                     or bool(source.get('text_truncated'))
                                     or bool(source.get('auxiliary_omitted_nested_messages')))}
+
+
+def input_state(subject, body, *, evidence_incomplete=False):
+    if not isinstance(subject, str) or not isinstance(body, str):
+        raise ValueError('invalid_input')
+    if not (subject + body).strip() or len(subject) + len(body) > MAX_TEXT_CHARS:
+        raise ValueError('empty_or_oversized_text')
+    return {'subject': _redact(subject), 'body': _redact(body),
+            'evidence_incomplete': bool(evidence_incomplete)}
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -178,28 +198,24 @@ class JevClient:
         self._open = opener or build_opener(ProxyHandler({}), _NoRedirect()).open
 
     @classmethod
-    def from_env(cls, env, *, opener=None):
-        enabled = env.get('PHISHGUARD_JEV_ENABLED', 'false') == 'true'
-        key = env.get('TYPESAFE_API_KEY', '')
-        valid = isinstance(key, str) and 1 <= len(key) <= 512 and key.isascii() and not any(c.isspace() for c in key)
+    def from_env(cls, env, *, opener=None, max_calls=20):
+        enabled = configuration(env)['status'] == 'available'
         # Invalid optional settings never stop the existing detector from starting.
-        return cls(key if valid else '', enabled=enabled and valid, opener=opener)
+        return cls(env.get('TYPESAFE_API_KEY', '') if enabled else '', enabled=enabled, opener=opener, max_calls=max_calls)
 
     def evaluate(self, subject, body, *, evidence_incomplete=False):
         base = {'provider': 'typesafe', 'mode': 'shadow', 'affects_risk': False,
                 'questions_sha256': QUESTIONS_SHA256}
         if not self.enabled:
             return {**base, 'status': 'disabled'}
-        if not isinstance(subject, str) or not isinstance(body, str):
-            return {**base, 'status': 'skipped', 'reason': 'invalid_input'}
-        if not (subject + body).strip() or len(subject) + len(body) > MAX_TEXT_CHARS:
-            return {**base, 'status': 'skipped', 'reason': 'empty_or_oversized_text'}
-        state = {'subject': _redact(subject), 'body': _redact(body),
-                 'evidence_incomplete': bool(evidence_incomplete)}
+        try:
+            state = input_state(subject, body, evidence_incomplete=evidence_incomplete)
+        except ValueError as error:
+            return {**base, 'status': 'skipped', 'reason': str(error)}
         base['input_sha256'] = hashlib.sha256(_encoded(state)).hexdigest()
         base['evidence_incomplete'] = bool(evidence_incomplete)
         with self._lock:
-            if self._calls >= self.max_calls:
+            if self.max_calls is not None and self._calls >= self.max_calls:
                 return {**base, 'status': 'skipped', 'reason': 'call_budget_exhausted'}
             self._calls += 1  # Failed/uncertain requests also consume the budget.
         request = Request(ENDPOINT, data=_encoded({'model': MODEL, 'state': state, 'questions': QUESTIONS}),

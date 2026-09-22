@@ -10,7 +10,10 @@ enter a curation draft. Older reports,
 source-free reports, images, sender-only reports, legacy unstructured reviews,
 reporter-only evidence, open reviews and uncertain verdicts are excluded.
 Reports with the same retained message and conflicting human labels are excluded
-together; matching duplicates count once.
+together; matching duplicates count once. Each exported row preserves the union
+of all eligible duplicates' `case_reviewer_ids` and their `source_case_ids`.
+An analyst who reviewed any of those duplicates cannot be the independent
+reviewer. Regenerate older drafts from the private archive before using this check.
 
 First make and verify a private archive using the commands in
 [case-workflow.md](case-workflow.md#storage-limits-and-responsibility), then run:
@@ -344,8 +347,9 @@ authorized. The case workspace then shows **Jev auxiliary opinion** for analysts
 The checkbox and explicit button call `POST /api/cases/{id}/auxiliary` with
 `{"allow_external_processing":true}`. Authentication, no-store headers and existing
 rate limiting apply. The browser receives only structured opinions, never the key.
-Opinions are ephemeral and do not change risk, verdict or saved history. Switching
-cases/signing out discards them. Legacy raw-email cases without separately saved
+Opinions do not change risk, verdict or saved history. Switching cases/signing out
+clears the display; structured duplicate-control receipts remain usable for 24 hours.
+Legacy raw-email cases without separately saved
 MIME text skip auxiliary analysis rather than reinterpreting plain text as HTML.
 
 The adapter masks email local parts and removes HTTP(S) URL credentials, queries
@@ -358,10 +362,16 @@ The caller has a six-second external-request deadline. At most two daemon reques
 can continue waiting on an underlying socket/DNS operation; they retain their
 slots until completion, preventing an unbounded retry/thread queue.
 
-Web calls are capped at 20 attempts per server-process lifetime. This is **not a
-distributed spending limit** on Vercel; use provider/account controls before
-enabling. CLI calls have their separate explicit budget. Missing or invalid key
-configuration disables the optional feature without breaking existing analysis.
+Web calls share a daily workspace/environment attempt budget in Upstash (SQLite
+locally), default 20, configurable with `PHISHGUARD_JEV_DAILY_LIMIT` (1–1000).
+The budget resets at UTC midnight. Requests reserve an attempt before contacting
+TypeSafe; failures and uncertain outcomes also consume it. Identical inputs,
+actor, case, pinned model and questions reuse a 24-hour receipt, even across a
+midnight reset. This limits attempts, not monetary spending; retain provider/account
+controls. CLI calls keep their separate explicit budget and do not use web receipts.
+Missing or invalid configuration disables the optional feature without breaking
+existing analysis. The production `--require-jev` smoke gate checks only safe
+configuration flags and never calls TypeSafe. See [operations](case-workflow.md#jev-availability-and-request-controls).
 
 No live Jev call or accuracy test was performed during implementation. Synthetic
 contract/failure tests establish integration behavior, not model effectiveness.

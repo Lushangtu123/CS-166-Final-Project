@@ -1,5 +1,53 @@
 # Case workspace operations
 
+## Jev availability and request controls
+
+Normal cases show a Jev status panel even when the optional feature is disabled.
+**Refresh** reads `/api/cases/me` again and keeps unsaved review notes. It never
+calls TypeSafe. Environment changes in Vercel still require a new deployment.
+The panel distinguishes disabled, invalid configuration, unavailable control
+storage, daily quota exhausted and configured states. "Configured" does not
+prove that the provider will accept the key. User feedback is not eligible for Jev.
+
+`PHISHGUARD_JEV_DAILY_LIMIT` defaults to 20 attempts per UTC day (range 1–1000).
+The shared budget uses a separate Redis hash,
+`phishguard:jev:v1:<CASE_WORKSPACE>:<VERCEL_ENV>`, so Production and Preview have
+separate counts and receipts. The existing case hash is untouched. All instances
+must use the same workspace, environment and limit. Local SQLite installations
+use transactional `jev_budget` and `jev_receipts` tables in the case database.
+
+Before sending a request, the server atomically reserves one attempt and stores
+a pending receipt. The identity covers analyst, case, minimized input, pinned
+model and question hash. Review notes and case revision are excluded because
+they do not change the model input. An identical request by that analyst reuses
+the structured result for **24 hours**, including errors, and does not consume
+another attempt. Other analysts and other cases have separate request identities
+but share the daily budget. A quota-exhausted workspace can still retrieve an
+existing receipt. Empty or oversized inputs consume no attempt.
+
+A timeout may still have incurred a provider charge. A failed/uncertain storage
+operation or provider outcome never triggers an automatic retry. If no result
+could be saved, the receipt stays pending until it expires; a later deliberate
+request can try again after expiry and subject to that day's allowance. Do not
+delete receipts or switch namespaces to retry an uncertain call. The daily count
+limits attempts, not money; keep provider-side spending controls.
+
+Receipts hold hashes, claim IDs, timestamps and structured model results, never
+email text, tokens or raw provider responses. They are not analyst review history
+and are excluded from case archive/restore/purge tools. Redis makes receipts
+unusable after 24 hours, removes expired entries on the next successful reservation,
+and expires the whole hash 48 hours after its last reservation. In local SQLite,
+expired receipts are unusable immediately and physically removed on the next
+successful reservation; ordinary host backup/retention policies still apply.
+
+`/health` and `/api/config` expose only `jev_enabled` and `jev_configured` flags.
+Production smoke uses `--require-jev` to detect missing deployment configuration
+without contacting TypeSafe or exposing keys. This is a post-deployment check,
+not a provider connectivity test or an automatic rollback. CI also runs the Lua
+control tests against its own disposable Redis, using random synthetic namespaces.
+
+## Opening and reviewing cases
+
 Use the homepage **Case login** button (also visible on mobile) to open
 `https://phishguard-email-analyzer.vercel.app/cases` and sign in with your
 individual analyst token. Bookmark this stable address, not a deployment-specific

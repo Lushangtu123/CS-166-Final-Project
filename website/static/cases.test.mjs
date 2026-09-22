@@ -151,10 +151,20 @@ test('late Jev results cannot reappear after switching case or signing out', asy
   assert.equal(ui.el('jev-status').textContent, '');
 });
 
-test('Jev panel is hidden unless server explicitly enables it', async () => {
-  const ui = setup(standard); await ui.login();
+test('Jev panel explains unavailable configuration and refreshes without losing notes', async () => {
+  let enabled = false;
+  const handler = async url => url.endsWith('/me') ? {status: 200, data: {actor: 'alice',
+    jev_available: enabled, jev: {status: enabled ? 'available' : 'configuration_error', daily_limit: 20, used: 0}}} : standard(url);
+  const ui = setup(handler); await ui.login();
   ui.el('case-list').children[0].listeners.click(); await tick();
-  assert.equal(ui.el('jev-panel').hidden, true);
+  assert.equal(ui.el('jev-panel').hidden, false);
+  assert.equal(ui.el('jev-run').disabled, true);
+  assert.match(ui.el('jev-availability').textContent, /configuration/i);
+  ui.el('note').value = 'Unsaved review';
+  enabled = true; await ui.fire('refresh');
+  assert.equal(ui.el('jev-run').disabled, false);
+  assert.equal(ui.el('note').value, 'Unsaved review');
+  assert(!ui.calls.some(call => call.url.endsWith('/auxiliary')));
 });
 
 test('dropped and pasted case files use existing recognition and require explicit submission',async()=>{
@@ -277,4 +287,45 @@ test('case OCR forwards language and invalidates in-flight output when it change
   ui.el('case-ocr-language').value='eng';await ui.fire('case-ocr-language','change');
   release({observations:[],warnings:[]});await tick();
   assert(!ui.calls.some(call=>call.options.method==='POST'));
+});
+
+test('quota exhausted still retrieves a prior receipt and never changes risk', async () => {
+  const ui = setup(async url => url.endsWith('/me') ? {status: 200, data: {actor: 'alice', jev_available: true,
+    jev: {status: 'quota_exhausted', daily_limit: 20, used: 20, reset_at: 1790121600}}} :
+    url.endsWith('/auxiliary') ? {status: 200, data: {case_id: 'case-1', case_version: 1,
+      status: 'available', model: 'jev', reused: true, probabilities: {phishing_intent: .2}}} : standard(url));
+  await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
+  assert.match(ui.el('jev-availability').textContent, /daily allowance is exhausted/);
+  assert.equal(ui.el('jev-run').disabled, false);
+  const risk = ui.el('analysis-summary').textContent;
+  ui.el('jev-consent').checked = true; await ui.fire('jev-run');
+  assert.match(ui.el('jev-status').textContent, /no new provider call/);
+  assert.equal(ui.el('analysis-summary').textContent, risk);
+});
+
+test('refresh during Jev request keeps it busy and cannot send duplicate calls', async () => {
+  let release;
+  const ui = setup(async url => url.endsWith('/me') ? {status: 200, data: {actor: 'alice', jev_available: true}} :
+    url.endsWith('/auxiliary') ? await new Promise(resolve => { release = resolve; }) : standard(url));
+  await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
+  ui.el('jev-consent').checked = true; await ui.fire('jev-run'); await ui.fire('refresh');
+  assert.equal(ui.el('jev-run').disabled, true);
+  await ui.fire('jev-run');
+  assert.equal(ui.calls.filter(c => c.url.endsWith('/auxiliary')).length, 1);
+  release({status: 200, data: {case_id: 'case-1', case_version: 1, status: 'skipped', reason: 'request_pending', receipt_expires_at: 1790121600}});
+  await tick();
+  assert.match(ui.el('jev-status').textContent, /outcome is unknown/);
+  assert.match(ui.el('jev-status').textContent, /will not start another provider call/);
+  assert.equal(ui.el('jev-run').disabled, false);
+});
+
+test('failed status refresh disables Jev without clearing unsaved notes', async () => {
+  let failed = false;
+  const ui = setup(async url => url.endsWith('/me') ? {status: failed ? 503 : 200,
+    data: {actor: 'alice', jev_available: true, detail: 'Storage unavailable'}} : standard(url));
+  await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
+  ui.el('note').value = 'Keep this note'; failed = true; await ui.fire('refresh');
+  assert.equal(ui.el('note').value, 'Keep this note');
+  assert.equal(ui.el('jev-run').disabled, true);
+  assert.match(ui.el('jev-availability').textContent, /controls are unavailable/);
 });

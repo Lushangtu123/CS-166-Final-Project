@@ -45,7 +45,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
 from config import load_settings
-from case_api import build_case_service, make_case_router
+from case_api import build_case_service, make_case_router, public_jev_status
 from feedback_api import make_feedback_router
 from disposable_registry import REGISTRY_DOMAIN_RE as _REGISTRY_DOMAIN_RE
 from disposable_registry import load_disposable_registry, load_privacy_relay_registry
@@ -1287,6 +1287,7 @@ async def health():
         status_code=200,
         content={
             "status": "ok",
+            **public_jev_status(app),
             "commit_sha": commit_sha.lower() if re.fullmatch(r"[0-9a-fA-F]{40}", commit_sha) else None,
             "model_loaded": _content_pipeline is not None,
             "content_model_loaded": _content_pipeline is not None,
@@ -1350,6 +1351,7 @@ async def get_features():
 @app.get("/api/config")
 async def get_public_config():
     return JSONResponse({
+        **public_jev_status(app),
         "deployment_profile": SETTINGS.app_env,
         "email_verification_enabled": SETTINGS.domain_verification_enabled,
         "verification_mode": SETTINGS.effective_verification_mode,

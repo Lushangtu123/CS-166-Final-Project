@@ -1025,6 +1025,16 @@ or case history. Enabling requires `PHISHGUARD_JEV_ENABLED=true` and a server-si
 `TYPESAFE_API_KEY`; each request also requires the analyst's explicit permission
 to send the message text to TypeSafe. The public analyzer never calls Jev.
 
+The panel displays disabled, invalid-configuration and storage-control states;
+**Refresh** updates the status without signing out or discarding review notes.
+`PHISHGUARD_JEV_DAILY_LIMIT` defaults to **20 attempts per UTC day** (1–1000).
+All web instances share the workspace/environment budget through existing
+Upstash storage (or SQLite locally). Identical requests by the same analyst reuse
+a structured receipt for 24 hours, including failures and uncertain outcomes.
+No email text is added to these receipts. See [operations](docs/case-workflow.md#jev-availability-and-request-controls)
+for retention and reset behavior. Production smoke checks configuration without
+contacting TypeSafe; this does not verify provider access or model accuracy.
+
 The adapter pins `jev-1.13.0`, uses the official HTTP endpoint without an added
 Python dependency, and asks separate questions about secret disclosure, changed
 payment destinations, pressure to bypass checks, deceptive intent and missing

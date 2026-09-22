@@ -25,6 +25,31 @@ def answer():
 
 
 class JevTests(unittest.TestCase):
+    def test_configuration_reports_safe_reasons_and_bounds_daily_limit(self):
+        from jev import configuration
+        self.assertEqual(configuration({})['status'], 'disabled')
+        env = {'PHISHGUARD_JEV_ENABLED': 'true', 'TYPESAFE_API_KEY': 'synthetic-private-key'}
+        for bad in ('0', '-1', '1001', '1.5', '20 ', '', 'x' * 5000):
+            result = configuration({**env, 'PHISHGUARD_JEV_DAILY_LIMIT': bad})
+            self.assertEqual(result['status'], 'configuration_error')
+            self.assertNotIn('synthetic-private-key', json.dumps(result))
+        for key in ('', 'with space', 'not\nascii', '密钥'):
+            self.assertEqual(configuration({**env, 'TYPESAFE_API_KEY': key})['status'], 'configuration_error')
+        self.assertEqual(configuration(env), {'status': 'available', 'daily_limit': 20})
+        self.assertEqual(configuration({**env, 'PHISHGUARD_JEV_ENABLED': 'TRUE'})['status'], 'configuration_error')
+
+    def test_web_client_has_no_lifetime_cap_but_cli_default_keeps_one(self):
+        env = {'PHISHGUARD_JEV_ENABLED': 'true', 'TYPESAFE_API_KEY': 'synthetic'}
+        web = JevClient.from_env(env, max_calls=None)
+        cli = JevClient.from_env(env)
+        with patch('jev._provider_response', return_value=json.dumps(answer()).encode()) as provider:
+            for _ in range(21):
+                self.assertEqual(web.evaluate('', 'Synthetic message')['status'], 'available')
+            for _ in range(20):
+                self.assertEqual(cli.evaluate('', 'Synthetic message')['status'], 'available')
+            self.assertEqual(cli.evaluate('', 'Synthetic message')['reason'], 'call_budget_exhausted')
+            self.assertEqual(provider.call_count, 41)
+
     def test_provider_diagnostics_are_safe_distinct_and_never_retry(self):
         for error, reason in [
             *[(HTTPError('https://api.typesafe.ai/private-secret', code, 'private-secret', {}, io.BytesIO(b'private-secret')), reason)

@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import tempfile
 from unittest.mock import Mock, patch
 
 
@@ -30,8 +31,11 @@ async def main() -> None:
 
     async def check_auxiliary_route():
         # Exercise the real route after importing the root Vercel entrypoint.
-        # No database or TypeSafe request: only these external boundaries are mocked.
+        # A private temporary SQLite control verifies reservation + route wiring.
+        # Case retrieval and TypeSafe transport remain mocked.
         from case_api import CaseService
+        from case_store import CaseStore
+        from jev_control import JevControl
         from jev import JevClient
         sys.path.insert(0, str(PROJECT_ROOT / 'website' / 'tests'))
         from test_case_api import request, TOKEN
@@ -42,9 +46,15 @@ async def main() -> None:
         client.evaluate = Mock(return_value={'status': 'available', 'affects_risk': False})
         service = CaseService(Mock(get=Mock(return_value=case)),
                               {'smoke': hashlib.sha256(TOKEN.encode()).hexdigest()})
-        with patch.object(backend.app.state, 'case_service', service), patch('case_api.jev_client', return_value=client):
-            status, result, headers = await request('POST', '/api/cases/synthetic/auxiliary',
-                                                    payload={'allow_external_processing': True})
+        with tempfile.TemporaryDirectory() as directory:
+            service.jev_control = JevControl(CaseStore(Path(directory) / 'control.sqlite3'))
+            with patch.object(backend.app.state, 'case_service', service), patch('case_api.jev_client', return_value=client):
+                status, result, headers = await request('POST', '/api/cases/synthetic/auxiliary',
+                                                        payload={'allow_external_processing': True})
+                _, repeated, _ = await request('POST', '/api/cases/synthetic/auxiliary',
+                                               payload={'allow_external_processing': True})
+                assert repeated['reused'] is True
+                client.evaluate.assert_called_once()
         assert status == 200 and result['status'] == 'available'
         assert result['affects_risk'] is False and headers[b'cache-control'] == b'no-store'
         prepared = client.evaluate.call_args.kwargs

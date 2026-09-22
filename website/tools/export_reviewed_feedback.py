@@ -96,7 +96,10 @@ def build_reviewed_draft(archive):
         if len({row['label'] for row in rows}) != 1:
             counts['conflicting_labels'] += len(rows)
             continue
-        result.append(min(rows, key=lambda row: row['id']))
+        selected = dict(min(rows, key=lambda row: row['id']))
+        selected['case_reviewer_ids'] = sorted({actor for row in rows for actor in row['case_reviewer_ids']})
+        selected['source_case_ids'] = sorted(row['id'] for row in rows)
+        result.append(selected)
         counts['duplicates'] += len(rows) - 1
     result.sort(key=lambda row: row['id'])
     counts['exported'] = len(result)
