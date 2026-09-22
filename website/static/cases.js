@@ -4,7 +4,7 @@
   const labels = {pending: 'Pending', in_progress: 'In progress', closed: 'Closed'};
   let token = '', epoch = 0, listEpoch = 0, detailEpoch = 0, offset = 0, selected = null;
   let creation = null, inputVersion = 0, total = 0;
-  let jevAvailable = false, jevTurn = 0;
+  let jevAvailable = false, jevTurn = 0, createPending = false;
   const PAGE_SIZE = 25;
   function notice(text = '', error = false) { $('notice').textContent = text; $('notice').dataset.error = String(error); }
   function node(tag, text, className) {
@@ -17,6 +17,21 @@
     const level = known.includes(risk) ? risk : 'unknown';
     return node('span', level.toUpperCase(), 'badge risk-' + level);
   }
+  function resetComposer() {
+    $('create-form').reset();
+    $('subject').value = ''; $('body').value = '';
+    $('subject').disabled = $('body').disabled = false;
+    $('case-file-status').textContent = ''; $('vision-progress').textContent = '';
+  }
+  function openComposer() {
+    if (!token || $('workspace').hidden || $('compose-dialog').open) return;
+    $('compose-dialog').showModal();
+  }
+  function closeComposer({reset = false, force = false} = {}) {
+    if (createPending && !force) return;
+    if (reset) resetComposer();
+    if ($('compose-dialog').open) $('compose-dialog').close();
+  }
   function syncSelection() {
     for (const row of $('case-list').children) {
       if (row.dataset.caseId) row.setAttribute('aria-pressed', String(row.dataset.caseId === selected?.id));
@@ -25,6 +40,7 @@
   function signOut() {
     jevAvailable = false; clearJev();
     window.PhishGuardVision?.cancel();
+    closeComposer({reset: true, force: true});
     $('vision-progress').textContent = '';
     $('case-file-status').textContent = '';
     $('visual-evidence').replaceChildren(); $('visual-evidence').hidden = true;
@@ -33,7 +49,7 @@
     $('case-list').replaceChildren(); $('history').replaceChildren(); $('evidence').replaceChildren();
     for (const id of ['actor', 'source', 'analysis-json', 'case-title', 'case-meta', 'analysis-summary', 'source-note', 'count', 'page']) $(id).textContent = '';
     $('badges').replaceChildren(); $('detail').hidden = true; $('empty-detail').hidden = false;
-    $('create-form').reset(); $('review-form').reset(); $('subject').disabled = $('body').disabled = false; notice();
+    $('review-form').reset(); notice();
   }
   async function api(path, options = {}) {
     const current = epoch;
@@ -72,12 +88,13 @@
       const button = node('button', '', 'case-row'); button.type = 'button';
       button.setAttribute('aria-pressed', String(item.id === selected?.id));
       button.dataset.caseId = item.id;
-      const heading = node('span', '', 'row-heading');
-      heading.append(riskBadge(item.risk), node('span', labels[item.status], 'row-status'));
-      if (item.kind === 'feedback') heading.append(node('span', 'USER FEEDBACK', 'badge feedback-badge'));
-      const footer = node('span', '', 'row-footer');
-      footer.append(node('span', item.verdict || 'Not reviewed'), node('span', new Date(item.created_at).toLocaleString(), 'row-date'));
-      button.append(heading, node('strong', item.title), footer);
+      const risk = node('span', '', 'case-cell risk-cell'); risk.append(riskBadge(item.risk));
+      const title = node('span', '', 'case-cell title-cell');
+      title.append(node('strong', item.title), node('span', item.kind === 'feedback' ? 'User feedback' : 'Case', 'record-kind'));
+      const status = node('span', labels[item.status], 'case-cell status-cell');
+      const verdict = node('span', item.verdict || 'Not reviewed', 'case-cell verdict-cell');
+      const created = node('time', new Date(item.created_at).toLocaleString(), 'case-cell date-cell');
+      button.append(risk, title, status, verdict, created);
       button.addEventListener('click', () => action(button, () => loadCase(item.id)));
       $('case-list').append(button);
     }
@@ -146,6 +163,13 @@
       notice(); await loadList();
     });
   });
+  $('open-compose').addEventListener('click', openComposer);
+  $('close-compose').addEventListener('click', () => closeComposer());
+  $('compose-dialog').addEventListener('cancel', event => {
+    event.preventDefault();
+    if (createPending) { notice('Wait for the current case submission to finish before closing the form.', true); return; }
+    closeComposer();
+  });
   $('logout').addEventListener('click', signOut);
   function clearJev() {
     jevTurn++; $('jev-panel').hidden = !jevAvailable;
@@ -210,7 +234,7 @@
     onError: message => notice(message, true)});
   $('cancel-vision').addEventListener('click', () => { inputVersion++; creation = null; window.PhishGuardVision?.cancel(); $('vision-progress').textContent = ''; });
   $('create-form').addEventListener('submit', event => {
-    event.preventDefault(); const current = epoch;
+    event.preventDefault(); const current = epoch; createPending = true;
     action(event.submitter, async () => {
       if (!creation) {
         const snapshot = inputVersion, file = $('eml').files[0];
@@ -227,10 +251,10 @@
       const submitted = creation;
       const value = await api(submitted.file ? '/visual' : '', {method: 'POST', headers: {'Content-Type': 'application/json', 'Idempotency-Key': submitted.key}, body: submitted.body});
       // Do not clear input edited while this submission was in flight.
-      if (creation === submitted) { creation = null; $('create-form').reset(); $('subject').disabled = $('body').disabled = false; $('case-file-status').textContent = ''; }
+      if (creation === submitted) { creation = null; closeComposer({reset: true, force: true}); }
       $('vision-progress').textContent = '';
       detailEpoch++; renderCase(value); notice('Case saved.'); await loadList();
-    });
+    }).finally(() => { createPending = false; });
   });
   $('review-form').addEventListener('submit', event => {
     event.preventDefault(); if (!selected) return;

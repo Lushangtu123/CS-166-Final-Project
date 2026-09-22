@@ -12,7 +12,7 @@
     const theme = mode === 'auto' ? (media?.matches ? 'light' : 'dark') : mode;
     root.dataset.theme = theme;
     root.dataset.themeMode = mode;
-    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'light' ? '#f3f6f3' : '#101413');
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'light' ? '#fafafa' : '#0a0a0a');
     if (control) control.value = mode;
   }
   apply(mode);

@@ -4,12 +4,14 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 class Element {
-  constructor() { this.value = ''; this.textContent = ''; this.hidden = false; this.disabled = false; this.dataset = {}; this.listeners = {}; this.children = []; this.files = []; this.attrs = {}; this.classList = {add(){},remove(){}}; }
+  constructor() { this.value = ''; this.textContent = ''; this.className = ''; this.hidden = false; this.disabled = false; this.open = false; this.dataset = {}; this.listeners = {}; this.children = []; this.files = []; this.attrs = {}; this.classList = {add(){},remove(){}}; }
   set innerHTML(_) { throw new Error('Untrusted content must never use HTML'); }
   setAttribute(key, value) { this.attrs[key] = value; }
   append(...children) { this.children.push(...children); }
   replaceChildren(...children) { this.children = children; }
   reset() {}
+  showModal() { this.open = true; }
+  close() { this.open = false; this.dispatchEvent({type: 'close'}); }
   addEventListener(name, listener) { this.listeners[name] = listener; }
   dispatchEvent(event) { this.listeners[event.type]?.(event); }
   contains(target) { return target === this; }
@@ -32,6 +34,47 @@ function setup(handler, vision = {cancel() {}, render() {}}) {
   return {el, fire, login, calls};
 }
 const standard = async url => ({status: 200, data: url.endsWith('/me') ? {actor: 'alice'} : url.includes('?') ? {items: [caseValue()], total: 1} : caseValue()});
+
+test('authenticated analysts can open and close the create-case drawer without losing the draft', async () => {
+  const ui = setup(standard); await ui.login();
+  assert.equal(typeof ui.el('open-compose').listeners.click, 'function');
+  assert.equal(typeof ui.el('close-compose').listeners.click, 'function');
+  ui.el('subject').value = 'Keep this draft';
+  await ui.fire('open-compose');
+  assert.equal(ui.el('compose-dialog').open, true);
+  await ui.fire('close-compose');
+  assert.equal(ui.el('compose-dialog').open, false);
+  assert.equal(ui.el('subject').value, 'Keep this draft');
+});
+
+test('queue rows expose the dashboard columns while keeping untrusted titles as text', async () => {
+  const ui = setup(standard); await ui.login();
+  const row = ui.el('case-list').children[0];
+  assert.deepEqual(row.children.map(child => child.className),
+    ['case-cell risk-cell', 'case-cell title-cell', 'case-cell status-cell',
+      'case-cell verdict-cell', 'case-cell date-cell']);
+  assert.equal(row.children[1].children[0].textContent, '<img src=x onerror=alert(1)>');
+});
+
+test('signout closes and clears the create-case drawer', async () => {
+  const ui = setup(standard); await ui.login();
+  ui.el('subject').value = 'Private draft';
+  await ui.fire('open-compose');
+  await ui.fire('logout');
+  assert.equal(ui.el('compose-dialog').open, false);
+  assert.equal(ui.el('subject').value, '');
+});
+
+test('successful creation closes the drawer and keeps the saved case selected', async () => {
+  const ui = setup(standard); await ui.login();
+  await ui.fire('open-compose');
+  ui.el('subject').value = 'Synthetic case';
+  await ui.fire('create-form', 'submit');
+  assert.equal(ui.el('compose-dialog').open, false);
+  assert.equal(ui.el('subject').value, '');
+  assert.equal(ui.el('case-title').textContent, '<img src=x onerror=alert(1)>');
+  assert.equal(ui.el('case-list').children[0].attrs['aria-pressed'], 'true');
+});
 
 test('Jev failure shows actionable safe guidance without retrying or changing risk', async () => {
   for (const [reason, message] of [['provider_authentication', /API key/], ['provider_timeout', /timed out/],

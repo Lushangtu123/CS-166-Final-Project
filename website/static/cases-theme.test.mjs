@@ -31,12 +31,13 @@ test('system preference is resolved before DOM ready', () => {
   const ui = setup({light: true});
   assert.equal(ui.root.dataset.theme, 'light');
   assert.equal(ui.root.dataset.themeMode, 'auto');
-  assert.equal(ui.meta.content, '#f3f6f3');
+  assert.equal(ui.meta.content, '#fafafa');
 });
 
 test('saved homepage preference wins over the system', () => {
   const ui = setup({stored: 'dark', light: true}); ui.ready();
   assert.equal(ui.root.dataset.theme, 'dark');
+  assert.equal(ui.meta.content, '#0a0a0a');
   assert.equal(ui.control.value, 'dark');
   ui.system(false); ui.system(true);
   assert.equal(ui.root.dataset.theme, 'dark');
