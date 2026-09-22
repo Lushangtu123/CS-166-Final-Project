@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import sys
+from unittest.mock import Mock, patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -27,6 +28,28 @@ import app as root_entrypoint  # noqa: E402
 async def main() -> None:
     backend = sys.modules["website.app"]
 
+    async def check_auxiliary_route():
+        # Exercise the real route after importing the root Vercel entrypoint.
+        # No database or TypeSafe request: only these external boundaries are mocked.
+        from case_api import CaseService
+        from jev import JevClient
+        sys.path.insert(0, str(PROJECT_ROOT / 'website' / 'tests'))
+        from test_case_api import request, TOKEN
+        case = {'id': 'synthetic', 'version': 1,
+                'source': {'subject': 'Test', 'auxiliary_text': 'Visit <https://example.com> data:image/png;base64,c2VjcmV0'},
+                'analysis': {'analysis_complete': True}}
+        client = JevClient(key='synthetic', enabled=True)
+        client.evaluate = Mock(return_value={'status': 'available', 'affects_risk': False})
+        service = CaseService(Mock(get=Mock(return_value=case)),
+                              {'smoke': hashlib.sha256(TOKEN.encode()).hexdigest()})
+        with patch.object(backend.app.state, 'case_service', service), patch('case_api.jev_client', return_value=client):
+            status, result, headers = await request('POST', '/api/cases/synthetic/auxiliary',
+                                                    payload={'allow_external_processing': True})
+        assert status == 200 and result['status'] == 'available'
+        assert result['affects_risk'] is False and headers[b'cache-control'] == b'no-store'
+        prepared = client.evaluate.call_args.kwargs
+        assert '<https://example.com>' in prepared['body'] and 'c2VjcmV0' not in prepared['body']
+
     async def upload_eml(message: EmailMessage) -> dict:
         raw = message.as_bytes()
 
@@ -40,6 +63,7 @@ async def main() -> None:
         return json.loads((await backend.analyze_eml_endpoint(request)).body)
 
     async with backend.lifespan(root_entrypoint.app):
+        await check_auxiliary_route()
         health = json.loads((await backend.health()).body)
         config = json.loads((await backend.get_public_config()).body)
         response = await backend.analyze_content_endpoint(backend.ContentRequest(

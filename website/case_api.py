@@ -86,7 +86,7 @@ def jev_client(request):
     return request.app.state.jev_client
 
 
-def make_case_router(analyze):
+def make_case_router(analyze, *, visible_text, mask_inline_data):
     router = APIRouter(prefix='/api/cases')
 
     def identity(request: Request):
@@ -186,7 +186,8 @@ def make_case_router(analyze):
             raise HTTPException(503, 'Auxiliary analysis is not configured')
         case = await call(access[0].get, case_id)
         try:
-            prepared = prepare_case_input(case['source'], case['analysis'])
+            prepared = prepare_case_input(case['source'], case['analysis'],
+                                          visible_text=visible_text, mask_inline_data=mask_inline_data)
         except ValueError:
             return {'case_id': case_id, 'case_version': case['version'], 'status': 'skipped',
                     'reason': 'legacy_source_format', 'affects_risk': False}

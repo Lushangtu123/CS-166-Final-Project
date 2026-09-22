@@ -138,7 +138,7 @@ class JevEvaluationTests(unittest.TestCase):
             {'content_type': 'text/plain', 'content': 'plain <literal>'},
             {'content_type': 'text/html', 'content': '<p>visible</p>'}], 'nested_messages': [{}]}
         app._visible_content_text.return_value = 'visible'
-        helper = Mock(side_effect=lambda source, analysis: source)
+        helper = Mock(side_effect=lambda source, analysis, **helpers: source)
         with patch.dict(sys.modules, {'app': app, 'jev': Mock(prepare_case_input=helper)}):
             prepared = _prepare_input({'_eml_bytes': b'MIME BYTES'}, {'analysis_complete': True})
         self.assertEqual(prepared['body'], 'plain <literal>\nvisible')
@@ -146,6 +146,8 @@ class JevEvaluationTests(unittest.TestCase):
         self.assertEqual(prepared['input_mode'], 'prepared_text')
         self.assertNotIn('MIME BYTES', json.dumps(prepared))
         app._visible_content_text.assert_called_once_with('<p>visible</p>')
+        self.assertIs(helper.call_args.kwargs['visible_text'], app._visible_content_text)
+        self.assertIs(helper.call_args.kwargs['mask_inline_data'], app._mask_inline_data_payloads)
 
     def test_cli_default_is_dry_run_even_with_enabled_environment(self):
         root = Path(__file__).resolve().parents[2]

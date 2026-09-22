@@ -10,6 +10,11 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from jev import JevClient, QUESTIONS, MODEL, prepare_case_input
+from functools import partial
+from app import _visible_content_text, _mask_inline_data_payloads
+
+prepare_case_input = partial(prepare_case_input, visible_text=_visible_content_text,
+                             mask_inline_data=_mask_inline_data_payloads)
 
 
 def answer():

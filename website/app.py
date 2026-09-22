@@ -4267,7 +4267,8 @@ async def _analyze_case(payload, raw):
     return source, analysis, provenance
 
 
-app.include_router(make_case_router(_analyze_case))
+app.include_router(make_case_router(_analyze_case, visible_text=_visible_content_text,
+                                   mask_inline_data=_mask_inline_data_payloads))
 
 
 if __name__ == "__main__":

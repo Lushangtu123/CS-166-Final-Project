@@ -227,15 +227,16 @@ def evaluate_shadow(corpus: Corpus, analyze=None, *, client=None, prepare_input=
 def _prepare_input(row, analysis):
     import app
     from jev import prepare_case_input
+    helpers = {'visible_text': app._visible_content_text, 'mask_inline_data': app._mask_inline_data_payloads}
     if '_eml_bytes' not in row:
-        return prepare_case_input({'subject': row.get('subject', ''), 'body': row.get('body', '')}, analysis)
+        return prepare_case_input({'subject': row.get('subject', ''), 'body': row.get('body', '')}, analysis, **helpers)
     structure = app.analyze_raw_email(row['_eml_bytes'], trusted_authserv_ids=())
     parts = structure.get('content_parts', [])
     body = '\n'.join(app._visible_content_text(part['content']) if part.get('content_type') == 'text/html'
                      else part['content'] for part in parts)
     return prepare_case_input({'subject': structure.get('subject', ''), 'body': body,
                                'input_mode': 'prepared_text',
-                               'text_truncated': bool(structure.get('nested_messages'))}, analysis)
+                               'text_truncated': bool(structure.get('nested_messages'))}, analysis, **helpers)
 
 
 def main(argv=None):

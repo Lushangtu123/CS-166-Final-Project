@@ -81,22 +81,21 @@ def _redact(text):
     return re.sub(r'[\w.!#$%&\x27*+/=?^`{|}~-]+@([\w.-]+)', r'[mailbox]@\1', text)
 
 
-def prepare_case_input(source, analysis):
+def prepare_case_input(source, analysis, *, visible_text, mask_inline_data):
     """Extract saved text without sending HTML, MIME bytes or analyst notes."""
-    from app import _visible_content_text, _mask_inline_data_payloads
     body = source.get('auxiliary_text', source.get('body', ''))
     mode = source.get('input_mode')
     if 'auxiliary_text' not in source and mode == 'raw-email':
         raise ValueError('Legacy case lacks separate MIME text')
     if 'auxiliary_text' not in source and mode not in {'prepared_text', 'image-evidence'}:
-        body = _visible_content_text(body)
+        body = visible_text(body)
     visual = analysis.get('visual_analysis') or {}
     for observation in visual.get('observations', []):
         text = observation.get('ocr_text', '')
         if text:
             body += '\n[Unverified OCR text; may contain spelling errors]\n' + text
-    return {'subject': _mask_inline_data_payloads(source.get('subject', '')),
-            'body': _mask_inline_data_payloads(body),
+    return {'subject': mask_inline_data(source.get('subject', '')),
+            'body': mask_inline_data(body),
             'evidence_incomplete': (analysis.get('analysis_complete') is not True
                                     or bool(source.get('text_truncated'))
                                     or bool(source.get('auxiliary_omitted_nested_messages')))}
