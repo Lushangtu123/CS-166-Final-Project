@@ -268,6 +268,8 @@ class PostDeploySmokeTests(unittest.TestCase):
         self.assertTrue(workflow.is_file(), "post-deploy workflow is missing")
         source = workflow.read_text(encoding="utf-8")
         self.assertIn("deployment_status:", source)
+        self.assertIn("github.event.deployment.environment == 'Production'", source)
+        self.assertNotIn("github.event.deployment_status.environment ==", source)
         self.assertIn("website/tools/post_deploy_smoke.py", source)
         self.assertIn("github.event.deployment.sha", source)
         self.assertIn("EXPECTED_COMMIT_SHA: ${{ github.event.deployment.sha }}", source)
