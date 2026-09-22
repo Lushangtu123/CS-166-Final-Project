@@ -1,7 +1,7 @@
 # CS 166 Final Project — Phishing & Scam Email Detection
 
 > **Course:** CS 166 – Information Security  
-> **GitHub:** https://github.com/Lushangtu123/CS-166-Final-Project
+> **GitHub:** https://github.com/Lushangtu123/Phishing-Scam-Email-Detection
 
 PhishGuard is a FastAPI web application for explainable phishing-email
 screening. It supports three distinct workflows:
