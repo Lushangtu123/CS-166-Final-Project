@@ -5,6 +5,9 @@
   const transitions = {pending: ['pending', 'in_progress'], in_progress: ['in_progress', 'closed'], closed: ['in_progress']};
   const reviewFields = {status: 'review-status', verdict: 'verdict', note: 'note',
     feedback_reason: 'feedback-reason', evidence_basis: 'evidence-basis'};
+  const reviewDrafts = new Map(), reviewSaves = new Map();
+  let reviewBaseline = null;
+  let capacityTurn = 0;
   let token = '', epoch = 0, listEpoch = 0, detailEpoch = 0, offset = 0, selected = null;
   let creation = null, inputVersion = 0, total = 0;
   let jevAvailable = false, jevTurn = 0, createPending = false;
@@ -41,6 +44,51 @@
       if (row.dataset.caseId) row.setAttribute('aria-pressed', String(row.dataset.caseId === selected?.id));
     }
   }
+  function reviewValues() {
+    return Object.fromEntries(Object.entries(reviewFields).map(([key, element]) => [key, $(element).value]));
+  }
+  function reviewDefaults(value) {
+    const result = {status: transitions[value.status][0], verdict: value.verdict || '', note: '', feedback_reason: '', evidence_basis: ''};
+    if (value.kind === 'feedback') for (const event of value.events) {
+      for (const key of ['feedback_reason', 'evidence_basis']) if (event.changes?.[key]) result[key] = event.changes[key].to || '';
+    }
+    return result;
+  }
+  function keepDraft(id, version, values, baseline) {
+    if (Object.keys(reviewFields).some(key => values[key] !== baseline[key])) reviewDrafts.set(id, {version, values});
+    else reviewDrafts.delete(id);
+  }
+  function captureDraft() {
+    if (!selected || !reviewBaseline) return;
+    const values = reviewValues(), version = reviewDrafts.get(selected.id)?.version ?? selected.version;
+    const saving = reviewSaves.get(selected.id);
+    if (saving && Object.keys(reviewFields).some(key => values[key] !== saving.submittedFields[key])) {
+      reviewDrafts.set(selected.id, {version, values});
+    } else keepDraft(selected.id, version, values, reviewBaseline);
+  }
+  function restoreReview(values) {
+    for (const [key, text] of Object.entries(values)) {
+      if (key === 'status' && !transitions[selected.status].includes(text)) {
+        const option = node('option', `${labels[text] || text} (no longer available)`);
+        option.value = text; option.disabled = true; $('review-status').append(option);
+      }
+      $(reviewFields[key]).value = text;
+    }
+  }
+  function renderDraftState() {
+    const draft = reviewDrafts.get(selected?.id), conflict = draft && draft.version !== selected.version;
+    $('draft-status').textContent = conflict
+      ? `This draft started at revision ${draft.version}. Compare the latest evidence and history before using it with revision ${selected.version}.`
+      : draft ? 'Unsaved draft kept in this tab. Save it before leaving.' : '';
+    $('draft-rebase').hidden = !conflict;
+    $('draft-discard').hidden = !draft;
+    $('draft-discard').disabled = reviewSaves.has(selected?.id);
+    $('save-review').disabled = Boolean(conflict || reviewSaves.has(selected?.id));
+  }
+  function hasUnsavedWork() {
+    captureDraft();
+    return reviewDrafts.size > 0 || reviewSaves.size > 0 || createPending || Boolean($('subject').value || $('body').value || $('eml').files.length);
+  }
   function signOut() {
     jevAvailable = false; jevConfig = {status: 'disabled'}; jevStatusTurn++; clearJev();
     $('jev-panel').hidden = true; $('jev-availability').textContent = '';
@@ -50,6 +98,9 @@
     $('case-file-status').textContent = '';
     $('visual-evidence').replaceChildren(); $('visual-evidence').hidden = true;
     token = ''; epoch++; listEpoch++; detailEpoch++; selected = null; creation = null;
+    reviewDrafts.clear(); reviewSaves.clear(); reviewBaseline = null; renderDraftState();
+    capacityTurn++;
+    for (const id of ['case-capacity', 'feedback-capacity', 'capacity-warning']) $(id).textContent = '';
     $('token').value = ''; $('workspace').hidden = true; $('session').hidden = true; $('login-panel').hidden = false;
     $('case-list').replaceChildren(); $('history').replaceChildren(); $('evidence').replaceChildren();
     for (const id of ['actor', 'source', 'analysis-json', 'case-title', 'case-meta', 'analysis-summary', 'source-note', 'count', 'page']) $(id).textContent = '';
@@ -106,8 +157,35 @@
     syncSelection();
     $('page').textContent = `Page ${Math.floor(offset / PAGE_SIZE) + 1}`;
     $('previous').disabled = offset === 0; $('next').disabled = offset + PAGE_SIZE >= data.total;
+    await refreshCapacity();
   }
-  function renderCase(value) {
+  async function refreshCapacity() {
+    const turn = ++capacityTurn, session = epoch;
+    let data = {};
+    try { data = await api('/capacity'); } catch (_) { /* Capacity is advisory; keep the queue usable. */ }
+    if (turn !== capacityTurn || session !== epoch || !token) return;
+    const warnings = [];
+    for (const [key, id, label] of [['cases', 'case-capacity', 'Cases'], ['feedback', 'feedback-capacity', 'User feedback']]) {
+      const value = data?.[key];
+      let text = `${label}: capacity unavailable. Refresh to check again.`, level = 'unknown';
+      if (value?.status === 'disabled') { text = `${label}: not configured.`; level = 'disabled'; }
+      if (value?.status === 'available' && Number.isInteger(value.used) && value.used >= 0 &&
+          (value.limit === null || Number.isInteger(value.limit) && value.limit > 0)) {
+        text = value.limit === null ? `${label}: ${value.used} stored · no application count limit.`
+          : `${label}: ${value.used} / ${value.limit} stored · ${Math.max(0, value.limit - value.used)} remaining.`;
+        level = 'available';
+        if (value.limit !== null && value.used >= value.limit * .8) {
+          level = value.used >= value.limit ? 'full' : 'near';
+          warnings.push(`${key === 'cases' ? 'Case storage' : 'Feedback storage'} ${level === 'full' ? 'is full' : 'is nearing capacity'}.`);
+        }
+      }
+      $(id).textContent = text; $(id).dataset.level = level;
+    }
+    $('capacity-warning').textContent = warnings.length
+      ? warnings.join(' ') + ' Ask the administrator to archive and verify closed records before removing any. Closing a record does not free space.' : '';
+  }
+  function renderCase(value, {capture = true} = {}) {
+    if (capture) captureDraft();
     clearJev();
     selected = value; syncSelection(); $('detail').hidden = false; $('empty-detail').hidden = true;
     renderJevAvailability();
@@ -143,14 +221,10 @@
       : 'Message text is displayed without rendering HTML or loading external content.';
     $('review-status').replaceChildren(...transitions[value.status].map(status => { const option = node('option', labels[status]); option.value = status; return option; }));
     $('review-status').value = transitions[value.status][0];
-    $('verdict').value = value.verdict || ''; $('note').value = '';
     $('feedback-review-fields').hidden = value.kind !== 'feedback';
-    const reviewFields = {feedback_reason: '', evidence_basis: ''};
-    if (value.kind === 'feedback') for (const event of value.events) {
-      for (const key of Object.keys(reviewFields)) if (event.changes?.[key]) reviewFields[key] = event.changes[key].to || '';
-    }
-    $('feedback-reason').value = reviewFields.feedback_reason;
-    $('evidence-basis').value = reviewFields.evidence_basis;
+    reviewBaseline = reviewDefaults(value);
+    restoreReview(reviewDrafts.get(value.id)?.values || reviewBaseline);
+    renderDraftState();
     $('history').replaceChildren(...value.events.map(event => {
       const li = node('li', '');
       li.append(node('strong', `${event.actor} · ${event.action}`), node('p', new Date(event.happened_at).toLocaleString(), 'muted'));
@@ -160,6 +234,7 @@
     }));
   }
   async function loadCase(id) {
+    captureDraft();
     const turn = ++detailEpoch;
     const value = await api('/' + encodeURIComponent(id));
     if (turn !== detailEpoch) return;
@@ -181,7 +256,9 @@
     if (createPending) { notice('Wait for the current case submission to finish before closing the form.', true); return; }
     closeComposer();
   });
-  $('logout').addEventListener('click', signOut);
+  $('logout').addEventListener('click', () => {
+    if (!hasUnsavedWork() || window.confirm('Sign out and discard unsaved drafts in this tab?')) signOut();
+  });
   function renderJevAvailability() {
     $('jev-panel').hidden = !token || !selected || selected.kind === 'feedback';
     const messages = {
@@ -278,6 +355,20 @@
     }
   });
   window.addEventListener('pagehide', signOut);
+  window.addEventListener('beforeunload', event => {
+    if (token && hasUnsavedWork()) { event.preventDefault(); event.returnValue = ''; }
+  });
+  for (const event of ['input', 'change']) $('review-form').addEventListener(event, () => { captureDraft(); renderDraftState(); });
+  $('draft-rebase').addEventListener('click', () => {
+    captureDraft();
+    const draft = reviewDrafts.get(selected?.id);
+    if (draft) draft.version = selected.version;
+    renderDraftState();
+  });
+  $('draft-discard').addEventListener('click', () => {
+    if (!selected || reviewSaves.has(selected.id)) return;
+    reviewDrafts.delete(selected.id); restoreReview(reviewBaseline); renderDraftState();
+  });
   $('create-form').addEventListener('input', () => { creation = null; inputVersion++; window.PhishGuardVision?.cancel(); $('vision-progress').textContent = ''; });
   $('case-ocr-language').addEventListener('change', () => { creation = null; inputVersion++; window.PhishGuardVision?.cancel(); $('vision-progress').textContent = ''; });
   $('eml').addEventListener('change', () => {
@@ -315,37 +406,46 @@
   });
   $('review-form').addEventListener('submit', event => {
     event.preventDefault(); if (!selected) return;
+    captureDraft();
+    if (reviewSaves.has(selected.id)) return;
+    if (reviewDrafts.get(selected.id)?.version !== undefined && reviewDrafts.get(selected.id).version !== selected.version) {
+      renderDraftState(); notice('Compare the latest case history, then confirm your draft against the current revision.', true); return;
+    }
     if (!transitions[selected.status].includes($('review-status').value)) {
       notice('The saved case no longer supports this status. Choose an available status; your edits are still here.', true); return;
     }
-    const id = selected.id, version = selected.version, turn = detailEpoch;
-    const submittedFields = Object.fromEntries(Object.entries(reviewFields).map(([key, element]) => [key, $(element).value]));
+    const id = selected.id, version = selected.version, session = epoch;
+    const submittedFields = reviewValues();
+    const operation = {submittedFields};
     const payload = {expected_version: version, status: $('review-status').value, verdict: $('verdict').value || null, note: $('note').value};
     if (selected.kind === 'feedback') {
       payload.feedback_reason = $('feedback-reason').value;
       payload.evidence_basis = $('evidence-basis').value;
     }
+    reviewSaves.set(id, operation); renderDraftState();
     action(event.submitter, async () => {
       try {
         const value = await api('/' + encodeURIComponent(id), {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
-        if (turn === detailEpoch) {
-          const edits = Object.entries(reviewFields).filter(([key, element]) =>
-            $(element).value !== submittedFields[key]).map(([key, element]) => [key, $(element).value]);
-          renderCase(value);
-          for (const [key, text] of edits) {
-            if (key === 'status' && !transitions[value.status].includes(text)) {
-              const option = node('option', `${labels[text] || text} (no longer available)`);
-              option.value = text; option.disabled = true; $('review-status').append(option);
-            }
-            $(reviewFields[key]).value = text;
-          }
-          notice(edits.length ? 'Review saved. Your newer edits are still unsaved.' : 'Review saved.');
+        captureDraft();
+        if (reviewSaves.get(id) === operation) reviewSaves.delete(id);
+        const draft = reviewDrafts.get(id);
+        if (!draft || draft.version <= version) {
+          const later = Object.fromEntries(Object.entries(draft?.values || submittedFields).filter(([key, text]) => text !== submittedFields[key]));
+          const baseline = reviewDefaults(value);
+          keepDraft(id, value.version, {...baseline, ...later}, baseline);
+        }
+        if (selected?.id === id && selected.version <= value.version) {
+          renderCase(value, {capture: false});
+          notice(reviewDrafts.has(id) ? 'Review saved. Your newer edits are still unsaved.' : 'Review saved.');
         }
         await loadList();
       } catch (error) {
         if (error.status === 409) throw new Error('Another analyst changed this case. Your note is still here. Copy it, reload the case, then review the latest version before saving.');
         throw error;
       }
+    }).finally(() => {
+      if (reviewSaves.get(id) === operation) reviewSaves.delete(id);
+      if (session === epoch) { captureDraft(); renderDraftState(); }
     });
   });
   $('filters').addEventListener('submit', event => { event.preventDefault(); offset = 0; action(event.submitter, loadList); });

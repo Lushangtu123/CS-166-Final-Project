@@ -58,8 +58,16 @@ control tests against its own disposable Redis, using random synthetic namespace
 While a review save is in progress, newer edits to the note or review selections
 remain in the form after the saved revision arrives. The notice identifies them
 as unsaved. The next save uses the new revision. If a draft status is no longer
-allowed, select an available status before saving. Switching/reloading cases or
-leaving the page still requires saving or copying your draft first.
+allowed, select an available status before saving. Leaving the page still
+requires saving your draft first. Review drafts now stay
+in this tab's memory when switching or reloading cases. A draft restored against
+a newer server revision blocks saving until you compare the latest evidence and
+history and choose **I reviewed the latest revision — keep my draft**. Invalid
+status transitions still require choosing a valid status. **Discard draft**
+restores the saved fields. The page asks before leaving with unsaved work;
+browsers may suppress that prompt. Sign-out clears all drafts, and manual
+sign-out asks before discarding them. Drafts are not written to browser storage
+and cannot survive a refresh, tab closure, browser crash or expired session.
 
 Use the homepage **Case login** button (also visible on mobile) to open
 `https://phishguard-email-analyzer.vercel.app/cases` and sign in with your
@@ -169,6 +177,17 @@ encoded case limit. It has no automatic expiry/deletion, mailbox actions, SSO,
 roles, tenant isolation, or guaranteed provider SLA. A full workspace requires an
 administrator-managed archive/export/migration before accepting more cases.
 Provider plan limits can reject writes earlier; failures never claim success.
+
+The workspace displays unfiltered case and feedback counts separately, refreshes
+them with the queue, and warns at 80% of each cloud limit or when full. Counts
+include closed records: closing a case does not free a slot. The authenticated,
+read-only `GET /api/cases/capacity` endpoint returns each store independently;
+an unavailable count is never presented as zero and does not prevent loading
+the queue. SQLite reports the actual count with `limit: null` because it has no
+application count cap; that does not imply unlimited disk space. The display is
+advisory: another writer can consume capacity after it is read. Existing atomic
+write limits remain authoritative. Only an administrator should remove records
+after making and verifying a private archive through the workflow below.
 
 The current free database has no enabled paid encryption-at-rest or backup/SLA
 package. HTTPS protects transport, and application authentication controls case

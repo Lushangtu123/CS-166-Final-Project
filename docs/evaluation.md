@@ -2,6 +2,13 @@
 
 ## Reviewed user feedback draft
 
+Each public report dialog owns its pending request and retry key. Closing or
+replacing a dialog invalidates work still preparing the request; a response from
+an older dialog cannot change a new report. Once a request has been sent,
+closing the dialog cannot undo server retention. Retrying an unchanged report
+in the same dialog reuses the exact payload and key. Keep the dialog open after
+a network error to retry safely; reopening starts a separate report.
+
 The public **Report an issue** flow now has a separate, optional consent for
 private evaluation of retained content or original EML. Only a report with both
 source-retention and evaluation consent, a closed analyst review with structured

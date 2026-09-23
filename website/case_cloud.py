@@ -109,6 +109,13 @@ class UpstashCaseStore:
             raise CaseNotFound('Case not found')
         return self._decode(raw)
 
+    def capacity(self):
+        # Each record occupies exactly three fields: record, summary and retry index.
+        fields = self.execute('HLEN', self.key)
+        if type(fields) is not int or fields < 0 or fields % 3:
+            raise CaseUnavailable('Invalid workspace capacity')
+        return {'used': fields // 3, 'limit': 100}
+
     def existing(self, actor, request_key, input_sha256):
         raw = self.execute('HGET', self.key, 'q:' + self.request_id(actor, request_key))
         if raw is None:

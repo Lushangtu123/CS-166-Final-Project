@@ -21,19 +21,109 @@ const caseValue = () => ({id: 'case-1', title: '<img src=x onerror=alert(1)>', r
   created_by: 'alice', created_at: '2026-09-20T00:00:00Z', source: {subject: 'Synthetic', body: '<script>bad()</script>'},
   analysis: {extra_indicators: ['<iframe src=x>']}, provenance: {}, events: [{actor: 'alice', action: 'created', happened_at: '2026-09-20T00:00:00Z', changes: {}, note: '<svg onload=bad()>'}]});
 function setup(handler, vision = {cancel() {}, render() {}}) {
-  const elements = new Map(), calls = [];
+  const elements = new Map(), calls = [], windowEvents = {};
   const el = id => { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); };
   const source = readFileSync(new URL('./cases.js', import.meta.url), 'utf8');
   class DataTransfer { constructor(){this.files=[];this.items={add:file=>this.files.push(file)};} }
-  const context=vm.createContext({document: {getElementById: el, createElement: () => new Element(), addEventListener() {}}, window: {addEventListener() {}, PhishGuardVision: vision},
+  const window = {addEventListener(name, callback) { windowEvents[name] = callback; }, confirm: () => true, PhishGuardVision: vision};
+  const context=vm.createContext({document: {getElementById: el, createElement: () => new Element(), addEventListener() {}}, window,
     DataTransfer, Event, URLSearchParams, crypto: {randomUUID: () => 'synthetic-uuid'}, fetch: async (url, options) => { calls.push({url, options}); const result = await handler(url, options); return {ok: result.status < 400, status: result.status, json: async () => result.data}; }});
   vm.runInContext(readFileSync(new URL('./file-intake.js',import.meta.url),'utf8'),context);
   vm.runInContext(source,context);
   const fire = async (id, name = 'click') => { el(id).listeners[name]({preventDefault() {}, submitter: el(id + '-submit'), currentTarget: el(id)}); await tick(); };
   const login = async () => { el('token').value = 'synthetic-access-token-at-least-32-characters'; await fire('login-form', 'submit'); };
-  return {el, fire, login, calls};
+  return {el, fire, login, calls, window, windowEvents};
 }
 const standard = async url => ({status: 200, data: url.endsWith('/me') ? {actor: 'alice'} : url.includes('?') ? {items: [caseValue()], total: 1} : caseValue()});
+
+test('capacity shows both unfiltered queues, warns near full and recovers after an unavailable refresh', async () => {
+  let capacity = {cases:{status:'available',used:80,limit:100},feedback:{status:'available',used:100,limit:100}};
+  const ui = setup(async url => url.endsWith('/capacity') ? {status:200,data:capacity} : standard(url));
+  await ui.login();
+  assert.match(ui.el('case-capacity').textContent, /80 \/ 100/);
+  assert.match(ui.el('feedback-capacity').textContent, /100 \/ 100/);
+  assert.match(ui.el('capacity-warning').textContent, /full/i);
+  ui.el('filter-status').value = 'closed'; await ui.fire('filters','submit');
+  assert.match(ui.el('case-capacity').textContent, /80 \/ 100/);
+  capacity = {cases:{status:'unavailable'},feedback:{status:'available',used:5,limit:null}};
+  await ui.fire('refresh');
+  assert.match(ui.el('case-capacity').textContent, /unavailable/i);
+  assert.doesNotMatch(ui.el('case-capacity').textContent, /80|0 \/ 100/);
+  assert.match(ui.el('feedback-capacity').textContent, /5/);
+  assert.doesNotMatch(ui.el('feedback-capacity').textContent, /100|unlimited/i);
+  assert.equal(ui.el('case-list').children.length, 1);
+  capacity = {cases:{status:'available',used:20,limit:100},feedback:{status:'available',used:5,limit:100}};
+  await ui.fire('refresh');
+  assert.match(ui.el('case-capacity').textContent, /20 \/ 100/);
+  assert.equal(ui.el('capacity-warning').textContent, '');
+});
+
+test('late capacity responses cannot restore information after signout', async () => {
+  let release;
+  const ui = setup(async url => url.endsWith('/capacity') ? await new Promise(resolve => { release = resolve; }) : standard(url));
+  await ui.login(); await ui.fire('logout');
+  release?.({status:200,data:{cases:{status:'available',used:80,limit:100}}}); await tick();
+  assert.equal(ui.el('case-capacity').textContent, '');
+  assert.equal(ui.el('workspace').hidden, true);
+});
+
+test('review drafts survive switching and reload without being silently rebased', async () => {
+  let revision = 1;
+  const ui = setup(async (url, options) => options?.method === 'PATCH'
+    ? {status: 200, data: {...caseValue(), version: revision + 1, status: 'in_progress'}}
+    : url.endsWith('/case-1') ? {status: 200, data: {...caseValue(), version: revision}}
+    : url.endsWith('/case-2') ? {status: 200, data: {...caseValue(), id:'case-2'}}
+    : url.includes('?') ? {status:200, data:{items:[caseValue(), {...caseValue(), id:'case-2'}],total:2}}
+    : standard(url));
+  await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
+  ui.el('note').value = 'Keep this review'; ui.el('verdict').value = 'uncertain';
+  ui.el('case-list').children[1].listeners.click(); await tick();
+  ui.el('case-list').children[0].listeners.click(); await tick();
+  assert.equal(ui.el('note').value, 'Keep this review');
+  assert.equal(ui.el('verdict').value, 'uncertain');
+  revision = 2; await ui.fire('reload-case');
+  assert.equal(ui.el('note').value, 'Keep this review');
+  await ui.fire('review-form', 'submit');
+  assert.equal(ui.calls.filter(c => c.options.method === 'PATCH').length, 0);
+  assert.equal(ui.el('draft-rebase').hidden, false);
+  await ui.fire('draft-rebase'); await ui.fire('review-form', 'submit');
+  const sent = JSON.parse(ui.calls.find(c => c.options.method === 'PATCH').options.body);
+  assert.equal(sent.expected_version, 2); assert.equal(sent.note, 'Keep this review');
+  assert.equal(ui.el('note').value, '');
+});
+
+test('drafts warn before leaving, support discard, and are cleared at signout', async () => {
+  const ui = setup(standard); await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
+  ui.el('note').value = 'Private draft';
+  let prevented = false;
+  ui.windowEvents.beforeunload?.({preventDefault(){prevented=true;}});
+  assert.equal(prevented, true);
+  ui.window.confirm = () => false; await ui.fire('logout');
+  assert.equal(ui.el('workspace').hidden, false); assert.equal(ui.el('note').value, 'Private draft');
+  await ui.fire('draft-discard'); assert.equal(ui.el('note').value, '');
+  prevented = false; ui.windowEvents.beforeunload({preventDefault(){prevented=true;}});
+  assert.equal(prevented, false);
+  ui.el('note').value = 'Another private draft'; ui.window.confirm = () => true;
+  await ui.fire('logout'); await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
+  assert.equal(ui.el('note').value, '');
+});
+
+test('a review saved after switching cases does not reappear as an unsaved note', async () => {
+  let release, saved = caseValue();
+  const ui = setup(async (url, options) => options?.method === 'PATCH'
+    ? await new Promise(resolve => { release = resolve; })
+    : url.endsWith('/case-1') ? {status:200,data:saved}
+    : url.endsWith('/case-2') ? {status:200,data:{...caseValue(),id:'case-2'}}
+    : url.includes('?') ? {status:200,data:{items:[saved,{...caseValue(),id:'case-2'}],total:2}} : standard(url));
+  await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
+  ui.el('note').value = 'Submitted note'; await ui.fire('review-form','submit');
+  ui.el('note').value = 'Later unsaved note';
+  ui.el('case-list').children[1].listeners.click(); await tick();
+  saved = {...caseValue(),version:2}; release({status:200,data:saved}); await tick();
+  ui.el('case-list').children[0].listeners.click(); await tick();
+  assert.equal(ui.el('note').value, 'Later unsaved note');
+  assert.equal(ui.el('draft-rebase').hidden, true);
+});
 
 test('saving a review preserves later edits and the next save uses the new revision', async () => {
   let release;
@@ -55,6 +145,42 @@ test('saving a review preserves later edits and the next save uses the new revis
   release({status: 200, data: {...caseValue(), version: 3, status: 'in_progress', verdict: 'uncertain'}}); await tick();
   assert.equal(ui.el('note').value, '');
   assert.equal(ui.el('notice').textContent, 'Review saved.');
+});
+
+test('reverting to the previous status during a pending save remains a newer edit after switching away', async () => {
+  let release, saved = caseValue();
+  const ui = setup(async (url, options) => options?.method === 'PATCH'
+    ? await new Promise(resolve => { release = resolve; })
+    : url.endsWith('/case-1') ? {status:200,data:saved}
+    : url.endsWith('/case-2') ? {status:200,data:{...caseValue(),id:'case-2'}}
+    : url.includes('?') ? {status:200,data:{items:[saved,{...caseValue(),id:'case-2'}],total:2}} : standard(url));
+  await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
+  ui.el('review-status').value = 'in_progress'; await ui.fire('review-form','submit');
+  ui.el('review-status').value = 'pending';
+  ui.el('case-list').children[1].listeners.click(); await tick();
+  saved = {...caseValue(),version:2,status:'in_progress'};
+  release({status:200,data:saved}); await tick();
+  ui.el('case-list').children[0].listeners.click(); await tick();
+  assert.equal(ui.el('review-status').value, 'pending');
+  await ui.fire('review-form','submit');
+  assert.equal(ui.calls.filter(c=>c.options.method==='PATCH').length,1);
+});
+
+test('a completed save stays clean when switching during a slow capacity refresh', async () => {
+  let holdCapacity = false, release, saved = caseValue();
+  const ui = setup(async (url, options) => options?.method === 'PATCH'
+    ? {status:200,data:(saved={...caseValue(),version:2})}
+    : url.endsWith('/capacity') && holdCapacity ? await new Promise(resolve=>{release=resolve;})
+    : url.endsWith('/case-1') ? {status:200,data:saved}
+    : url.endsWith('/case-2') ? {status:200,data:{...caseValue(),id:'case-2'}}
+    : url.includes('?') ? {status:200,data:{items:[saved,{...caseValue(),id:'case-2'}],total:2}} : standard(url));
+  await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
+  ui.el('note').value='Saved note'; holdCapacity=true;
+  await ui.fire('review-form','submit');
+  ui.el('case-list').children[1].listeners.click(); await tick();
+  holdCapacity=false; release({status:200,data:{}}); await tick();
+  ui.el('case-list').children[0].listeners.click(); await tick();
+  assert.equal(ui.el('note').value,''); assert.equal(ui.el('draft-status').textContent,'');
 });
 
 test('authenticated analysts can open and close the create-case drawer without losing the draft', async () => {

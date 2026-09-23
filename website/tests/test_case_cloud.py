@@ -11,6 +11,17 @@ from case_store import CaseConflict, CaseInvalid, CaseNotFound
 
 
 class CloudCaseTests(unittest.TestCase):
+    def test_capacity_reads_only_field_count_and_rejects_invalid_counts(self):
+        store = self.store()
+        for count, used in [(0, 0), (240, 80), (300, 100)]:
+            store.execute = Mock(return_value=count)
+            self.assertEqual(store.capacity(), {'used': used, 'limit': 100})
+            store.execute.assert_called_once_with('HLEN', store.key)
+        for count in (True, -3, 2, '300', None):
+            store.execute = Mock(return_value=count)
+            with self.assertRaises(CaseUnavailable):
+                store.capacity()
+
     def test_feedback_display_title_does_not_modify_source(self):
         store = self.store()
         store.execute = Mock(side_effect=lambda *cmd: ['ok', cmd[7]])

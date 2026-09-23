@@ -2,22 +2,21 @@
 'use strict';
 window.PhishGuardFeedback = (() => {
   const contexts = {sender: null, content: null};
-  let active = null, version = 0, pending = false, submitted = false, retry = null;
+  let active = null;
   const $ = id => document.getElementById(id);
 
   function clear(kind) {
     contexts[kind] = null;
-    version++;
-    if (active === kind) {
+    if (active?.kind === kind) {
       active = null;
       $('feedback-dialog')?.close();
     }
   }
   function set(kind, context) { clear(kind); contexts[kind] = context; }
-  function close() { active = null; version++; retry = null; $('feedback-dialog').close(); }
+  function close() { active = null; $('feedback-dialog').close(); }
   function open(kind) {
     if (!contexts[kind]) return;
-    active = kind; version++; pending = false; submitted = false; retry = null;
+    active = {kind, context: contexts[kind], pending: false, submitted: false, retry: null, revision: 0};
     $('feedback-form').reset();
     $('feedback-evaluation-consent-row').hidden = !['content', 'eml'].includes(contexts[kind].inputMode);
     $('feedback-evaluation-consent').checked = false;
@@ -29,6 +28,7 @@ window.PhishGuardFeedback = (() => {
     $('feedback-fields').hidden = false;
     $('feedback-cancel').textContent = 'Cancel';
     $('feedback-submit').hidden = false;
+    $('feedback-submit').disabled = false;
     $('feedback-dialog').showModal();
     $('feedback-type').focus();
   }
@@ -56,55 +56,62 @@ window.PhishGuardFeedback = (() => {
   }
   async function submit(event) {
     event.preventDefault();
-    if (pending || submitted || !active || !contexts[active]) return;
-    const turn = version, context = contexts[active], button = $('feedback-submit');
-    pending = true; button.disabled = true;
+    if (!active || active.pending || active.submitted) return;
+    const session = active, revision = session.revision, context = session.context, button = $('feedback-submit');
+    const current = () => active === session && session.revision === revision;
+    session.pending = true; button.disabled = true;
     $('feedback-error').classList.add('hidden');
     try {
-      if (!retry) {
+      let submission = session.retry;
+      if (!submission) {
         const include = $('feedback-consent').checked;
         const payload = {
           report_type: $('feedback-type').value, note: $('feedback-note').value.trim(),
           include_source: include,
           evaluation_consent: include && ['content', 'eml'].includes(context.inputMode) && $('feedback-evaluation-consent').checked,
           input_mode: context.inputMode,
-          input_fingerprint: await fingerprint(context.fingerprintInput),
-          analysis: context.analysis, source: include ? consentedSource(context) : null,
+          analysis: context.analysis,
         };
-        retry = {key: crypto.randomUUID(), body: JSON.stringify(payload)};
+        payload.input_fingerprint = await fingerprint(context.fingerprintInput);
+        // Closing, replacing or editing this dialog invalidates unsent work.
+        if (!current()) return;
+        payload.source = include ? consentedSource(context) : null;
+        submission = {key: crypto.randomUUID(), body: JSON.stringify(payload)};
+        session.retry = submission;
       }
       const response = await fetch('/api/feedback', {method: 'POST', cache: 'no-store',
         credentials: 'same-origin',
-        headers: {'Content-Type': 'application/json', 'Idempotency-Key': retry.key},
-        body: retry.body});
+        headers: {'Content-Type': 'application/json', 'Idempotency-Key': submission.key},
+        body: submission.body});
       let result;
       try { result = await response.json(); } catch (_error) { throw new Error('The server returned an unreadable response.'); }
       if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : 'Report could not be saved.');
-      if (turn !== version) return;
+      if (!current()) return;
       $('feedback-success').textContent = 'Report received. Reference: ' + result.id;
       $('feedback-success').classList.remove('hidden');
       $('feedback-fields').hidden = true;
       $('feedback-cancel').textContent = 'Close';
       button.hidden = true;
-      submitted = true;
-      retry = null;
+      session.submitted = true;
+      session.retry = null;
     } catch (error) {
-      if (turn === version) {
+      if (current()) {
         $('feedback-error').textContent = error.message || 'Report could not be saved. Try again.';
         $('feedback-error').classList.remove('hidden');
       }
     } finally {
-      pending = false; button.disabled = false;
+      session.pending = false;
+      if (active === session) button.disabled = false;
     }
   }
   function setup() {
     $('feedback-form').addEventListener('submit', submit);
     $('feedback-cancel').addEventListener('click', close);
     $('feedback-close').addEventListener('click', close);
-    $('feedback-dialog').addEventListener('close', () => { active = null; version++; retry = null; });
-    for (const id of ['feedback-type', 'feedback-note', 'feedback-consent', 'feedback-evaluation-consent']) {
-      $('feedback-form').addEventListener(id === 'feedback-note' ? 'input' : 'change', () => { retry = null; });
-    }
+    $('feedback-dialog').addEventListener('close', () => { if (!$('feedback-dialog').open) active = null; });
+    for (const event of ['input', 'change']) $('feedback-form').addEventListener(event, () => {
+      if (active) { active.retry = null; active.revision++; }
+    });
     $('feedback-consent').addEventListener('change', () => {
       const allowed = $('feedback-consent').checked && !($('feedback-evaluation-consent-row').hidden);
       $('feedback-evaluation-consent').disabled = !allowed;

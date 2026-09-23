@@ -87,6 +87,24 @@ class CaseAPITests(unittest.TestCase):
         return self.call('POST', '/api/cases', key='00000000-0000-4000-8000-000000000001',
                          payload={'subject': 'Review', 'body': '<a href="https://paypa1.example">Review</a>'})
 
+    def test_capacity_is_private_unfiltered_and_each_store_can_fail_independently(self):
+        from case_cloud import CaseUnavailable
+        service = app.app.state.case_service
+        self.assertEqual(self.call('GET', '/api/cases/capacity', token=None)[0], 401)
+        self.create()
+        status, result, headers = self.call('GET', '/api/cases/capacity?status=closed')
+        self.assertEqual(status, 200)
+        self.assertEqual(result, {'cases': {'status': 'available', 'used': 1, 'limit': None},
+                                  'feedback': {'status': 'available', 'used': 0, 'limit': None}})
+        self.assertEqual(headers[b'cache-control'], b'no-store')
+        with patch.object(service.store, 'capacity', side_effect=CaseUnavailable('private-store-url')):
+            status, result, _ = self.call('GET', '/api/cases/capacity')
+        self.assertEqual(status, 200)
+        self.assertEqual(result['cases'], {'status': 'unavailable'})
+        self.assertEqual(result['feedback']['used'], 0)
+        self.assertNotIn('private-store-url', str(result))
+        self.assertEqual(self.call('GET', '/api/cases')[0], 200)
+
     def test_auxiliary_auth_consent_disabled_and_unchanged_case(self):
         from jev import JevClient
         from unittest.mock import Mock

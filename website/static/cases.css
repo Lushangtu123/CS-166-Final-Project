@@ -72,6 +72,14 @@ h1 { margin: 0; font-size: 30px; line-height: 1.15; font-weight: 650; letter-spa
 h2 { margin: 0; font-size: 18px; line-height: 1.35; font-weight: 620; letter-spacing: -.35px; }
 h3 { margin: 0; font-size: 14px; line-height: 1.4; font-weight: 620; letter-spacing: -.15px; }
 .muted { color: var(--muted); font-size: 12px; }
+.workspace-capacity { margin: 0 0 20px; padding: 12px 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.workspace-capacity > div { display: flex; flex-wrap: wrap; gap: 8px 28px; }
+.workspace-capacity p { margin: 0; font-size: 12px; }
+.workspace-capacity [data-level="near"], #capacity-warning { color: var(--warning); }
+.workspace-capacity [data-level="full"] { color: var(--danger); }
+#capacity-warning:not(:empty) { margin-top: 8px; }
+.draft-controls p { color: var(--warning); }
+.draft-controls button { margin: 0 6px 8px 0; max-width: 100%; white-space: normal; }
 .eyebrow, .session-label {
   margin: 0;
   color: var(--faint);

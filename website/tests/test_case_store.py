@@ -34,6 +34,13 @@ class CaseStoreTests(unittest.TestCase):
         self.assertEqual(loaded['events'][0]['action'], 'created')
         self.assertEqual(loaded['source']['body'], '<script>private</script>')
 
+    def test_capacity_counts_all_records_without_inventing_a_sqlite_limit(self):
+        self.assertEqual(self.store.capacity(), {'used': 0, 'limit': None})
+        case = self.create()
+        self.store.update(case['id'], actor='alice', expected_version=1,
+                          status='in_progress', verdict=None, note='Started')
+        self.assertEqual(self.store.capacity(), {'used': 1, 'limit': None})
+
     def test_idempotent_create_and_conflicting_reuse(self):
         first = self.create()
         self.assertEqual(first['id'], self.create()['id'])

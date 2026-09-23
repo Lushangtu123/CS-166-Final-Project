@@ -4,7 +4,7 @@ import {webcrypto} from 'node:crypto';
 import test from 'node:test';
 import vm from 'node:vm';
 
-function setup(handler) {
+function setup(handler, cryptoOverride = {}) {
   const items = new Map(), requests = [];
   const element = id => {
     if (!items.has(id)) {
@@ -21,7 +21,8 @@ function setup(handler) {
   };
   const document = {getElementById: element, addEventListener(_name, callback) { this.ready = callback; }};
   const window = {};
-  const crypto = {subtle: webcrypto.subtle, randomUUID: () => '00000000-0000-4000-8000-000000000001'};
+  let sequence = 0;
+  const crypto = {subtle: webcrypto.subtle, randomUUID: () => `00000000-0000-4000-8000-${String(++sequence).padStart(12, '0')}`, ...cryptoOverride};
   const context = vm.createContext({document, window, crypto, TextEncoder, Uint8Array,
     fetch: async (url, options) => { requests.push({url, options}); return handler(url, options); }});
   vm.runInContext(readFileSync(new URL('./feedback.js', import.meta.url), 'utf8'), context);
@@ -33,6 +34,59 @@ function setup(handler) {
 const ok = async () => ({ok:true, json: async () => ({id:'report-1'})});
 const context = buildSource => ({inputMode:'content', fingerprintInput:'Private email text',
   analysis:{risk_level:'high', risk_score:78, evidence_codes:['high']}, buildSource});
+
+test('closing during hashing prevents the old report from being sent or reused by a new dialog', async () => {
+  let finishHash, reads = 0, hashes = 0;
+  const ui = setup(ok, {subtle: {digest: (...args) => ++hashes === 1
+    ? new Promise(resolve => { finishHash = resolve; }) : webcrypto.subtle.digest(...args)}});
+  ui.feedback.set('content', context(() => { reads++; return {body:'Message A'}; }));
+  ui.feedback.open('content'); ui.element('feedback-consent').checked = true;
+  ui.element('feedback-note').value = 'Report A';
+  const old = ui.submit();
+  ui.element('feedback-cancel').listeners.click();
+  ui.feedback.set('content', context(() => ({body:'Message B'})));
+  ui.feedback.open('content'); ui.element('feedback-consent').checked = false;
+  ui.element('feedback-note').value = 'Report B';
+  finishHash(new Uint8Array(32).buffer); await old;
+  assert.equal(ui.requests.length, 0); assert.equal(reads, 0);
+  await ui.submit();
+  const sent = JSON.parse(ui.requests[0].options.body);
+  assert.equal(sent.note, 'Report B'); assert.equal(sent.source, null);
+});
+
+test('an old response cannot release a new submission or replace its retry', async () => {
+  const releases = [];
+  const ui = setup(() => new Promise(resolve => releases.push(resolve)));
+  ui.feedback.set('content', context(() => ({body:'A'}))); ui.feedback.open('content');
+  const first = ui.submit();
+  while (releases.length < 1) await new Promise(setImmediate);
+  ui.element('feedback-cancel').listeners.click();
+  ui.feedback.open('content'); ui.element('feedback-note').value = 'New report';
+  const second = ui.submit();
+  while (releases.length < 2) await new Promise(setImmediate);
+  releases[0]({ok:true, json:async()=>({id:'old'})}); await first;
+  assert.equal(ui.element('feedback-submit').disabled, true);
+  await ui.submit(); assert.equal(ui.requests.length, 2);
+  releases[1]({ok:false, json:async()=>({detail:'Storage unavailable'})}); await second;
+  const retry = ui.submit();
+  while (releases.length < 3) await new Promise(setImmediate);
+  assert.equal(ui.requests[1].options.body, ui.requests[2].options.body);
+  assert.equal(ui.requests[1].options.headers['Idempotency-Key'], ui.requests[2].options.headers['Idempotency-Key']);
+  assert.notEqual(ui.requests[0].options.headers['Idempotency-Key'], ui.requests[1].options.headers['Idempotency-Key']);
+  releases[2]({ok:true,json:async()=>({id:'new'})}); await retry;
+  assert.match(ui.element('feedback-success').textContent, /new/);
+});
+
+test('clearing another analyzer does not invalidate an active report', async () => {
+  let release;
+  const ui = setup(() => new Promise(resolve => { release = resolve; }));
+  ui.feedback.set('content', context(() => ({body:'A'}))); ui.feedback.open('content');
+  const pending = ui.submit();
+  while (!release) await new Promise(setImmediate);
+  ui.feedback.clear('sender');
+  release({ok:true,json:async()=>({id:'accepted'})}); await pending;
+  assert.match(ui.element('feedback-success').textContent, /accepted/);
+});
 
 test('default report stores only a fingerprint and bounded analysis', async () => {
   let reads = 0;

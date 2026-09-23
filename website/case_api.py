@@ -212,6 +212,20 @@ def make_case_router(analyze, *, visible_text, mask_inline_data):
         items.sort(key=lambda item: (item['created_at'], item['id']), reverse=True)
         return {'items': items[offset:offset + limit], 'total': total}
 
+    @router.get('/capacity')
+    async def capacity(request: Request, access=Depends(identity)):
+        service = request.app.state.case_service
+        result = {}
+        for kind, store in (('cases', service.store), ('feedback', service.feedback_store)):
+            if store is None:
+                result[kind] = {'status': 'disabled'}
+                continue
+            try:
+                result[kind] = {'status': 'available', **await run_in_threadpool(store.capacity)}
+            except (CaseUnavailable, sqlite3.Error, OSError):
+                result[kind] = {'status': 'unavailable'}
+        return result
+
     async def create(request, access, payload, raw):
         key = request.headers.get('idempotency-key', '')
         try:

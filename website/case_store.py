@@ -118,6 +118,11 @@ class CaseStore:
         with self.connection() as db:
             return self._get(db, case_id)
 
+    def capacity(self):
+        with self.connection() as db:
+            used = db.execute('SELECT count(*) FROM cases').fetchone()[0]
+        return {'used': used, 'limit': None}
+
     def existing(self, actor, request_key, input_sha256):
         with self.connection() as db:
             return self._existing(db, actor, request_key, input_sha256)
