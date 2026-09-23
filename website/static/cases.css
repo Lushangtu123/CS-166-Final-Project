@@ -426,9 +426,11 @@ pre {
 .review-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 14px; }
 .review-actions .muted { font-size: 10px; }
 #history { margin: 16px 0 0 6px; padding: 0; list-style: none; }
-#history li { position: relative; padding: 0 0 20px 18px; border-left: 1px solid var(--line-strong); color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
-#history li:last-child { padding-bottom: 0; border-left-color: transparent; }
-#history li::before { content: ""; position: absolute; top: 5px; left: -4px; width: 7px; height: 7px; border-radius: 50%; background: var(--signal); box-shadow: 0 0 0 3px var(--surface); }
+#history > li { position: relative; padding: 0 0 20px 18px; border-left: 1px solid var(--line-strong); color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+#history > li:last-child { padding-bottom: 0; border-left-color: transparent; }
+#history > li::before { content: ""; position: absolute; top: 5px; left: -4px; width: 7px; height: 7px; border-radius: 50%; background: var(--signal); box-shadow: 0 0 0 3px var(--surface); }
+#history ul { margin: 8px 0; padding-left: 18px; }
+#history ul li { margin: 4px 0; }
 #history strong { color: var(--text); font-size: 11px; }
 #history p { margin: 4px 0; white-space: pre-wrap; }
 #history .muted { color: var(--faint); font: 9px/1.6 var(--mono); }
@@ -632,3 +634,5 @@ input::file-selector-button { margin-right: 10px; padding: 7px 10px; border: 1px
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
 }
+
+.jev-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}

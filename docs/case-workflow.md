@@ -40,12 +40,35 @@ If releasing the claim fails, the request remains protected against duplicates.
 Older cached failures keep their original expiry; they are not migrated or erased.
 
 Receipts hold hashes, claim IDs, timestamps and structured model results, never
-email text, tokens or raw provider responses. They are not analyst review history
-and are excluded from case archive/restore/purge tools. Redis makes receipts
+email text, tokens or raw provider responses. These temporary receipts are excluded
+from case archive/restore/purge tools. Redis makes receipts
 unusable after 24 hours, removes expired entries on the next successful reservation,
 and expires the whole hash 48 hours after its last reservation. In local SQLite,
 expired receipts are unusable immediately and physically removed on the next
 successful reservation; ordinary host backup/retention policies still apply.
+
+**View existing result** uses authenticated `GET /api/cases/{id}/auxiliary` to
+read the current analyst's receipt for the current input, model and questions.
+It works even when new Jev calls are disabled or quota is exhausted. It never
+contacts TypeSafe, reserves an attempt, cleans up receipts or extends their expiry.
+Missing/expired and pending results are shown explicitly; retrieval does not
+automatically request a replacement. Provider failure receipts remain failures.
+
+After viewing a successful result, **Save opinion to history** asks for explicit
+confirmation before `POST /api/cases/{id}/auxiliary/save`. The server retrieves
+the matching unexpired receipt; the browser submits only its identifier, expected
+case revision and confirmation, never probabilities or model content. The history
+records the saving analyst, save time, original request time, model, question and
+minimized-input hashes, bounded probabilities and evidence-coverage flag. It copies
+no message text or provider response. Everyone with workspace access can read the
+saved opinion. It follows the case's retention policy and is included in existing
+archive/restore/purge operations, even after the temporary receipt expires.
+Saving increments the case revision with the same atomic conflict checks as a
+review; risk, status, verdict and original detection evidence are unchanged.
+Only open formal cases support a new opinion entry; reopen closed cases first.
+The 200-event and 750 KB limits still apply. Retrying the same analyst/receipt
+returns the existing record without another event, including after receipt expiry.
+A concurrent writer may cause a conflict: reload the case before retrying.
 
 `/health` and `/api/config` expose only `jev_enabled` and `jev_configured` flags.
 Production smoke uses `--require-jev` to detect missing deployment configuration
@@ -68,6 +91,17 @@ restores the saved fields. The page asks before leaving with unsaved work;
 browsers may suppress that prompt. Sign-out clears all drafts, and manual
 sign-out asks before discarding them. Drafts are not written to browser storage
 and cannot survive a refresh, tab closure, browser crash or expired session.
+Late detail responses cannot replace a newer revision already observed in the tab,
+including a review or opinion saved while a detail read was still in flight.
+
+The combined queue reports source availability separately. If one namespace cannot
+be read, it shows records and counts only from healthy sources and displays a
+partial-results warning. It returns 503 if no requested source can be read.
+Refreshing retries both sources; the warning disappears on recovery. Opening,
+reloading and reviewing a row specifies `kind=case` or `kind=feedback`, so an
+unrelated namespace failure cannot block that record. Legacy API callers omitting
+kind retain the original lookup order. Pagination and total counts during an
+outage refer only to the available sources and may change when storage recovers.
 
 Use the homepage **Case login** button (also visible on mobile) to open
 `https://phishguard-email-analyzer.vercel.app/cases` and sign in with your

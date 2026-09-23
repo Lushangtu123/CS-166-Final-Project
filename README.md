@@ -1020,8 +1020,9 @@ must provide their own extraction or use the existing text/MIME-only routes.
 ### Experimental Jev auxiliary opinions
 
 The authenticated case workspace can request a separate TypeSafe Jev text opinion.
-It is **disabled by default** and never changes the saved risk, verdict, evidence,
-or case history. Enabling requires `PHISHGUARD_JEV_ENABLED=true` and a server-side
+It is **disabled by default** and never changes the saved risk, verdict or detection
+evidence. An analyst can explicitly save a structured opinion to case history.
+Enabling requires `PHISHGUARD_JEV_ENABLED=true` and a server-side
 `TYPESAFE_API_KEY`; each request also requires the analyst's explicit permission
 to send the message text to TypeSafe. The public analyzer never calls Jev.
 
@@ -1031,6 +1032,11 @@ The panel displays disabled, invalid-configuration and storage-control states;
 All web instances share the workspace/environment budget through existing
 Upstash storage (or SQLite locally). Identical requests by the same analyst reuse
 a structured receipt for 24 hours, including failures and uncertain outcomes.
+**View existing result** reads the analyst's current cached result without a new
+provider call or quota use, even while Jev is disabled. **Save opinion to history**
+requires confirmation and retains a successful result under the case retention
+policy, with its model, input digest and question digest. Saved opinions are
+visible to workspace analysts and remain after the temporary cache expires.
 Confirmed local worker-capacity rejections make no provider call and release
 their reservation for a later manual retry.
 No email text is added to these receipts. See [operations](docs/case-workflow.md#jev-availability-and-request-controls)

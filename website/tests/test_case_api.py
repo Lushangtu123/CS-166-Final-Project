@@ -105,6 +105,33 @@ class CaseAPITests(unittest.TestCase):
         self.assertNotIn('private-store-url', str(result))
         self.assertEqual(self.call('GET', '/api/cases')[0], 200)
 
+    def test_partial_list_keeps_healthy_records_and_explicit_kind_isolates_detail_and_review(self):
+        from case_cloud import CaseUnavailable
+        service = app.app.state.case_service
+        self.create()
+        feedback = service.feedback_store.create(actor='user_feedback', request_key='synthetic',
+            input_sha256='a' * 64, source={'subject':'Synthetic','body':''},
+            analysis={'risk_level':'low'}, provenance={'record_kind':'user_feedback'})
+        with patch.object(service.store, 'list', side_effect=CaseUnavailable('secret endpoint')):
+            status, result, _ = self.call('GET', '/api/cases')
+            self.assertEqual(status, 200)
+            self.assertTrue(result['partial'])
+            self.assertEqual(result['total'], 1)
+            self.assertEqual(result['sources'], {'case':'unavailable','feedback':'available'})
+            self.assertEqual(result['items'][0]['id'], feedback['id'])
+            self.assertNotIn('secret endpoint', str(result))
+            self.assertEqual(self.call('GET', '/api/cases?kind=case')[0], 503)
+            with patch.object(service.feedback_store, 'list', side_effect=CaseUnavailable('offline')):
+                self.assertEqual(self.call('GET', '/api/cases')[0], 503)
+        path = '/api/cases/' + feedback['id'] + '?kind=feedback'
+        with patch.object(service.store, 'get', side_effect=CaseUnavailable('offline')) as other:
+            self.assertEqual(self.call('GET', path)[0], 200)
+            self.assertEqual(self.call('PATCH', path, payload={'expected_version':1,
+                'status':'in_progress','note':'Checking source'})[0], 200)
+            other.assert_not_called()
+        self.assertEqual(self.call('GET', path, token=None)[0], 401)
+        self.assertEqual(self.call('GET', path.replace('feedback','invalid'))[0], 422)
+
     def test_auxiliary_auth_consent_disabled_and_unchanged_case(self):
         from jev import JevClient
         from unittest.mock import Mock
@@ -333,7 +360,9 @@ class CaseAPITests(unittest.TestCase):
         self.assertEqual(changed['events'][-1]['actor'], 'bob')
         with patch.object(app.app.state.case_service.store, 'list', side_effect=CaseUnavailable('secret token')):
             status, body, headers = self.call('GET', '/api/cases')
-            self.assertEqual(status, 503)
+            self.assertEqual(status, 200)
+            self.assertTrue(body['partial'])
+            self.assertEqual(body['sources']['case'], 'unavailable')
             self.assertNotIn('secret token', str(body))
             self.assertEqual(headers[b'cache-control'], b'no-store')
 

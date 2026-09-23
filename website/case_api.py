@@ -1,6 +1,6 @@
 """Authenticated case APIs. All analysts belong to one shared workspace."""
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timezone
 import hashlib
 import hmac
 import json
@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -17,8 +18,9 @@ from starlette.concurrency import run_in_threadpool
 from case_store import CaseStore, CaseConflict, CaseInvalid, CaseNotFound, RISKS, STATUSES
 from case_cloud import UpstashCaseStore, CaseUnavailable, feedback_workspace_name
 from visual_evidence import VisualRequest
-from jev import JevClient, prepare_case_input, configuration as jev_configuration
-from jev_control import JevControl, request_identity
+from jev import JevClient, MODEL, QUESTIONS_SHA256, input_state, _encoded, prepare_case_input, configuration as jev_configuration
+from jev_control import JevControl, DAY, request_identity, receipt_identity
+from case_opinions import saved_opinion
 
 
 @dataclass
@@ -94,6 +96,13 @@ class AuxiliaryConsent(BaseModel):
     allow_external_processing: bool = Field(strict=True)
 
 
+class AuxiliarySave(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    expected_version: int = Field(ge=1, strict=True)
+    receipt_id: str = Field(pattern=r'^[0-9a-f]{64}$')
+    confirm_save: bool = Field(strict=True)
+
+
 def jev_client(request):
     # Web requests must reserve the shared budget before evaluate(). CLI keeps its cap.
     return JevClient.from_env(os.environ, max_calls=None)
@@ -154,12 +163,12 @@ def make_case_router(analyze, *, visible_text, mask_inline_data):
         record['kind'] = kind
         return record
 
-    async def find_record(service, case_id):
-        for store, kind in ((service.store, 'case'), (service.feedback_store, 'feedback')):
-            if store is None:
+    async def find_record(service, case_id, kind=None):
+        for store, record_kind in ((service.store, 'case'), (service.feedback_store, 'feedback')):
+            if store is None or kind is not None and kind != record_kind:
                 continue
             try:
-                return store, with_kind(await call(store.get, case_id), kind)
+                return store, with_kind(await call(store.get, case_id), record_kind)
             except HTTPException as exc:
                 if exc.status_code != 404:
                     raise
@@ -195,22 +204,39 @@ def make_case_router(analyze, *, visible_text, mask_inline_data):
         items = []
         total = 0
         needed = offset + limit
+        sources = {}
         for record_kind, store in stores:
-            if store is None or kind not in {'all', record_kind}:
+            if kind not in {'all', record_kind}:
+                continue
+            if store is None:
+                sources[record_kind] = 'disabled'
                 continue
             store_offset = 0
-            while True:
-                page = await call(store.list, status=status, risk=risk,
-                                  limit=min(100, needed - store_offset), offset=store_offset,
-                                  created_from=created_from.isoformat() if created_from else None,
-                                  created_to=created_to.isoformat() if created_to else None)
-                items.extend(with_kind(item, record_kind) for item in page['items'])
-                store_offset += len(page['items'])
-                if store_offset >= needed or store_offset >= page['total'] or not page['items']:
-                    total += page['total']
-                    break
+            store_items = []
+            try:
+                while True:
+                    page = await call(store.list, status=status, risk=risk,
+                                      limit=min(100, needed - store_offset), offset=store_offset,
+                                      created_from=created_from.isoformat() if created_from else None,
+                                      created_to=created_to.isoformat() if created_to else None)
+                    store_items.extend(with_kind(item, record_kind) for item in page['items'])
+                    store_offset += len(page['items'])
+                    if store_offset >= needed or store_offset >= page['total'] or not page['items']:
+                        break
+            except HTTPException as exc:
+                if exc.status_code != 503:
+                    raise
+                sources[record_kind] = 'unavailable'
+                continue
+            sources[record_kind] = 'available'
+            items.extend(store_items)
+            total += page['total']
+        partial = 'unavailable' in sources.values()
+        if partial and 'available' not in sources.values():
+            raise HTTPException(503, 'The requested queue is unavailable. Refresh to try again.')
         items.sort(key=lambda item: (item['created_at'], item['id']), reverse=True)
-        return {'items': items[offset:offset + limit], 'total': total}
+        return {'items': items[offset:offset + limit], 'total': total,
+                'partial': partial, 'sources': sources}
 
     @router.get('/capacity')
     async def capacity(request: Request, access=Depends(identity)):
@@ -264,8 +290,9 @@ def make_case_router(analyze, *, visible_text, mask_inline_data):
         return await create(request, access, payload, None)
 
     @router.get('/{case_id}')
-    async def get(case_id: str, request: Request, access=Depends(identity)):
-        _, record = await find_record(request.app.state.case_service, case_id)
+    async def get(case_id: str, request: Request, kind: Literal['case', 'feedback'] | None = None,
+                  access=Depends(identity)):
+        _, record = await find_record(request.app.state.case_service, case_id, kind)
         return record
 
     @router.post('/{case_id}/auxiliary')
@@ -296,6 +323,8 @@ def make_case_router(analyze, *, visible_text, mask_inline_data):
         reservation = await call(control.reserve, request_id, limit)
         quota = {key: reservation[key] for key in ('used', 'daily_limit', 'reset_at')}
         receipt = {'quota': quota, 'receipt_expires_at': reservation.get('expires_at')}
+        if reservation.get('claim'):
+            receipt['receipt_id'] = receipt_identity(request_id, reservation['claim'])
         if reservation['status'] == 'cached':
             return {**reservation['result'], **base, **receipt, 'reused': True}
         if reservation['status'] != 'reserved':
@@ -309,9 +338,61 @@ def make_case_router(analyze, *, visible_text, mask_inline_data):
         # Transient duplicate-control receipt only; no case mutation or automatic verdict.
         return {**result, **base, **receipt, 'reused': False}
 
+    def prepared_identity(case, actor):
+        prepared = prepare_case_input(case['source'], case['analysis'],
+            visible_text=visible_text, mask_inline_data=mask_inline_data)
+        return prepared, request_identity(actor, case['id'], prepared)
+
+    @router.get('/{case_id}/auxiliary')
+    async def read_auxiliary(case_id: str, request: Request, access=Depends(identity)):
+        service = request.app.state.case_service
+        _, case = await find_record(service, case_id, 'case')
+        base = {'case_id': case_id, 'case_version': case['version'], 'affects_risk': False}
+        try:
+            _, request_id = prepared_identity(case, access[1])
+        except ValueError:
+            return {**base, 'status': 'skipped', 'reason': 'no_cached_opinion'}
+        control = await call(jev_control, service)
+        receipt = await call(control.lookup, request_id)
+        if receipt['status'] != 'cached':
+            return {**base, 'status': 'skipped', 'reason': 'request_pending'
+                    if receipt['status'] == 'pending' else 'no_cached_opinion'}
+        return {**receipt['result'], **base, 'receipt_id': receipt['receipt_id'],
+                'receipt_expires_at': receipt['expires_at'], 'reused': True}
+
+    @router.post('/{case_id}/auxiliary/save')
+    async def save_auxiliary(case_id: str, payload: AuxiliarySave, request: Request, access=Depends(identity)):
+        if payload.confirm_save is not True:
+            raise HTTPException(422, 'Confirm retention in case history before saving')
+        service = request.app.state.case_service
+        store, case = await find_record(service, case_id, 'case')
+        # A retry of an already retained opinion never needs a live receipt or provider.
+        if saved_opinion(case, access[1], payload.receipt_id) is not None:
+            return case
+        try:
+            prepared, request_id = prepared_identity(case, access[1])
+        except ValueError:
+            raise HTTPException(409, 'No matching cached opinion is available') from None
+        control = await call(jev_control, service)
+        receipt = await call(control.lookup, request_id)
+        if receipt['status'] != 'cached' or receipt['receipt_id'] != payload.receipt_id:
+            raise HTTPException(409, 'The opinion is missing or expired. View the existing result again.')
+        result = receipt['result']
+        if result.get('status') != 'available' or result.get('model') != MODEL or \
+                result.get('questions_sha256') != QUESTIONS_SHA256 or \
+                result.get('input_sha256') != hashlib.sha256(_encoded(input_state(**prepared))).hexdigest():
+            raise HTTPException(409, 'This receipt has no matching opinion to save')
+        opinion = {key: result.get(key) for key in ('provider', 'model', 'questions_sha256',
+                   'input_sha256', 'probabilities', 'evidence_incomplete', 'affects_risk')}
+        opinion.update(receipt_id=receipt['receipt_id'], requested_at=datetime.fromtimestamp(
+            receipt['expires_at'] - DAY, timezone.utc).isoformat().replace('+00:00', 'Z'))
+        return with_kind(await call(store.save_opinion, case_id, actor=access[1],
+                         expected_version=payload.expected_version, opinion=opinion), 'case')
+
     @router.patch('/{case_id}')
-    async def update(case_id: str, payload: CaseReview, request: Request, access=Depends(identity)):
-        store, record = await find_record(request.app.state.case_service, case_id)
+    async def update(case_id: str, payload: CaseReview, request: Request,
+                     kind: Literal['case', 'feedback'] | None = None, access=Depends(identity)):
+        store, record = await find_record(request.app.state.case_service, case_id, kind)
         return with_kind(await call(store.update, case_id, actor=access[1], **payload.model_dump()), record['kind'])
 
     return router

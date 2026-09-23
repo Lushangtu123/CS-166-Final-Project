@@ -189,6 +189,21 @@ class CaseStore:
                               [*params, min(100, max(1, limit)), max(0, offset)]).fetchall()
             return {'items': [dict(row) for row in rows], 'total': count}
 
+    def save_opinion(self, case_id, *, actor, expected_version, opinion):
+        from case_opinions import opinion_changes
+        with self.connection(write=True) as db:
+            current = self._get(db, case_id)
+            changes = opinion_changes(current, actor, expected_version, opinion)
+            if changes is None:
+                return current
+            timestamp = now()
+            self._event(db, case_id, actor, timestamp, 'auxiliary_saved', changes, '')
+            db.execute('UPDATE cases SET version=version+1,updated_at=? WHERE id=?', (timestamp, case_id))
+            result = self._get(db, case_id)
+            if len(json.dumps(result, separators=(',', ':'), ensure_ascii=True).encode()) > 750_000:
+                raise CaseInvalid('Case exceeds the 750 KB storage limit')
+            return result
+
 
 def feedback_review_fields(case):
     fields = {'feedback_reason': None, 'evidence_basis': None}

@@ -76,6 +76,46 @@ class JevRedisTests(unittest.TestCase):
         self.assertEqual(self.store.execute('HGET', self.store.key, 'sentinel'), 'untouched')
         self.assertTrue(0 < self.store.execute('TTL', self.control.key) <= 2 * DAY)
 
+    def test_real_lua_lookup_does_not_write_or_renew_receipts(self):
+        self.assertEqual(self.control.lookup('a'*64), {'status':'missing'})
+        self.assertEqual(self.store.execute('EXISTS',self.control.key),0)
+        claim = self.control.reserve('a'*64,1)
+        self.assertEqual(self.control.lookup('a'*64)['status'],'pending')
+        self.control.finish('a'*64,claim['claim'],{'status':'available'},1)
+        before = self.store.execute('HGETALL',self.control.key)
+        ttl = self.store.execute('PTTL',self.control.key)
+        cached = self.control.lookup('a'*64)
+        self.assertEqual(cached['result'],{'status':'available'})
+        self.assertEqual(self.store.execute('HGETALL',self.control.key),before)
+        self.assertLessEqual(self.store.execute('PTTL',self.control.key),ttl)
+        self.assertNotIn('claim',cached)
+        entry=json.loads(self.store.execute('HGET',self.control.key,'r:'+'a'*64))
+        entry['expires_at']=1
+        self.store.execute('HSET',self.control.key,'r:'+'a'*64,json.dumps(entry))
+        self.assertEqual(self.control.lookup('a'*64),{'status':'missing'})
+        self.assertIsNotNone(self.store.execute('HGET',self.control.key,'r:'+'a'*64))
+
+    def test_real_lua_opinion_save_preserves_indexes_and_retries_once(self):
+        from test_case_opinions import synthetic_opinion
+        from case_store import CaseConflict
+        case=self.store.create(actor='alice',request_key='synthetic',input_sha256='f'*64,
+            source={'subject':'Synthetic','body':'Synthetic'},analysis={'risk_level':'low'},provenance={})
+        def save(_):
+            try:
+                return self.store.save_opinion(case['id'],actor='alice',expected_version=1,opinion=synthetic_opinion())
+            except CaseConflict:
+                return None
+        with ThreadPoolExecutor(4) as pool:
+            results=list(pool.map(save,range(4)))
+        self.assertTrue(any(results))
+        saved=self.store.save_opinion(case['id'],actor='alice',expected_version=1,opinion=synthetic_opinion())
+        self.assertEqual(saved['version'],2)
+        self.assertEqual(len(saved['events']),2)
+        self.assertEqual(saved['status'],'pending')
+        self.assertEqual(self.store.capacity(),{'used':1,'limit':100})
+        self.assertEqual(self.store.existing('alice','synthetic','f'*64),saved)
+        self.assertEqual(self.store.list()['items'][0]['version'],2)
+
     def test_real_lua_midnight_retains_receipt_then_expiry_allows_new_claim(self):
         first = self.control.reserve('b' * 64, 1)
         snapshot = self.control.snapshot(1)

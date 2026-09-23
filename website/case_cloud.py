@@ -192,3 +192,16 @@ class UpstashCaseStore:
             return {'items': items[offset:offset + limit], 'total': len(items)}
         except (ValueError, KeyError, TypeError):
             raise CaseUnavailable('Invalid case list') from None
+
+    def save_opinion(self, case_id, *, actor, expected_version, opinion):
+        from case_opinions import opinion_changes
+        case = self.get(case_id)
+        changes = opinion_changes(case, actor, expected_version, opinion)
+        if changes is None:
+            return case
+        timestamp = now()
+        case['events'].append(dict(actor=actor, happened_at=timestamp, action='auxiliary_saved',
+                                   changes=changes, note=''))
+        case.update(version=expected_version + 1, updated_at=timestamp)
+        return self._result(self.execute('EVAL', UPDATE_SCRIPT, 1, self.key, case_id,
+            expected_version, self._bounded(case), summary(case)))

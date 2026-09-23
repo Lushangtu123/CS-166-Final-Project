@@ -6,12 +6,15 @@
   const reviewFields = {status: 'review-status', verdict: 'verdict', note: 'note',
     feedback_reason: 'feedback-reason', evidence_basis: 'evidence-basis'};
   const reviewDrafts = new Map(), reviewSaves = new Map();
+  const opinionSaves = new Map();
+  const latestVersions = new Map();
   let reviewBaseline = null;
   let capacityTurn = 0;
   let token = '', epoch = 0, listEpoch = 0, detailEpoch = 0, offset = 0, selected = null;
   let creation = null, inputVersion = 0, total = 0;
   let jevAvailable = false, jevTurn = 0, createPending = false;
   let jevConfig = {status: 'disabled'}, jevBusy = false, jevStatusTurn = 0;
+  let jevOpinion = null;
   const PAGE_SIZE = 25;
   function notice(text = '', error = false) { $('notice').textContent = text; $('notice').dataset.error = String(error); }
   function node(tag, text, className) {
@@ -46,6 +49,15 @@
   }
   function reviewValues() {
     return Object.fromEntries(Object.entries(reviewFields).map(([key, element]) => [key, $(element).value]));
+  }
+  function recordPath(id, kind) {
+    return '/' + encodeURIComponent(id) + '?kind=' + (kind === 'feedback' ? 'feedback' : 'case');
+  }
+  function rememberVersion(value) {
+    const key = recordPath(value.id, value.kind);
+    if (value.version < (latestVersions.get(key) || 0)) return false;
+    latestVersions.set(key, value.version);
+    return true;
   }
   function reviewDefaults(value) {
     const result = {status: transitions[value.status][0], verdict: value.verdict || '', note: '', feedback_reason: '', evidence_basis: ''};
@@ -83,11 +95,12 @@
     $('draft-rebase').hidden = !conflict;
     $('draft-discard').hidden = !draft;
     $('draft-discard').disabled = reviewSaves.has(selected?.id);
-    $('save-review').disabled = Boolean(conflict || reviewSaves.has(selected?.id));
+    $('save-review').disabled = Boolean(conflict || reviewSaves.has(selected?.id) || opinionSaves.has(selected?.id));
+    renderJevAvailability();
   }
   function hasUnsavedWork() {
     captureDraft();
-    return reviewDrafts.size > 0 || reviewSaves.size > 0 || createPending || Boolean($('subject').value || $('body').value || $('eml').files.length);
+    return reviewDrafts.size > 0 || reviewSaves.size > 0 || opinionSaves.size > 0 || createPending || Boolean($('subject').value || $('body').value || $('eml').files.length);
   }
   function signOut() {
     jevAvailable = false; jevConfig = {status: 'disabled'}; jevStatusTurn++; clearJev();
@@ -98,7 +111,8 @@
     $('case-file-status').textContent = '';
     $('visual-evidence').replaceChildren(); $('visual-evidence').hidden = true;
     token = ''; epoch++; listEpoch++; detailEpoch++; selected = null; creation = null;
-    reviewDrafts.clear(); reviewSaves.clear(); reviewBaseline = null; renderDraftState();
+    reviewDrafts.clear(); reviewSaves.clear(); opinionSaves.clear(); reviewBaseline = null; renderDraftState();
+    latestVersions.clear(); $('queue-warning').textContent = '';
     capacityTurn++;
     for (const id of ['case-capacity', 'feedback-capacity', 'capacity-warning']) $(id).textContent = '';
     $('token').value = ''; $('workspace').hidden = true; $('session').hidden = true; $('login-panel').hidden = false;
@@ -138,7 +152,11 @@
     const data = await api('?' + params);
     if (turn !== listEpoch) return;
     total = data.total;
-    $('case-list').replaceChildren(); $('count').textContent = `${data.total} matching records`;
+    $('case-list').replaceChildren();
+    $('count').textContent = `${data.total} ${data.partial ? 'records from available sources' : 'matching records'}`;
+    $('queue-warning').textContent = data.partial
+      ? Object.entries(data.sources || {}).filter(([,status]) => status === 'unavailable')
+        .map(([kind]) => `${kind === 'case' ? 'Cases' : 'User feedback'} unavailable.`).join(' ') + ' Showing available records only. Refresh to retry.' : '';
     if (!data.items.length) $('case-list').append(node('p', 'No cases match these filters.'));
     for (const item of data.items) {
       const button = node('button', '', 'case-row'); button.type = 'button';
@@ -151,7 +169,7 @@
       const verdict = node('span', item.verdict || 'Not reviewed', 'case-cell verdict-cell');
       const created = node('time', new Date(item.created_at).toLocaleString(), 'case-cell date-cell');
       button.append(risk, title, status, verdict, created);
-      button.addEventListener('click', () => action(button, () => loadCase(item.id)));
+      button.addEventListener('click', () => action(button, () => loadCase(item.id, item.kind)));
       $('case-list').append(button);
     }
     syncSelection();
@@ -185,6 +203,7 @@
       ? warnings.join(' ') + ' Ask the administrator to archive and verify closed records before removing any. Closing a record does not free space.' : '';
   }
   function renderCase(value, {capture = true} = {}) {
+    if (!rememberVersion(value)) return false;
     if (capture) captureDraft();
     clearJev();
     selected = value; syncSelection(); $('detail').hidden = false; $('empty-detail').hidden = true;
@@ -227,18 +246,28 @@
     renderDraftState();
     $('history').replaceChildren(...value.events.map(event => {
       const li = node('li', '');
-      li.append(node('strong', `${event.actor} · ${event.action}`), node('p', new Date(event.happened_at).toLocaleString(), 'muted'));
-      for (const [key, change] of Object.entries(event.changes)) li.append(node('p', `${key}: ${change.from ?? '—'} → ${change.to ?? '—'}`));
+      li.append(node('strong', `${event.actor} · ${event.action === 'auxiliary_saved' ? 'Jev opinion saved' : event.action}`), node('p', new Date(event.happened_at).toLocaleString(), 'muted'));
+      for (const [key, change] of Object.entries(event.changes)) {
+        if (key === 'auxiliary_opinion' && event.action === 'auxiliary_saved' && change.to) {
+          const opinion = change.to;
+          li.append(node('p', `${opinion.model} · Requested ${new Date(opinion.requested_at).toLocaleString()}. Saved model opinion; risk and human verdict unchanged.`));
+          renderProbabilities(li, opinion);
+          if (opinion.evidence_incomplete) li.append(node('p', 'Original evidence was incomplete.'));
+          const provenance = node('details', '');
+          provenance.append(node('summary', 'Opinion provenance'), node('pre', JSON.stringify(opinion, null, 2)));
+          li.append(provenance);
+        } else li.append(node('p', `${key}: ${change.from ?? '—'} → ${change.to ?? '—'}`));
+      }
       if (event.note) li.append(node('p', event.note));
       return li;
     }));
   }
-  async function loadCase(id) {
+  async function loadCase(id, kind) {
     captureDraft();
     const turn = ++detailEpoch;
-    const value = await api('/' + encodeURIComponent(id));
+    const value = await api(recordPath(id, kind));
     if (turn !== detailEpoch) return;
-    renderCase(value); notice();
+    if (renderCase(value) !== false) notice();
   }
   $('login-form').addEventListener('submit', event => {
     event.preventDefault(); const button = event.submitter;
@@ -274,8 +303,12 @@
     }
     if (Number.isInteger(jevConfig.reset_at)) message += ` Resets ${new Date(jevConfig.reset_at * 1000).toLocaleString()}.`;
     $('jev-availability').textContent = message;
-    $('jev-run').disabled = !jevAvailable || jevBusy;
-    $('jev-consent').disabled = !jevAvailable || jevBusy;
+    const busy = jevBusy || opinionSaves.has(selected?.id);
+    $('jev-run').disabled = !jevAvailable || busy;
+    $('jev-consent').disabled = !jevAvailable || busy;
+    $('jev-read').disabled = busy;
+    $('jev-save').hidden = !jevOpinion;
+    $('jev-save').disabled = jevBusy || reviewSaves.has(selected?.id) || opinionSaves.has(selected?.id) || selected?.status === 'closed';
   }
   async function refreshJev() {
     const turn = ++jevStatusTurn;
@@ -294,17 +327,29 @@
     }
   }
   function clearJev() {
-    jevTurn++; jevBusy = false;
+    jevTurn++; jevBusy = false; jevOpinion = null;
     $('jev-consent').checked = false; $('jev-status').textContent = '';
     $('jev-results').replaceChildren(); renderJevAvailability();
   }
-  $('jev-run').addEventListener('click', async () => {
-    if (!selected || !jevAvailable || jevBusy) return;
-    if (!$('jev-consent').checked) { $('jev-status').textContent = 'Confirm permission to send this message first.'; return; }
+  function renderProbabilities(target, result) {
+    const names = {credential_request: 'Request for authentication secrets', payment_redirection: 'New or changed payment destination', authority_pressure: 'Pressure to bypass normal checks', phishing_intent: 'Deceptive intent', insufficient_evidence: 'Insufficient evidence'};
+    const list = node('ul', '');
+    for (const [key, label] of Object.entries(names)) {
+      const probability = result.probabilities?.[key];
+      if (typeof probability === 'number' && Number.isFinite(probability) && probability >= 0 && probability <= 1) {
+        list.append(node('li', `${label}: ${(probability * 100).toFixed(1)}% estimated probability. This is not a severity score.`));
+      }
+    }
+    target.append(list);
+  }
+  async function loadOpinion(readOnly) {
+    if (!selected || selected.kind === 'feedback' || (!readOnly && !jevAvailable) || jevBusy || opinionSaves.has(selected.id)) return;
+    if (!readOnly && !$('jev-consent').checked) { $('jev-status').textContent = 'Confirm permission to send this message first.'; return; }
     const turn = ++jevTurn, session = epoch, id = selected.id, version = selected.version;
-    jevBusy = true; renderJevAvailability(); $('jev-results').replaceChildren(); $('jev-status').textContent = 'Requesting auxiliary opinion…';
+    jevBusy = true; jevOpinion = null; renderJevAvailability(); $('jev-results').replaceChildren();
+    $('jev-status').textContent = readOnly ? 'Reading your existing result…' : 'Requesting auxiliary opinion…';
     try {
-      const result = await api('/' + encodeURIComponent(id) + '/auxiliary', {
+      const result = await api('/' + encodeURIComponent(id) + '/auxiliary', readOnly ? {method:'GET'} : {
         method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({allow_external_processing: true})});
       if (turn !== jevTurn || session !== epoch || selected?.id !== id) return;
       if (result.case_id !== id || result.case_version !== version) {
@@ -319,6 +364,7 @@
         ? ` This request record is reused until ${new Date(result.receipt_expires_at * 1000).toLocaleString()}; submitting again will not start another provider call during that period.` : '';
       if (result.status !== 'available') {
         const reasons = {
+          no_cached_opinion: 'No unexpired result exists for your account and this case. No new model call was made.',
           provider_authentication: 'TypeSafe rejected the API key. Ask the administrator to check the deployment key.',
           provider_access_denied: 'TypeSafe denied access. Ask the administrator to check account and model access.',
           provider_request_invalid: 'TypeSafe rejected the request format. Contact the administrator.',
@@ -341,17 +387,40 @@
       }
       $('jev-status').textContent = `${result.model} · Model opinions, not verified findings. Risk and verdict are unchanged.${result.evidence_incomplete ? ' Original evidence is incomplete; this opinion cannot fill missing images or correct OCR.' : ''}`;
       if (result.reused) $('jev-status').textContent += ' Reused the previous request; no new provider call.';
-      const names = {credential_request: 'Request for authentication secrets', payment_redirection: 'New or changed payment destination', authority_pressure: 'Pressure to bypass normal checks', phishing_intent: 'Deceptive intent', insufficient_evidence: 'Insufficient evidence'};
-      for (const [key, label] of Object.entries(names)) {
-        const probability = result.probabilities?.[key];
-        if (typeof probability === 'number' && Number.isFinite(probability) && probability >= 0 && probability <= 1) {
-          $('jev-results').append(node('li', `${label}: ${(probability * 100).toFixed(1)}% estimated probability. This is not a severity score.`));
-        }
-      }
+      if (/^[0-9a-f]{64}$/.test(result.receipt_id || '')) jevOpinion = {id, version, receipt:result.receipt_id};
+      if (selected.status === 'closed') $('jev-status').textContent += ' Reopen the case before saving this opinion.';
+      renderProbabilities($('jev-results'), result);
     } catch (error) {
       if (turn === jevTurn && session === epoch) $('jev-status').textContent = error.message || 'Auxiliary analysis failed. The original detection result is unchanged.';
     } finally {
       if (turn === jevTurn) { jevBusy = false; $('jev-consent').checked = false; renderJevAvailability(); }
+    }
+  }
+  $('jev-run').addEventListener('click', () => loadOpinion(false));
+  $('jev-read').addEventListener('click', () => loadOpinion(true));
+  $('jev-save').addEventListener('click', async () => {
+    if (!selected || !jevOpinion || jevBusy || reviewSaves.has(selected.id) || opinionSaves.has(selected.id) || selected.status === 'closed') return;
+    if (!window.confirm('Save this structured Jev opinion to case history for all workspace analysts? It will remain after the 24-hour cache expires. Risk and human verdict will not change.')) return;
+    const opinion = jevOpinion, session = epoch, turn = jevTurn, operation = {};
+    const version = selected.version;
+    captureDraft(); opinionSaves.set(opinion.id, operation); jevBusy = true; renderDraftState();
+    try {
+      const saved = await api('/' + encodeURIComponent(opinion.id) + '/auxiliary/save', {method:'POST',
+        headers:{'Content-Type':'application/json'}, body:JSON.stringify({expected_version:version,receipt_id:opinion.receipt,confirm_save:true})});
+      captureDraft(); rememberVersion(saved);
+      if (opinionSaves.get(opinion.id) === operation) opinionSaves.delete(opinion.id);
+      const draft = reviewDrafts.get(opinion.id);
+      // This write changes only history. Preserve drafts based on the same prior revision.
+      if (draft?.version === version && saved.version === version + 1) draft.version = saved.version;
+      if (selected?.id === opinion.id && selected.version <= saved.version) {
+        renderCase(saved, {capture:false}); notice('Jev opinion saved to case history. Human assessment is unchanged.');
+      }
+      await loadList();
+    } catch (error) {
+      if (session === epoch) notice(error.message || 'Could not confirm the save. Reload the case before retrying.', true);
+    } finally {
+      if (opinionSaves.get(opinion.id) === operation) opinionSaves.delete(opinion.id);
+      if (session === epoch) { if (turn === jevTurn) jevBusy = false; renderDraftState(); }
     }
   });
   window.addEventListener('pagehide', signOut);
@@ -407,7 +476,7 @@
   $('review-form').addEventListener('submit', event => {
     event.preventDefault(); if (!selected) return;
     captureDraft();
-    if (reviewSaves.has(selected.id)) return;
+    if (reviewSaves.has(selected.id) || opinionSaves.has(selected.id)) return;
     if (reviewDrafts.get(selected.id)?.version !== undefined && reviewDrafts.get(selected.id).version !== selected.version) {
       renderDraftState(); notice('Compare the latest case history, then confirm your draft against the current revision.', true); return;
     }
@@ -425,7 +494,8 @@
     reviewSaves.set(id, operation); renderDraftState();
     action(event.submitter, async () => {
       try {
-        const value = await api('/' + encodeURIComponent(id), {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
+        const value = await api(recordPath(id, selected.kind), {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
+        rememberVersion(value);
         captureDraft();
         if (reviewSaves.get(id) === operation) reviewSaves.delete(id);
         const draft = reviewDrafts.get(id);
@@ -451,8 +521,8 @@
   $('filters').addEventListener('submit', event => { event.preventDefault(); offset = 0; action(event.submitter, loadList); });
   $('refresh').addEventListener('click', event => action(event.currentTarget, async () => { await refreshJev(); await loadList(); }));
   $('reload-case').addEventListener('click', event => { if (selected) {
-    const id = selected.id, turn = detailEpoch;
-    action(event.currentTarget, async () => { await refreshJev(); if (turn === detailEpoch) await loadCase(id); });
+    const id = selected.id, kind = selected.kind, turn = detailEpoch;
+    action(event.currentTarget, async () => { await refreshJev(); if (turn === detailEpoch) await loadCase(id, kind); });
   } });
   for (const [id, delta] of [['previous', -PAGE_SIZE], ['next', PAGE_SIZE]]) $(id).addEventListener('click', async event => {
     const button = event.currentTarget; offset = Math.max(0, offset + delta);

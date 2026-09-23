@@ -16,6 +16,10 @@ from jev import MODEL, QUESTIONS_SHA256, input_state, _encoded
 DAY = 86400
 
 
+def receipt_identity(request_id, claim):
+    return hashlib.sha256(_encoded([request_id, claim])).hexdigest()
+
+
 def request_identity(actor, case_id, prepared):
     return hashlib.sha256(_encoded([actor, case_id, MODEL, QUESTIONS_SHA256,
                                    input_state(**prepared)])).hexdigest()
@@ -63,8 +67,10 @@ if entry and entry.expires_at > now then
   result.status = entry.result and 'cached' or 'pending'
   result.result = entry.result
   result.expires_at = entry.expires_at
+  result.claim = entry.claim
   return cjson.encode(result)
 end
+if ARGV[1] == 'lookup' then result.status='missing'; return cjson.encode(result) end
 if used >= limit then result.status='quota_exhausted'; return cjson.encode(result) end
 for _, key in ipairs(redis.call('HKEYS', KEYS[1])) do
   if string.sub(key, 1, 2) == 'r:' then
@@ -112,7 +118,9 @@ class JevControl:
                         raise ValueError()
                     if value['daily_limit'] != limit:
                         raise ValueError()
-                    statuses = {'released'} if operation == 'release_unsent' else {'reserved', 'cached', 'pending', 'quota_exhausted'}
+                    statuses = ({'released'} if operation == 'release_unsent' else
+                                {'cached', 'pending', 'missing'} if operation == 'lookup' else
+                                {'reserved', 'cached', 'pending', 'quota_exhausted'})
                     if operation != 'snapshot' and value.get('status') not in statuses:
                         raise ValueError()
                     if value.get('status') in {'reserved', 'cached', 'pending'} and (
@@ -125,7 +133,7 @@ class JevControl:
                 raise CaseUnavailable('Invalid auxiliary control response') from None
         now = int(self.clock())
         day = now // DAY
-        with self.store.connection(write=operation != 'snapshot') as db:
+        with self.store.connection(write=operation not in {'snapshot', 'lookup'}) as db:
             row = db.execute('SELECT day, used FROM jev_budget WHERE scope=?', (self.scope,)).fetchone()
             used = row['used'] if row and row['day'] == day else 0
             value = {'used': used, 'daily_limit': limit, 'reset_at': (day + 1) * DAY}
@@ -153,7 +161,9 @@ class JevControl:
             if entry and entry['expires_at'] > now:
                 return {**value, 'status': 'cached' if entry['result'] else 'pending',
                         'result': json.loads(entry['result']) if entry['result'] else None,
-                        'expires_at': entry['expires_at']}
+                        'expires_at': entry['expires_at'], 'claim': entry['claim']}
+            if operation == 'lookup':
+                return {**value, 'status': 'missing'}
             if used >= limit:
                 return {**value, 'status': 'quota_exhausted'}
             db.execute('DELETE FROM jev_receipts WHERE expires_at<=?', (now,))
@@ -164,6 +174,17 @@ class JevControl:
 
     def snapshot(self, limit):
         return self._run('snapshot', limit)
+
+    def lookup(self, request_id):
+        """Read an existing receipt without reserving, cleaning up or extending it."""
+        result = self._run('lookup', 1, request_id)
+        if result['status'] == 'missing':
+            return {'status': 'missing'}
+        claim = result.get('claim')
+        if not isinstance(claim, str) or not re.fullmatch(r'[0-9a-f]{32}', claim):
+            raise CaseUnavailable('Invalid auxiliary receipt')
+        return {key: result.get(key) for key in ('status', 'expires_at', 'result')} | {
+            'receipt_id': receipt_identity(request_id, claim)}
 
     def reserve(self, request_id, limit):
         claim = uuid4().hex

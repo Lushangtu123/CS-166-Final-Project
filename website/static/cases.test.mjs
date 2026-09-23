@@ -34,7 +34,106 @@ function setup(handler, vision = {cancel() {}, render() {}}) {
   const login = async () => { el('token').value = 'synthetic-access-token-at-least-32-characters'; await fire('login-form', 'submit'); };
   return {el, fire, login, calls, window, windowEvents};
 }
-const standard = async url => ({status: 200, data: url.endsWith('/me') ? {actor: 'alice'} : url.includes('?') ? {items: [caseValue()], total: 1} : caseValue()});
+const standard = async url => ({status: 200, data: url.endsWith('/me') ? {actor: 'alice'} : url.startsWith('/api/cases?') ? {items: [caseValue()], total: 1} : caseValue()});
+
+test('a detail read started before a save cannot replace the saved revision', async () => {
+  let releaseSave, releaseRead, delayRead = false;
+  const ui = setup(async (url, options) => options.method === 'PATCH'
+    ? await new Promise(resolve => { releaseSave = resolve; })
+    : url.split('?')[0].endsWith('/case-1') && delayRead
+      ? await new Promise(resolve => { releaseRead = resolve; }) : standard(url));
+  await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
+  ui.el('review-status').value = 'in_progress'; ui.el('note').value = 'Saved note';
+  await ui.fire('review-form', 'submit');
+  delayRead = true; await ui.fire('reload-case');
+  releaseSave({status:200, data:{...caseValue(),version:2,status:'in_progress'}}); await tick();
+  ui.el('note').value = 'New draft after save';
+  releaseRead({status:200, data:caseValue()}); await tick();
+  assert.equal(ui.el('review-status').value, 'in_progress');
+  assert.equal(ui.el('note').value, 'New draft after save');
+  assert.match(ui.el('case-meta').textContent, /2/);
+});
+
+test('partial queues identify unavailable sources and carry record kind to detail and review', async () => {
+  const feedback = {...caseValue(),kind:'feedback'};
+  let partial = true;
+  const ui = setup(async (url, options) => url.startsWith('/api/cases?')
+    ? {status:200,data:{items:[feedback],total:1,partial,sources:{case:partial?'unavailable':'available',feedback:'available'}}}
+    : options.method === 'PATCH' || url.split('?')[0].endsWith('/case-1')
+      ? {status:200,data:feedback} : standard(url));
+  await ui.login();
+  assert.match(ui.el('queue-warning').textContent, /case.*unavailable/i);
+  assert.match(ui.el('count').textContent, /available sources/i);
+  ui.el('case-list').children[0].listeners.click(); await tick();
+  assert(ui.calls.some(c=>c.url==='/api/cases/case-1?kind=feedback'));
+  await ui.fire('review-form','submit');
+  assert(ui.calls.some(c=>c.options.method==='PATCH' && c.url==='/api/cases/case-1?kind=feedback'));
+  partial=false; await ui.fire('refresh');
+  assert.equal(ui.el('queue-warning').textContent,'');
+});
+
+test('cached Jev lookup uses GET while disabled; explicit save retains history and current review draft', async () => {
+  const receipt = 'a'.repeat(64);
+  const opinion = {receipt_id:receipt,model:'jev-1.13.0',requested_at:'2026-09-22T00:00:00Z',
+    probabilities:{phishing_intent:0.75},affects_risk:false};
+  const saved = {...caseValue(),version:2,events:[...caseValue().events,{actor:'alice',action:'auxiliary_saved',
+    happened_at:'2026-09-22T00:00:01Z',changes:{auxiliary_opinion:{from:null,to:opinion}},note:''}]};
+  const ui = setup(async (url, options) => url.endsWith('/auxiliary/save') ? {status:200,data:saved}
+    : url.endsWith('/auxiliary') ? {status:200,data:{...opinion,status:'available',case_id:'case-1',case_version:1,reused:true}}
+    : standard(url));
+  await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
+  assert.equal(ui.el('jev-read').disabled,false);
+  assert.equal(ui.el('jev-run').disabled,true);
+  ui.el('note').value='Unsaved human review'; await ui.fire('jev-read');
+  assert.equal(ui.calls.find(c=>c.url.endsWith('/auxiliary')).options.method, 'GET');
+  assert.equal(ui.el('jev-save').hidden,false);
+  ui.window.confirm=()=>false; await ui.fire('jev-save');
+  assert(!ui.calls.some(c=>c.url.endsWith('/auxiliary/save')));
+  ui.window.confirm=()=>true; await ui.fire('jev-save');
+  const sent=JSON.parse(ui.calls.find(c=>c.url.endsWith('/auxiliary/save')).options.body);
+  assert.deepEqual(sent,{expected_version:1,receipt_id:receipt,confirm_save:true});
+  assert.equal(ui.el('note').value,'Unsaved human review');
+  assert.equal(ui.el('draft-rebase').hidden,true);
+  assert.match(ui.el('case-meta').textContent,/Revision 2/);
+  const text = element => element.textContent + element.children.map(text).join(' ');
+  assert.match(text(ui.el('history')), /75\.0%/);
+  assert.match(text(ui.el('history')), /jev-1\.13\.0/);
+  assert.doesNotMatch(text(ui.el('history')), /\[object Object\]/);
+});
+
+test('late cached lookup is cleared at signout and never posts to the model route', async () => {
+  let release;
+  const ui=setup(async url=>url.endsWith('/auxiliary') ? await new Promise(resolve=>{release=resolve;}) : standard(url));
+  await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
+  await ui.fire('jev-read'); await ui.fire('logout');
+  release({status:200,data:{status:'available',receipt_id:'b'.repeat(64),case_id:'case-1',case_version:1}}); await tick();
+  assert.equal(ui.el('jev-save').hidden,true);
+  assert.equal(ui.el('jev-results').children.length,0);
+  assert(!ui.calls.some(c=>c.url.endsWith('/auxiliary')&&c.options.method==='POST'));
+});
+
+test('saving one opinion cannot release a different case lookup in flight', async () => {
+  let releaseSave, releaseRead;
+  const second={...caseValue(),id:'case-2'};
+  const ui=setup(async (url, options) => {
+    if(url.endsWith('/auxiliary/save')) return await new Promise(resolve=>{releaseSave=resolve;});
+    if(url.endsWith('/case-1/auxiliary')) return {status:200,data:{status:'available',receipt_id:'a'.repeat(64),case_id:'case-1',case_version:1}};
+    if(url.endsWith('/case-2/auxiliary')) return await new Promise(resolve=>{releaseRead=resolve;});
+    if(url.startsWith('/api/cases?')) return {status:200,data:{items:[caseValue(),second],total:2}};
+    if(url.startsWith('/api/cases/case-2?')) return {status:200,data:second};
+    return standard(url);
+  });
+  await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
+  await ui.fire('jev-read'); await ui.fire('jev-save');
+  ui.el('case-list').children[1].listeners.click(); await tick();
+  await ui.fire('jev-read');
+  releaseSave({status:200,data:{...caseValue(),version:2}}); await tick();
+  assert.equal(ui.el('jev-read').disabled,true);
+  await ui.fire('jev-read');
+  assert.equal(ui.calls.filter(c=>c.url.endsWith('/case-2/auxiliary')).length,1);
+  releaseRead({status:200,data:{status:'skipped',reason:'no_cached_opinion',case_id:'case-2',case_version:1}}); await tick();
+  assert.equal(ui.el('jev-read').disabled,false);
+});
 
 test('capacity shows both unfiltered queues, warns near full and recovers after an unavailable refresh', async () => {
   let capacity = {cases:{status:'available',used:80,limit:100},feedback:{status:'available',used:100,limit:100}};
@@ -71,9 +170,9 @@ test('review drafts survive switching and reload without being silently rebased'
   let revision = 1;
   const ui = setup(async (url, options) => options?.method === 'PATCH'
     ? {status: 200, data: {...caseValue(), version: revision + 1, status: 'in_progress'}}
-    : url.endsWith('/case-1') ? {status: 200, data: {...caseValue(), version: revision}}
-    : url.endsWith('/case-2') ? {status: 200, data: {...caseValue(), id:'case-2'}}
-    : url.includes('?') ? {status:200, data:{items:[caseValue(), {...caseValue(), id:'case-2'}],total:2}}
+    : url.split('?')[0].endsWith('/case-1') ? {status: 200, data: {...caseValue(), version: revision}}
+    : url.split('?')[0].endsWith('/case-2') ? {status: 200, data: {...caseValue(), id:'case-2'}}
+    : url.startsWith('/api/cases?') ? {status:200, data:{items:[caseValue(), {...caseValue(), id:'case-2'}],total:2}}
     : standard(url));
   await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
   ui.el('note').value = 'Keep this review'; ui.el('verdict').value = 'uncertain';
@@ -112,9 +211,9 @@ test('a review saved after switching cases does not reappear as an unsaved note'
   let release, saved = caseValue();
   const ui = setup(async (url, options) => options?.method === 'PATCH'
     ? await new Promise(resolve => { release = resolve; })
-    : url.endsWith('/case-1') ? {status:200,data:saved}
-    : url.endsWith('/case-2') ? {status:200,data:{...caseValue(),id:'case-2'}}
-    : url.includes('?') ? {status:200,data:{items:[saved,{...caseValue(),id:'case-2'}],total:2}} : standard(url));
+    : url.split('?')[0].endsWith('/case-1') ? {status:200,data:saved}
+    : url.split('?')[0].endsWith('/case-2') ? {status:200,data:{...caseValue(),id:'case-2'}}
+    : url.startsWith('/api/cases?') ? {status:200,data:{items:[saved,{...caseValue(),id:'case-2'}],total:2}} : standard(url));
   await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
   ui.el('note').value = 'Submitted note'; await ui.fire('review-form','submit');
   ui.el('note').value = 'Later unsaved note';
@@ -151,9 +250,9 @@ test('reverting to the previous status during a pending save remains a newer edi
   let release, saved = caseValue();
   const ui = setup(async (url, options) => options?.method === 'PATCH'
     ? await new Promise(resolve => { release = resolve; })
-    : url.endsWith('/case-1') ? {status:200,data:saved}
-    : url.endsWith('/case-2') ? {status:200,data:{...caseValue(),id:'case-2'}}
-    : url.includes('?') ? {status:200,data:{items:[saved,{...caseValue(),id:'case-2'}],total:2}} : standard(url));
+    : url.split('?')[0].endsWith('/case-1') ? {status:200,data:saved}
+    : url.split('?')[0].endsWith('/case-2') ? {status:200,data:{...caseValue(),id:'case-2'}}
+    : url.startsWith('/api/cases?') ? {status:200,data:{items:[saved,{...caseValue(),id:'case-2'}],total:2}} : standard(url));
   await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
   ui.el('review-status').value = 'in_progress'; await ui.fire('review-form','submit');
   ui.el('review-status').value = 'pending';
@@ -171,9 +270,9 @@ test('a completed save stays clean when switching during a slow capacity refresh
   const ui = setup(async (url, options) => options?.method === 'PATCH'
     ? {status:200,data:(saved={...caseValue(),version:2})}
     : url.endsWith('/capacity') && holdCapacity ? await new Promise(resolve=>{release=resolve;})
-    : url.endsWith('/case-1') ? {status:200,data:saved}
-    : url.endsWith('/case-2') ? {status:200,data:{...caseValue(),id:'case-2'}}
-    : url.includes('?') ? {status:200,data:{items:[saved,{...caseValue(),id:'case-2'}],total:2}} : standard(url));
+    : url.split('?')[0].endsWith('/case-1') ? {status:200,data:saved}
+    : url.split('?')[0].endsWith('/case-2') ? {status:200,data:{...caseValue(),id:'case-2'}}
+    : url.startsWith('/api/cases?') ? {status:200,data:{items:[saved,{...caseValue(),id:'case-2'}],total:2}} : standard(url));
   await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
   ui.el('note').value='Saved note'; holdCapacity=true;
   await ui.fire('review-form','submit');
@@ -279,7 +378,7 @@ test('Jev is opt-in, independent of case risk, and rendered as text', async () =
   assert.deepEqual(JSON.parse(request.options.body), {allow_external_processing: true});
   assert.match(ui.el('jev-status').textContent, /<img src=x onerror=bad\(\)>/);
   assert.match(ui.el('jev-status').textContent, /evidence is incomplete/);
-  assert.equal(ui.el('jev-results').children.length, 2);
+  assert.equal(ui.el('jev-results').children[0].children.length, 2);
   assert.equal(ui.el('analysis-summary').textContent, original);
   assert.equal(ui.el('jev-consent').checked, false);
   await ui.fire('logout');
@@ -344,7 +443,7 @@ test('token is sent only in auth header and untrusted evidence is rendered as te
 
 test('signout clears saved content and late responses cannot restore it', async () => {
   let release;
-  const ui = setup(async url => url.endsWith('/case-1') ? await new Promise(resolve => { release = resolve; }) : standard(url));
+  const ui = setup(async url => url.split('?')[0].endsWith('/case-1') ? await new Promise(resolve => { release = resolve; }) : standard(url));
   await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
   await ui.fire('logout'); release({status: 200, data: caseValue()}); await tick();
   assert.equal(ui.el('source').textContent, ''); assert.equal(ui.el('workspace').hidden, true);
@@ -377,7 +476,7 @@ test('feedback review sends structured reason and evidence basis without changin
     events: [...caseValue().events, {actor: 'alice', action: 'reviewed', happened_at: '2026-09-21T00:00:00Z',
       changes: {feedback_reason: {from: null, to: 'false_alert'}, evidence_basis: {from: null, to: 'retained_message'}}, note: ''}]};
   const ui = setup(async url => ({status: 200, data: url.endsWith('/me') ? {actor: 'alice'} :
-    url.includes('?') ? {items: [feedback], total: 1} : feedback}));
+    url.startsWith('/api/cases?') ? {items: [feedback], total: 1} : feedback}));
   await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
   assert.equal(ui.el('feedback-review-fields').hidden, false);
   assert.equal(ui.el('feedback-reason').value, 'false_alert');
@@ -390,7 +489,7 @@ test('feedback review sends structured reason and evidence basis without changin
 
 test('selected case stays visibly selected after switching cases and refreshing the queue', async () => {
   const first = caseValue(), second = {...caseValue(), id: 'case-2', title: 'Second message', risk: 'safe'};
-  const ui = setup(async url => ({status: 200, data: url.endsWith('/me') ? {actor: 'alice'} : url.includes('?') ? {items: [first, second], total: 2} : url.endsWith('/case-2') ? second : first}));
+  const ui = setup(async url => ({status: 200, data: url.endsWith('/me') ? {actor: 'alice'} : url.startsWith('/api/cases?') ? {items: [first, second], total: 2} : url.split('?')[0].endsWith('/case-2') ? second : first}));
   await ui.login();
   ui.el('case-list').children[0].listeners.click(); await tick();
   assert.equal(ui.el('case-list').children[0].attrs['aria-pressed'], 'true');
@@ -495,7 +594,7 @@ test('new feedback choices survive saving and unavailable status requires a new 
   const feedback = {...caseValue(), kind: 'feedback', status: 'in_progress'};
   const ui = setup(async (url, options) => options?.method === 'PATCH'
     ? await new Promise(resolve => { release = resolve; })
-    : {status: 200, data: url.endsWith('/me') ? {actor: 'alice'} : url.includes('?') ? {items: [feedback], total: 1} : feedback});
+    : {status: 200, data: url.endsWith('/me') ? {actor: 'alice'} : url.startsWith('/api/cases?') ? {items: [feedback], total: 1} : feedback});
   await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
   ui.el('review-status').value = 'closed'; ui.el('note').value = 'Closing';
   await ui.fire('review-form', 'submit');

@@ -365,8 +365,13 @@ authorized. The case workspace then shows **Jev auxiliary opinion** for analysts
 The checkbox and explicit button call `POST /api/cases/{id}/auxiliary` with
 `{"allow_external_processing":true}`. Authentication, no-store headers and existing
 rate limiting apply. The browser receives only structured opinions, never the key.
-Opinions do not change risk, verdict or saved history. Switching cases/signing out
-clears the display; structured duplicate-control receipts remain usable for 24 hours.
+Opinions do not change risk or verdict. Switching cases/signing out clears the
+display; **View existing result** reads the current analyst's 24-hour receipt
+without sending a new provider request. An analyst may explicitly confirm **Save
+opinion to history** to retain a successful server-owned opinion with model/input
+provenance under the case retention policy. This appends a case event without
+changing human assessment; it neither labels evaluation data nor retrains the model.
+Failed, missing, expired or mismatched receipts cannot create a new opinion event.
 Legacy raw-email cases without separately saved
 MIME text skip auxiliary analysis rather than reinterpreting plain text as HTML.
 

@@ -37,6 +37,22 @@ class JevControlTests(unittest.TestCase):
         self.assertEqual(other.reserve(identity(2), 1)['status'], 'reserved')
         self.assertEqual(other.snapshot(1)['reset_at'], 12 * DAY)
 
+    def test_lookup_never_reserves_refunds_deletes_or_extends_receipts(self):
+        self.assertEqual(self.control.lookup(identity(1)), {'status':'missing'})
+        self.assertEqual(self.control.snapshot(1)['used'], 0)
+        claim = self.control.reserve(identity(1), 1)
+        self.assertEqual(self.control.lookup(identity(1))['status'], 'pending')
+        self.control.finish(identity(1), claim['claim'], {'status':'available'}, 1)
+        found = self.control.lookup(identity(1))
+        self.assertEqual(found['status'], 'cached')
+        self.assertEqual(found['result'], {'status':'available'})
+        self.assertRegex(found['receipt_id'], r'^[0-9a-f]{64}$')
+        self.assertNotIn('claim', found)
+        self.now += DAY
+        self.assertEqual(self.control.lookup(identity(1)), {'status':'missing'})
+        with self.store.connection() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM jev_receipts').fetchone()[0], 1)
+
     def test_result_and_uncertain_receipts_block_duplicates_for_24_hours(self):
         claim = self.control.reserve(identity(1), 1)
         result = {'status': 'unavailable', 'reason': 'provider_timeout'}
