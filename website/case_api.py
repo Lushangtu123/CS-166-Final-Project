@@ -21,6 +21,7 @@ from visual_evidence import VisualRequest
 from jev import JevClient, MODEL, QUESTIONS_SHA256, input_state, _encoded, prepare_case_input, configuration as jev_configuration
 from jev_control import JevControl, DAY, request_identity, receipt_identity
 from case_opinions import saved_opinion
+from feedback_preview import eml_preview
 
 
 @dataclass
@@ -163,6 +164,9 @@ def make_case_router(analyze, *, visible_text, mask_inline_data):
         record['kind'] = kind
         if 'events' in record:
             record['history_capacity'] = history_capacity(record)
+            if kind == 'feedback' and record['provenance'].get('input_mode') == 'eml' and record['provenance'].get('source_consent') is True:
+                record['source_preview'] = eml_preview(record['source'], visible_text=visible_text,
+                                                      mask_inline_data=mask_inline_data)
         return record
 
     async def find_record(service, case_id, kind=None):
@@ -280,7 +284,7 @@ def make_case_router(analyze, *, visible_text, mask_inline_data):
         store, actor = access
         prior = await call(store.existing, actor, key, digest)
         if prior is not None:
-            return prior
+            return with_kind(prior, 'case')
         source, analysis, provenance = await analyze(payload, raw)
         return with_kind(await call(store.create, actor=actor, request_key=key, input_sha256=digest,
                           source=source, analysis=analysis, provenance=provenance), 'case')

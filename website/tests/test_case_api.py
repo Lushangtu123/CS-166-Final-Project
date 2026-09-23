@@ -87,6 +87,14 @@ class CaseAPITests(unittest.TestCase):
         return self.call('POST', '/api/cases', key='00000000-0000-4000-8000-000000000001',
                          payload={'subject': 'Review', 'body': '<a href="https://paypa1.example">Review</a>'})
 
+    def test_creation_retry_returns_the_same_record_and_review_capabilities(self):
+        first = self.create()[1]
+        repeated = self.create()[1]
+        self.assertEqual(repeated['id'], first['id'])
+        self.assertEqual(repeated.get('kind'), 'case')
+        self.assertEqual(repeated.get('history_capacity'), first['history_capacity'])
+        self.assertEqual(self.call('GET', '/api/cases?kind=case')[1]['total'], 1)
+
     def test_capacity_is_private_unfiltered_and_each_store_can_fail_independently(self):
         from case_cloud import CaseUnavailable
         service = app.app.state.case_service

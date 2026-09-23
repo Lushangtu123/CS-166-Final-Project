@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from email.message import EmailMessage
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -56,6 +57,71 @@ class FeedbackAPITests(unittest.TestCase):
 
     def submit(self, value=None, key=KEY):
         return self.call('POST', '/api/feedback', payload=value or payload(), key=key, token=None)
+
+    def test_eml_feedback_has_a_readable_preview_without_rewriting_original_evidence(self):
+        message = EmailMessage()
+        message['Subject'] = '合成会议通知'
+        message.set_content('明天下午开会。 Literal <tag> stays visible.', charset='gb18030', cte='base64')
+        message.add_alternative('<p>HTML meeting notes</p><script>hidden script</script><img src="https://remote.invalid/image">', subtype='html')
+        encoded = base64.b64encode(message.as_bytes()).decode()
+        status, receipt, _ = self.submit(payload(include_source=True, input_mode='eml',
+                                               source={'eml_base64': encoded}))
+        self.assertEqual(status, 201)
+        store = app.app.state.case_service.feedback_store
+        before = store.get(receipt['id'])
+        status, record, _ = self.call('GET', '/api/cases/' + receipt['id'] + '?kind=feedback')
+        self.assertEqual(status, 200)
+        preview = record.get('source_preview', {})
+        self.assertEqual(preview.get('status'), 'available')
+        self.assertEqual(preview['subject'], '合成会议通知')
+        self.assertIn('明天下午开会。 Literal <tag> stays visible.', preview['body'])
+        self.assertIn('HTML meeting notes', preview['body'])
+        self.assertNotIn('hidden script', preview['body'])
+        self.assertNotIn('https://remote.invalid/image', preview['body'])
+        self.assertEqual(record['source']['eml_base64'], encoded)
+        self.assertEqual(store.get(receipt['id']), before)
+        self.assertNotIn('source_preview', before)
+
+    def test_legacy_eml_previews_bound_decoding_warnings_and_leave_unreadable_cases_reviewable(self):
+        store = app.app.state.case_service.feedback_store
+        samples = [
+            (base64.b64encode(b'Content-Type: text/plain; charset=unknown-charset\n\nBad byte \xff').decode(), 'fallback'),
+            (base64.b64encode(b'Content-Type: text/plain\nContent-Type: text/html\n\n' + b'x' * 31000).decode(), 'truncated'),
+            ('invalid base64', 'unavailable'),
+            ('A' * 80004, 'unavailable'),
+        ]
+        for index, (encoded, expected) in enumerate(samples):
+            with self.subTest(expected=expected):
+                saved = store.create(actor='user_feedback',request_key=str(index),input_sha256='a' * 64,
+                    source={'subject':'','body':'Legacy raw preview','eml_base64':encoded},
+                    analysis={'risk_level':'unknown'},provenance={'record_kind':'user_feedback',
+                        'input_mode':'eml','source_consent':True})
+                path = '/api/cases/' + saved['id'] + '?kind=feedback'
+                status, record, _ = self.call('GET', path)
+                self.assertEqual(status, 200)
+                preview = record['source_preview']
+                self.assertLessEqual(len(preview['body']),60000)
+                self.assertLessEqual(len(preview['warnings']),12)
+                self.assertIn(expected, ' '.join(preview['warnings']).lower() + ' ' + preview['status'])
+                if expected == 'truncated':
+                    self.assertTrue(preview['truncated'])
+                self.assertEqual(store.get(saved['id']),saved)
+                status, reviewed, _ = self.call('PATCH',path,payload={'expected_version':1,
+                    'status':'in_progress','note':'Checking retained mail'})
+                self.assertEqual(status,200)
+                self.assertEqual(reviewed['source_preview'],preview)
+                self.assertEqual(store.get(saved['id'])['source'],saved['source'])
+
+    def test_feedback_preview_includes_bounded_attached_message_text(self):
+        outer, inner = EmailMessage(), EmailMessage()
+        outer['Subject'] = 'Forwarded synthetic message'; outer.set_content('See message below')
+        inner['Subject'] = 'Nested subject'; inner.set_content('Nested readable text',cte='quoted-printable')
+        outer.add_attachment(inner)
+        encoded = base64.b64encode(outer.as_bytes()).decode()
+        _, receipt, _ = self.submit(payload(include_source=True,input_mode='eml',source={'eml_base64':encoded}))
+        record = self.call('GET','/api/cases/' + receipt['id'] + '?kind=feedback')[1]
+        self.assertIn('Nested subject',record['source_preview']['body'])
+        self.assertIn('Nested readable text',record['source_preview']['body'])
 
     def test_default_report_is_private_source_free_and_idempotent(self):
         self.assertTrue(self.call('GET', '/api/config', token=None)[1]['feedback_enabled'])

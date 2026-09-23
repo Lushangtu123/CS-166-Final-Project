@@ -26,15 +26,31 @@ function setup(handler, vision = {cancel() {}, render() {}}) {
   const source = readFileSync(new URL('./cases.js', import.meta.url), 'utf8');
   class DataTransfer { constructor(){this.files=[];this.items={add:file=>this.files.push(file)};} }
   const window = {addEventListener(name, callback) { windowEvents[name] = callback; }, confirm: () => true, PhishGuardVision: vision};
+  let uuid = 0;
   const context=vm.createContext({document: {getElementById: el, createElement: () => new Element(), addEventListener() {}}, window,
-    DataTransfer, Event, URLSearchParams, crypto: {randomUUID: () => 'synthetic-uuid'}, fetch: async (url, options) => { calls.push({url, options}); const result = await handler(url, options); return {ok: result.status < 400, status: result.status, json: async () => result.data}; }});
+    DataTransfer, Event, URLSearchParams, crypto: {randomUUID: () => 'synthetic-uuid-' + (++uuid)}, fetch: async (url, options) => { calls.push({url, options}); const result = await handler(url, options); return {ok: result.status < 400, status: result.status, json: async () => result.data}; }});
   vm.runInContext(readFileSync(new URL('./file-intake.js',import.meta.url),'utf8'),context);
   vm.runInContext(source,context);
-  const fire = async (id, name = 'click') => { el(id).listeners[name]({preventDefault() {}, submitter: el(id + '-submit'), currentTarget: el(id)}); await tick(); };
+  const fire = async (id, name = 'click') => { el(id).listeners[name]({preventDefault() {}, submitter: el(id === 'create-form' ? 'create-case' : id + '-submit'), currentTarget: el(id)}); await tick(); };
   const login = async () => { el('token').value = 'synthetic-access-token-at-least-32-characters'; await fire('login-form', 'submit'); };
   return {el, fire, login, calls, window, windowEvents};
 }
 const standard = async url => ({status: 200, data: url.endsWith('/me') ? {actor: 'alice'} : url.startsWith('/api/cases?') ? {items: [caseValue()], total: 1} : caseValue()});
+
+test('EML feedback displays decoded text and warnings without falling back to transport encoding', async () => {
+  let record = {...caseValue(),kind:'feedback',provenance:{input_mode:'eml',source_consent:true},
+    source:{subject:'',body:'Content-Transfer-Encoding: base64\n\nencoded'},
+    source_preview:{status:'available',subject:'合成通知',body:'Meeting <img onerror=bad()>',warnings:['Charset fallback'],truncated:false}};
+  const ui = setup(async url => url.split('?')[0].endsWith('/case-1') ? {status:200,data:record} : standard(url));
+  await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
+  assert.equal(ui.el('source').textContent,'合成通知\n\nMeeting <img onerror=bad()>');
+  assert.match(ui.el('source-note').textContent,/decoded/i);
+  assert.match(ui.el('source-note').textContent,/Charset fallback/);
+  record = {...record,source_preview:{status:'unavailable',warnings:['Original evidence unchanged']}};
+  await ui.fire('reload-case');
+  assert.equal(ui.el('source').textContent,'');
+  assert.match(ui.el('source-note').textContent,/unavailable/i);
+});
 
 test('closing the only row on a filtered last page returns to the last valid page', async () => {
   let total = 26; const offsets = [];
@@ -590,6 +606,79 @@ test('failed creation retries with same idempotency key and input', async () => 
   assert.equal(posts.length, 2); assert.equal(posts[0].options.headers['Idempotency-Key'], posts[1].options.headers['Idempotency-Key']);
   assert.equal(posts[0].options.body, posts[1].options.body);
   assert.equal(ui.el('subject').value, 'Synthetic');
+});
+
+test('editing an uncertain case submission keeps the original retry and acknowledges its receipt', async () => {
+  const records = new Map(); let attempt = 0;
+  const ui = setup(async (url, opts) => {
+    if (opts.method !== 'POST') return standard(url);
+    const key = opts.headers['Idempotency-Key'];
+    if (!records.has(key)) records.set(key, {...caseValue(),id:'created-' + records.size});
+    return ++attempt === 1 ? {status:503,data:{detail:'Unconfirmed storage'}} : {status:201,data:records.get(key)};
+  });
+  await ui.login(); await ui.fire('open-compose'); ui.el('subject').value = 'Original';
+  await ui.fire('create-form','submit');
+  ui.el('subject').value = 'Later edit'; await ui.fire('create-form','input');
+  ui.window.confirm = () => false; await ui.fire('create-form','submit');
+  assert.equal(attempt,1);
+  ui.window.confirm = () => true; await ui.fire('create-form','submit');
+  const posts = ui.calls.filter(c => c.options.method === 'POST');
+  assert.equal(records.size,1); assert.equal(posts[0].options.body,posts[1].options.body);
+  assert.equal(posts[0].options.headers['Idempotency-Key'],posts[1].options.headers['Idempotency-Key']);
+  assert.equal(ui.el('subject').value,'Later edit'); assert.equal(ui.el('compose-dialog').open,true);
+  assert.match(ui.el('creation-status').textContent,/saved.*later edits.*not sent/i);
+  await ui.fire('create-form','submit'); assert.equal(attempt,2);
+  await ui.fire('new-case-draft'); await ui.fire('create-form','submit');
+  assert.equal(records.size,2);
+  assert.equal(JSON.parse(ui.calls.filter(c => c.options.method === 'POST')[2].options.body).subject,'Later edit');
+});
+
+test('image retry survives cancel and language changes without rescanning or forgetting an earlier timeout', async () => {
+  let scans = 0, attempts = 0;
+  const ui = setup(async (url, opts) => opts.method === 'POST'
+    ? {status:++attempts === 1 ? 503 : attempts === 2 ? 429 : 201,data:attempts < 3 ? {detail:'Retry later'} : caseValue()}
+    : standard(url), {cancel(){},render(){},async recognize(){scans++;return {observations:[],warnings:[]};}});
+  await ui.login(); ui.el('eml').files = [{name:'original.png',size:100}];
+  await ui.fire('create-form','submit'); await ui.fire('cancel-vision');
+  ui.el('eml').files = [{name:'later.png',size:200}]; await ui.fire('eml','change');
+  ui.el('case-ocr-language').value = 'chi_sim'; await ui.fire('case-ocr-language','change');
+  await ui.fire('create-form','submit'); await ui.fire('create-form','submit');
+  const posts = ui.calls.filter(c => c.options.method === 'POST');
+  assert.equal(scans,1); assert.equal(new Set(posts.map(c => c.options.headers['Idempotency-Key'])).size,1);
+  assert.equal(new Set(posts.map(c => c.options.body)).size,1);
+  assert.equal(ui.el('eml').files[0].name,'later.png');
+  assert.match(ui.el('creation-status').textContent,/saved/i);
+});
+
+test('a definitive initial rejection allows correction while a late success preserves edited drafts', async () => {
+  let attempts = 0, release;
+  const ui = setup(async (url, opts) => {
+    if (opts.method !== 'POST') return standard(url);
+    if (++attempts === 1) return {status:422,data:{detail:'Invalid message'}};
+    return await new Promise(resolve => {release = resolve;});
+  });
+  await ui.login(); await ui.fire('open-compose'); ui.el('body').value = 'Original';
+  await ui.fire('create-form','submit'); ui.el('body').value = 'Corrected'; await ui.fire('create-form','input');
+  await ui.fire('create-form','submit'); await ui.fire('create-form','submit'); assert.equal(attempts,2);
+  ui.el('body').value = 'Later draft'; await ui.fire('create-form','input');
+  release({status:201,data:caseValue()}); await tick(); await tick();
+  const posts = ui.calls.filter(c => c.options.method === 'POST');
+  assert.notEqual(posts[0].options.headers['Idempotency-Key'],posts[1].options.headers['Idempotency-Key']);
+  assert.equal(ui.el('body').value,'Later draft'); assert.equal(ui.el('create-case').disabled,true);
+  assert.match(ui.el('creation-status').textContent,/later edits.*not sent/i);
+});
+
+test('late creation replies cannot release a new session submission or restore a receipt', async () => {
+  const releases = [];
+  const ui = setup(async (url, opts) => opts.method === 'POST'
+    ? await new Promise(resolve => releases.push(resolve)) : standard(url));
+  await ui.login(); ui.el('subject').value = 'Old session'; await ui.fire('create-form','submit');
+  await ui.fire('logout'); await ui.login(); ui.el('subject').value = 'New session'; await ui.fire('create-form','submit');
+  releases[0]({status:201,data:caseValue()}); await tick();
+  await ui.fire('create-form','submit'); assert.equal(releases.length,2);
+  assert.equal(ui.el('create-case').disabled,true);
+  assert.doesNotMatch(ui.el('creation-status').textContent,/case-1 saved/);
+  releases[1]({status:201,data:caseValue()}); await tick();
 });
 
 test('a stale review preserves the analyst note and requests reload', async () => {

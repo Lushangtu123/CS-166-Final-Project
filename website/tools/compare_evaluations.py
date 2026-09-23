@@ -6,6 +6,8 @@ scoring definitions and inclusion rules must remain identical.
 """
 from __future__ import annotations
 import argparse
+from collections import defaultdict
+from datetime import date
 import json
 import math
 from pathlib import Path
@@ -13,6 +15,135 @@ import re
 
 PUBLIC = 'public_corpus_local_serving_pipeline'
 VISION = 'phishguard-vision-benchmark/v1'
+PRIVATE = 'local_serving_pipeline'
+
+
+def _compare_private(baseline, candidate, errors, changes):
+    """Validate accounting before comparing exact counts, never rounded rates."""
+    # This module is also invoked directly as a script, without a package root.
+    if __package__:
+        from .evaluate_serving_pipeline import _validated_configuration, ALERT_POLICY, INCLUSION_POLICY
+    else:
+        from evaluate_serving_pipeline import _validated_configuration, ALERT_POLICY, INCLUSION_POLICY
+
+    def same(a, b, key, prefix=''):
+        if key not in a or key not in b or a[key] != b[key]:
+            errors.append(f'Incomparable {prefix}{key}')
+
+    def integer(value):
+        return type(value) is int and value >= 0
+
+    def vector(summary):
+        counts = [summary[key] for key in ('n', 'phishing_count', 'legitimate_count')]
+        for label in ('phishing', 'legitimate'):
+            counts.extend(summary[label][key] for key in ('alerted', 'not_alerted', 'undetermined'))
+        counts.extend(summary[key] for key in ('unknown_count', 'complete_count', 'ml_available_count'))
+        if not all(integer(value) for value in counts):
+            raise ValueError('Invalid exact counts')
+        n, phishing, legitimate = counts[:3]
+        if (not n or n != phishing + legitimate or sum(counts[3:6]) != phishing
+                or sum(counts[6:9]) != legitimate or counts[9] != counts[5] + counts[8]
+                or any(value > n for value in counts[9:])):
+            raise ValueError('Inconsistent exact counts')
+        for key, numerator, denominator in (
+            ('phishing_alert_recall', counts[3], phishing),
+            ('legitimate_false_alert_rate', counts[6], legitimate),
+            ('unknown_rate', counts[9], n), ('complete_rate', counts[10], n),
+            ('ml_available_rate', counts[11], n),
+        ):
+            rate = summary[key]
+            if denominator == 0:
+                if rate is not None: raise ValueError('Unexpected rate without denominator')
+            elif (type(rate) not in (int, float) or not math.isfinite(rate)
+                  or rate != round(numerator / denominator, 4)):
+                raise ValueError('Rate does not match exact counts')
+        return counts
+
+    dimensions = {
+        'by_provider': (0,), 'by_language': (1,), 'by_month': (2,),
+        'by_provider_language': (0, 1), 'by_provider_month': (0, 2),
+        'by_language_month': (1, 2), 'by_provider_language_month': (0, 1, 2),
+    }
+
+    def leaves(tree, axes, prefix=()):
+        if not axes:
+            return {prefix: tree}
+        if not isinstance(tree, dict) or not tree:
+            raise ValueError('Missing groups')
+        result = {}
+        for key, child in tree.items():
+            if not isinstance(key, str): raise ValueError('Invalid group key')
+            valid = (key in ('gmail', 'outlook') if axes[0] == 0 else
+                     (key == 'unlabeled' or re.fullmatch('[a-z]{2,3}', key)) if axes[0] == 1 else
+                     re.fullmatch(r'\d{4}-(0[1-9]|1[0-2])', key))
+            if not valid: raise ValueError('Invalid group key')
+            result.update(leaves(child, axes[1:], prefix + (key,)))
+        return result
+
+    reports = []
+    for report in (baseline, candidate):
+        for key in ('scoring_sha256', 'model_artifact_sha256'):
+            if not re.fullmatch('[a-f0-9]{64}', str(report.get(key, ''))):
+                raise ValueError('Missing implementation identity')
+        configuration = report['reproducibility']['configuration']
+        if configuration is None: raise ValueError('Configuration was not declared')
+        _validated_configuration(configuration)
+        integrity = report['input_integrity']
+        for key in ('dataset_sha256', 'evaluated_cohort_sha256'):
+            if not re.fullmatch('[a-f0-9]{64}', str(integrity.get(key, ''))):
+                raise ValueError('Missing dataset identity')
+        if (integrity['fingerprint_schema'] != 'phishguard-evaluation-input-v1'
+                or integrity['duplicate_policy'] not in ('drop', 'error')
+                or integrity['deduplication'] != 'exact effective message input; conflicting labels or group metadata rejected'
+                or report['inclusion_policy'] != INCLUSION_POLICY or report['alert_policy'] != ALERT_POLICY
+                or report['temporal_isolation'] != 'not_verified'
+                or report['confidence_intervals'] != 'two-sided 95% Wilson score intervals'):
+            raise ValueError('Missing inclusion or scoring policy')
+        for key in ('input_rows', 'evaluated_rows', 'duplicate_rows'):
+            if not integer(integrity[key]): raise ValueError('Invalid input count')
+        if (integrity['input_rows'] != integrity['evaluated_rows'] + integrity['duplicate_rows']
+                or integrity['evaluated_rows'] != report['overall']['n']
+                or (integrity['duplicate_policy'] == 'error' and integrity['duplicate_rows'])):
+            raise ValueError('Inconsistent input accounting')
+        if date.fromisoformat(report['first_received_at']) > date.fromisoformat(report['last_received_at']):
+            raise ValueError('Invalid cohort dates')
+        overall = vector(report['overall'])
+        if not all(overall[1:3]): raise ValueError('Both email classes are required')
+        groups = {dimension: leaves(report[dimension], axes) for dimension, axes in dimensions.items()}
+        triples = {key: vector(summary) for key, summary in groups['by_provider_language_month'].items()}
+        if [sum(values) for values in zip(*triples.values())] != overall:
+            raise ValueError('Intersection counts do not total overall counts')
+        for dimension, axes in dimensions.items():
+            expected = defaultdict(lambda: [0] * len(overall))
+            for keys, counts in triples.items():
+                projected = tuple(keys[axis] for axis in axes)
+                expected[projected] = [a + b for a, b in zip(expected[projected], counts)]
+            actual = {key: vector(summary) for key, summary in groups[dimension].items()}
+            if actual != dict(expected): raise ValueError('Group counts do not match intersections')
+        reports.append({'overall': {(): report['overall']}, **groups})
+
+    for key in ('evaluation_scope', 'schema_version', 'scoring_sha256', 'alert_policy',
+                'inclusion_policy', 'temporal_isolation', 'confidence_intervals',
+                'first_received_at', 'last_received_at'):
+        same(baseline, candidate, key)
+    same(baseline['reproducibility'], candidate['reproducibility'], 'configuration')
+    for key in ('dataset_sha256', 'evaluated_cohort_sha256', 'fingerprint_schema',
+                'duplicate_policy', 'deduplication', 'input_rows', 'evaluated_rows', 'duplicate_rows'):
+        same(baseline['input_integrity'], candidate['input_integrity'], key, 'input_integrity.')
+    for dimension, a in reports[0].items():
+        b = reports[1][dimension]
+        if set(a) != set(b): errors.append(f'Incomparable groups {dimension}')
+        for group in sorted(set(a) & set(b)):
+            av, bv = vector(a[group]), vector(b[group])
+            prefix = '.'.join((dimension, *group)) + '.'
+            if av[:3] != bv[:3]: errors.append(f'Incomparable denominators {prefix}')
+            for index, metric, direction in ((3, 'phishing.alerted', 1), (6, 'legitimate.alerted', -1),
+                    (5, 'phishing.undetermined', -1), (8, 'legitimate.undetermined', -1),
+                    (9, 'unknown_count', -1), (10, 'complete_count', 1), (11, 'ml_available_count', 1)):
+                delta = bv[index] - av[index]
+                changes.append({'metric': prefix + metric, 'baseline': av[index],
+                                'candidate': bv[index], 'delta': delta})
+                if delta * direction < 0: errors.append(f'Regression {prefix}{metric}')
 
 
 def compare(baseline: dict, candidate: dict) -> dict:
@@ -88,7 +219,13 @@ def compare(baseline: dict, candidate: dict) -> dict:
         if not isinstance(baseline,dict) or not isinstance(candidate,dict):
             raise ValueError('Reports must be objects')
         same(baseline,candidate,'schema_version')
-        if baseline.get('evaluation_scope') == PUBLIC and baseline.get('schema_version') == 1:
+        if baseline.get('evaluation_scope') == PRIVATE:
+            if any(type(report.get('schema_version')) is not int or report['schema_version'] != 1
+                   for report in (baseline, candidate)):
+                errors.append('Unsupported private report version; regenerate baseline and candidate reports')
+            else:
+                _compare_private(baseline, candidate, errors, changes)
+        elif baseline.get('evaluation_scope') == PUBLIC and baseline.get('schema_version') == 1:
             for key in ('evaluation_scope','dataset_sha256','manifest_sha256','records_sha256','evaluated_cohort_sha256','scoring_sha256','alert_policy','exploratory_only'):
                 same(baseline,candidate,key)
             for key in ('dataset_sha256','manifest_sha256','records_sha256','evaluated_cohort_sha256','scoring_sha256'):

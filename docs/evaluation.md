@@ -203,6 +203,43 @@ Timing is diagnostic because browser cache and machine load vary; it is not a ga
 No tolerance is silently applied. A scorer or annotation correction needs a newly
 reviewed baseline; do not overwrite a baseline just to make a failing change pass.
 
+### Consented Gmail/Outlook comparisons
+
+Private `local_serving_pipeline` reports now use `schema_version: 1`. Generate both
+reports with the updated evaluator, using the same authorized JSONL and explicit
+trusted authentication service IDs, before and after a detector/model change:
+
+```sh
+.venv/bin/python website/tools/evaluate_serving_pipeline.py --input /absolute/private/cohort.jsonl > /absolute/private/baseline.json
+# After the intended detector/model update, evaluate the same input and options.
+.venv/bin/python website/tools/evaluate_serving_pipeline.py --input /absolute/private/cohort.jsonl > /absolute/private/candidate.json
+.venv/bin/python website/tools/compare_evaluations.py --baseline /absolute/private/baseline.json --candidate /absolute/private/candidate.json --output /absolute/private/comparison.json
+```
+
+The private gate requires identical input and included-cohort hashes, labels and
+group metadata, scorer identity, duplicate/inclusion policy, and explicit analyzer
+configuration. It validates record accounting and each provider, language and month
+group, including all observed pair and three-way intersections. Both email classes
+must be present overall; single-class subgroups still receive applicable checks.
+It compares exact alert, undetermined, complete-analysis and model-availability
+counts, so one extra miss or false alert cannot disappear in four-decimal displayed
+rates. Intersection counts must also reconcile with all marginal and overall totals.
+Code/model identities may change; settings and scoring definitions may not.
+
+The CLI disables network verification, sender history and auxiliary AI, and records
+the effective local model/trust settings. Programmatic `evaluate_records` callers
+must declare the matching bounded `configuration` to produce comparable reports;
+an omitted configuration remains `null` and the gate rejects it. Reports from the
+older unversioned evaluator must be regenerated on both versions; adding a version
+field by hand cannot recover missing exact counts and identities. Preserve prior
+reports as historical evidence, and never fabricate a pre-update baseline.
+
+Reports contain aggregate counts and hashes, not message text or original paths.
+Keep them private: small intersection groups and dates can still reveal cohort
+membership information. Dataset hashes establish reproducibility, not permission,
+label quality, training independence or a representative production sample. An
+analysis exception aborts report generation instead of silently dropping a row.
+
 The Vercel-runtime CI job evaluates four project-owned email controls with the
 committed model and compares against `website/tests/fixtures/evaluation/baseline.json`.
 Unit tests include deliberately worse, missing, changed and failed results to prove

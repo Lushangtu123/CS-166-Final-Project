@@ -34,8 +34,26 @@
     $('subject').disabled = $('body').disabled = false;
     $('case-file-status').textContent = ''; $('vision-progress').textContent = '';
   }
+  function renderCreation() {
+    $('create-case').disabled = createPending || Boolean(creation?.saved);
+    $('create-case').textContent = creation?.saved ? 'Case saved' : creation?.sent ? 'Retry original submission' : 'Analyze & create case →';
+    $('new-case-draft').hidden = !creation?.saved;
+    $('creation-status').textContent = creation?.saved
+      ? `Case ${creation.saved} saved. Your later edits were not sent. You can start a new case from this draft.`
+      : creation?.sent ? createPending
+        ? 'Submitting the original snapshot. Later edits will stay in this form.'
+        : 'The original submission is unconfirmed. Retry it to retrieve or finish that case before starting another. Later edits are kept separately.'
+      : '';
+  }
+  function changeCreationInput() {
+    // Once sent, a request may have committed even if its response was lost.
+    if (!creation?.sent) creation = null;
+    inputVersion++; window.PhishGuardVision?.cancel(); $('vision-progress').textContent = '';
+    renderCreation();
+  }
   function openComposer() {
     if (!token || $('workspace').hidden || $('compose-dialog').open) return;
+    renderCreation();
     $('compose-dialog').showModal();
   }
   function closeComposer({reset = false, force = false} = {}) {
@@ -103,7 +121,7 @@
   }
   function hasUnsavedWork() {
     captureDraft();
-    return reviewDrafts.size > 0 || reviewSaves.size > 0 || opinionSaves.size > 0 || createPending || Boolean($('subject').value || $('body').value || $('eml').files.length);
+    return reviewDrafts.size > 0 || reviewSaves.size > 0 || opinionSaves.size > 0 || createPending || Boolean(creation?.sent && !creation.saved) || Boolean($('subject').value || $('body').value || $('eml').files.length);
   }
   function signOut() {
     jevAvailable = false; jevConfig = {status: 'disabled'}; jevStatusTurn++; clearJev();
@@ -114,6 +132,7 @@
     $('case-file-status').textContent = '';
     $('visual-evidence').replaceChildren(); $('visual-evidence').hidden = true;
     token = ''; epoch++; listEpoch++; detailEpoch++; selected = null; creation = null;
+    createPending = false; renderCreation();
     reviewDrafts.clear(); reviewSaves.clear(); opinionSaves.clear(); reviewBaseline = null; renderDraftState();
     latestVersions.clear(); queueError = ''; $('queue-warning').textContent = ''; $('history-capacity').textContent = '';
     capacityTurn++; overviewTurn++;
@@ -294,6 +313,14 @@
       ? 'Original input was not included. Review is limited to the diagnostic summary and reporter note.'
       : value.source.text_truncated ? 'Saved text was truncated. See analysis warnings for other coverage limitations.'
       : 'Message text is displayed without rendering HTML or loading external content.';
+    if (value.kind === 'feedback' && value.provenance?.source_consent && value.provenance.input_mode === 'eml') {
+      const preview = value.source_preview;
+      $('source').textContent = preview?.status === 'available' ? `${preview.subject}\n\n${preview.body}` : '';
+      $('source-note').textContent = (preview?.status === 'available'
+        ? 'Decoded text preview. Recoverable plain/HTML alternatives and attached message text are shown together. Attachments and remote content are not displayed. Original email bytes are unchanged.'
+        : 'Decoded preview unavailable. Original email remains in saved evidence.') +
+        (preview?.warnings?.length ? ' Warnings: ' + preview.warnings.join(' ') : '');
+    }
     $('review-status').replaceChildren(...transitions[value.status].map(status => { const allowed = !value.history_capacity || value.history_capacity.review_statuses.includes(status); const option = node('option', labels[status] + (allowed ? '' : ' (history capacity)')); option.value = status; option.disabled = !allowed; return option; }));
     $('review-status').value = transitions[value.status][0];
     $('feedback-review-fields').hidden = value.kind !== 'feedback';
@@ -498,10 +525,10 @@
     if (!selected || reviewSaves.has(selected.id)) return;
     reviewDrafts.delete(selected.id); restoreReview(reviewBaseline); renderDraftState();
   });
-  $('create-form').addEventListener('input', () => { creation = null; inputVersion++; window.PhishGuardVision?.cancel(); $('vision-progress').textContent = ''; });
-  $('case-ocr-language').addEventListener('change', () => { creation = null; inputVersion++; window.PhishGuardVision?.cancel(); $('vision-progress').textContent = ''; });
+  $('create-form').addEventListener('input', changeCreationInput);
+  $('case-ocr-language').addEventListener('change', changeCreationInput);
   $('eml').addEventListener('change', () => {
-    creation = null; inputVersion++; window.PhishGuardVision?.cancel();
+    changeCreationInput();
     const file = $('eml').files[0]; $('subject').disabled = $('body').disabled = Boolean(file);
     $('vision-progress').textContent = '';
     $('case-file-status').textContent = file ? `${file.name} loaded. Click Analyze & create case to continue. Manual fields are ignored.` : '';
@@ -509,9 +536,16 @@
   window.PhishGuardFiles?.bind({zone: $('case-file-dropzone'), input: $('eml'),
     enabled: () => Boolean(token) && !$('workspace').hidden,
     onError: message => notice(message, true)});
-  $('cancel-vision').addEventListener('click', () => { inputVersion++; creation = null; window.PhishGuardVision?.cancel(); $('vision-progress').textContent = ''; });
+  $('cancel-vision').addEventListener('click', changeCreationInput);
+  $('new-case-draft').addEventListener('click', () => {
+    if (createPending || !creation?.saved) return;
+    creation = null; renderCreation(); notice('Draft ready for a new case. Review the input before submitting.');
+  });
   $('create-form').addEventListener('submit', event => {
-    event.preventDefault(); const current = epoch; createPending = true;
+    event.preventDefault();
+    if (createPending || creation?.saved) return;
+    if (creation?.sent && creation.version !== inputVersion && !window.confirm('Retry the original case submission? Only the original message and extracted evidence will be sent. Your later edits will stay here for a separate case.')) return;
+    const current = epoch; createPending = true; renderCreation();
     action(event.submitter, async () => {
       if (!creation) {
         const snapshot = inputVersion, file = $('eml').files[0];
@@ -523,15 +557,26 @@
         const body = JSON.stringify(payload);
         if (current !== epoch) return;
         if (snapshot !== inputVersion) throw new Error('Input changed while reading the file. Submit again.');
-        creation = {key: crypto.randomUUID(), body, file: Boolean(file)};
+        creation = {key: crypto.randomUUID(), body, file: Boolean(file), version: snapshot};
       }
       const submitted = creation;
-      const value = await api(submitted.file ? '/visual' : '', {method: 'POST', headers: {'Content-Type': 'application/json', 'Idempotency-Key': submitted.key}, body: submitted.body});
+      submitted.sent = true; renderCreation();
+      let value;
+      try {
+        value = await api(submitted.file ? '/visual' : '', {method: 'POST', headers: {'Content-Type': 'application/json', 'Idempotency-Key': submitted.key}, body: submitted.body});
+      } catch (error) {
+        if (current === epoch && creation === submitted) {
+          if (!submitted.uncertain && [400, 413, 422, 429].includes(error.status)) creation = null;
+          else submitted.uncertain = true;
+        }
+        throw error;
+      }
       // Do not clear input edited while this submission was in flight.
-      if (creation === submitted) { creation = null; closeComposer({reset: true, force: true}); }
+      submitted.saved = value.id;
+      if (inputVersion === submitted.version) { creation = null; closeComposer({reset: true, force: true}); }
       $('vision-progress').textContent = '';
       detailEpoch++; renderCase(value); notice('Case saved.'); await loadList();
-    }).finally(() => { createPending = false; });
+    }).finally(() => { if (current === epoch) createPending = false; renderCreation(); });
   });
   $('review-form').addEventListener('submit', event => {
     event.preventDefault(); if (!selected) return;

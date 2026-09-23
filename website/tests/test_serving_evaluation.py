@@ -15,6 +15,35 @@ from tools import evaluate_serving_pipeline
 
 
 class ServingEvaluationTests(unittest.TestCase):
+    def test_private_versioned_report_records_exact_counts_and_scoring_identity(self):
+        report = self.evaluate([self.evaluation_row()])
+        self.assertEqual(report['schema_version'], 1)
+        self.assertRegex(report['scoring_sha256'], r'^[a-f0-9]{64}$')
+        self.assertRegex(report['input_integrity']['evaluated_cohort_sha256'], r'^[a-f0-9]{64}$')
+        self.assertEqual(report['overall']['complete_count'], 1)
+        self.assertEqual(report['overall']['ml_available_count'], 0)
+        self.assertEqual(report['overall']['unknown_count'], 0)
+        self.assertEqual(report['by_provider_language_month']['gmail']['unlabeled']['2026-08'], report['overall'])
+        self.assertIsNone(report['reproducibility']['configuration'])
+        self.assertNotIn('private subject', json.dumps(report))
+        with patch.object(evaluate_serving_pipeline, 'WILSON_95_Z', 2):
+            changed = self.evaluate([self.evaluation_row()])
+        self.assertNotEqual(report['scoring_sha256'], changed['scoring_sha256'])
+
+    def test_private_configuration_is_explicit_bounded_and_not_a_secret_container(self):
+        configuration = {'trusted_authserv_ids': [], 'observe_sender_history': False,
+                         'verification_mode': 'off', 'content_model_enabled': True,
+                         'auxiliary_enabled': False}
+        report = self.evaluate([self.evaluation_row()], configuration=configuration)
+        configuration['trusted_authserv_ids'].append('changed.example')
+        self.assertEqual(report['reproducibility']['configuration']['trusted_authserv_ids'], [])
+        for altered in ({}, {**configuration, 'token': 'private token'},
+                        {**configuration, 'observe_sender_history': True},
+                        {**configuration, 'trusted_authserv_ids': ['private secret']}):
+            with self.subTest(configuration=altered), self.assertRaises(ValueError) as caught:
+                self.evaluate([self.evaluation_row()], configuration=altered)
+            self.assertNotIn('private', str(caught.exception))
+
     def test_eml_bytes_are_parsed_without_loading_version_specific_model(self):
         import app
         from config import load_settings

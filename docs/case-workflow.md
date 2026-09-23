@@ -126,6 +126,17 @@ subject/body, an original `.eml` file, or a PNG/JPEG/WebP image. Creation saves 
 evidence; the public analyzer does not automatically create cases. Everyone
 configured for this workspace can read and review its cases.
 
+If case creation has an unconfirmed outcome, **Retry original submission** keeps
+the original message, extracted image evidence and request key. Editing the draft,
+changing OCR language or cancelling a scan cannot discard an already sent request.
+After edits, retry asks before resending the original snapshot. A successful
+receipt keeps later edits visible as unsent; **Start a new case from draft** then
+allows a separate submission. A definite initial validation or rate-limit rejection
+allows correction, but cannot clear uncertainty from an earlier attempt.
+This state stays in the current tab only. Before refreshing or signing out after
+an uncertain submission, check the queue for the saved case; the tab cannot recover
+its retry key after it is closed.
+
 Users can select **Report an issue** after either public analysis result.
 Reports are saved to a separate private feedback namespace and appear in the
 same analyst queue with a **USER FEEDBACK** badge. Use the **Type** filter to
@@ -154,6 +165,14 @@ per client per hour; it has no public read route. Set
 `CASE_FEEDBACK_WORKSPACE` only if the derived feedback namespace must differ
 from the default; changing it selects different feedback data. Local SQLite
 uses a sibling `.feedback` database. Include that file in backups.
+For retained EML feedback, **Saved message text** now derives a decoded preview
+from the original bytes, including encoded subjects, declared charsets, plain/HTML
+alternatives and attached message text. HTML is displayed as text; remote images
+and ordinary attachments are not loaded. Preview text is limited to 60,000
+characters with bounded parsing/truncation warnings. An unreadable original gets
+an explicit unavailable notice while the case remains reviewable. Existing records
+receive the same preview on read; stored evidence, revisions, original bytes and
+evaluation inputs are unchanged.
 For content or original EML, users may separately opt into **private detection
 evaluation**. This requires retaining original input; private review consent alone
 does not grant evaluation use. Existing reports remain ineligible. Evaluation

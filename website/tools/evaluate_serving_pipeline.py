@@ -12,6 +12,7 @@ import asyncio
 from collections import Counter, defaultdict
 from datetime import date
 import hashlib
+import inspect
 import json
 import math
 import os
@@ -32,6 +33,8 @@ ALERT_LEVELS = {'medium', 'high', 'critical'}
 RISK_LEVELS = ALERT_LEVELS | {'safe', 'low', 'unknown'}
 WILSON_95_Z = 1.959963984540054
 MAX_EML_BYTES = 60_000
+ALERT_POLICY = 'medium/high/critical count as alerts; unknown is undetermined'
+INCLUSION_POLICY = 'all valid unique inputs; analysis errors abort without a report; training overlap not verified'
 
 
 def _validated_record(row: dict, index: int) -> dict:
@@ -157,22 +160,67 @@ def _summary(outcomes: list[dict]) -> dict:
     }
 
 
+def _private_summary(outcomes: list[dict]) -> dict:
+    # Preserve the public evaluator's scoring implementation and baseline hash.
+    return {**_summary(outcomes),
+            'unknown_count': sum(item['decision'] == 'undetermined' for item in outcomes),
+            'complete_count': sum(item['complete'] for item in outcomes),
+            'ml_available_count': sum(item['ml_available'] for item in outcomes)}
+
+
+def _decision(risk: str) -> str:
+    return ('undetermined' if risk == 'unknown' else
+            'alerted' if risk in ALERT_LEVELS else 'not_alerted')
+
+
+def _scoring_sha256() -> str:
+    payload = [inspect.getsource(function) for function in
+               (_summary, _private_summary, _rate_with_interval, _decision)]
+    payload.append({'labels': sorted(LABELS), 'alert_levels': sorted(ALERT_LEVELS),
+                    'risk_levels': sorted(RISK_LEVELS), 'wilson_95_z': WILSON_95_Z})
+    return hashlib.sha256(b'private-serving-scoring-v1\0' + _json_bytes(payload)).hexdigest()
+
+
+def _validated_configuration(configuration: dict | None) -> dict | None:
+    # A supplied analyzer must declare its configuration; do not guess it from
+    # the current machine or accidentally serialize arbitrary environment data.
+    if configuration is None:
+        return None
+    keys = {'trusted_authserv_ids', 'observe_sender_history', 'verification_mode',
+            'content_model_enabled', 'auxiliary_enabled'}
+    if not isinstance(configuration, dict) or set(configuration) != keys:
+        raise ValueError('Evaluation configuration is incomplete or unsupported')
+    ids = configuration['trusted_authserv_ids']
+    if (not isinstance(ids, list) or any(not isinstance(value, str) or
+            not re.fullmatch(r'[a-z0-9._-]{1,253}', value) for value in ids)
+            or ids != sorted(set(ids))
+            or configuration['observe_sender_history'] is not False
+            or configuration['verification_mode'] != 'off'
+            or type(configuration['content_model_enabled']) is not bool
+            or configuration['auxiliary_enabled'] is not False):
+        raise ValueError('Evaluation configuration is invalid or uses external state')
+    return json.loads(_json_bytes(configuration))
+
+
 def evaluate_records(
     rows: Iterable[dict],
     analyze: Callable[[dict], dict],
     *,
     model_sha256: str,
     duplicate_policy: str = 'drop',
+    configuration: dict | None = None,
 ) -> dict:
     """Run each row through the supplied serving analyzer and emit aggregates."""
     if not re.fullmatch(r'[0-9a-f]{64}', model_sha256):
         raise ValueError('A full lowercase model SHA-256 is required')
     if duplicate_policy not in {'drop', 'error'}:
         raise ValueError('duplicate_policy must be drop or error')
+    configuration = _validated_configuration(configuration)
     outcomes = []
     dates = []
     seen = {}
     input_digests = []
+    included_digests = []
     duplicate_rows = 0
     for index, raw_row in enumerate(rows, 1):
         row = _validated_record(raw_row, index)
@@ -192,6 +240,7 @@ def evaluate_records(
             duplicate_rows += 1
             continue
         seen[content_digest] = (index, metadata)
+        included_digests.append(input_digests[-1])
         try:
             result = analyze(row)
         except Exception:
@@ -206,8 +255,7 @@ def evaluate_records(
             'language': row.get('language', 'unlabeled'),
             'month': row['received_at'][:7],
             'label': row['label'],
-            'decision': ('undetermined' if risk == 'unknown' else
-                         'alerted' if risk in ALERT_LEVELS else 'not_alerted'),
+            'decision': _decision(risk),
             'complete': result.get('analysis_complete') is True,
             'ml_available': result.get('ml_status') == 'available',
         })
@@ -215,19 +263,20 @@ def evaluate_records(
     if not outcomes:
         raise ValueError('No evaluation rows were supplied')
 
-    by_provider = defaultdict(list)
-    by_language = defaultdict(list)
-    by_month = defaultdict(list)
-    by_provider_language = defaultdict(lambda: defaultdict(list))
-    by_provider_month = defaultdict(lambda: defaultdict(list))
-    for item in outcomes:
-        by_provider[item['provider']].append(item)
-        by_language[item['language']].append(item)
-        by_month[item['month']].append(item)
-        by_provider_language[item['provider']][item['language']].append(item)
-        by_provider_month[item['provider']][item['month']].append(item)
+    def grouped(items, dimensions):
+        if not dimensions:
+            return _private_summary(items)
+        buckets = defaultdict(list)
+        for item in items:
+            buckets[item[dimensions[0]]].append(item)
+        return {key: grouped(values, dimensions[1:]) for key, values in sorted(buckets.items())}
+
     return {
+        'schema_version': 1,
         'evaluation_scope': 'local_serving_pipeline',
+        'scoring_sha256': _scoring_sha256(),
+        'inclusion_policy': INCLUSION_POLICY,
+        'reproducibility': {'configuration': configuration},
         'input_integrity': {
             'input_rows': len(input_digests),
             'evaluated_rows': len(outcomes),
@@ -240,27 +289,22 @@ def evaluate_records(
             'dataset_sha256': hashlib.sha256(
                 b'phishguard-evaluation-input-v1\0' + b''.join(sorted(input_digests))
             ).hexdigest(),
+            'evaluated_cohort_sha256': hashlib.sha256(
+                b'phishguard-evaluation-cohort-v1\0' + b''.join(sorted(included_digests))
+            ).hexdigest(),
             'warnings': ([f'{duplicate_rows} duplicate rows were excluded from all metrics.']
                          if duplicate_rows else []),
         },
-        'alert_policy': 'medium/high/critical count as alerts; unknown is undetermined',
+        'alert_policy': ALERT_POLICY,
         'confidence_intervals': 'two-sided 95% Wilson score intervals',
         'temporal_isolation': 'not_verified',
         'model_artifact_sha256': model_sha256,
         'first_received_at': min(dates),
         'last_received_at': max(dates),
-        'overall': _summary(outcomes),
-        'by_provider': {key: _summary(values) for key, values in sorted(by_provider.items())},
-        'by_language': {key: _summary(values) for key, values in sorted(by_language.items())},
-        'by_month': {key: _summary(values) for key, values in sorted(by_month.items())},
-        'by_provider_language': {
-            provider: {language: _summary(values) for language, values in sorted(languages.items())}
-            for provider, languages in sorted(by_provider_language.items())
-        },
-        'by_provider_month': {
-            provider: {month: _summary(values) for month, values in sorted(months.items())}
-            for provider, months in sorted(by_provider_month.items())
-        },
+        'overall': _private_summary(outcomes),
+        **{'by_' + '_'.join(dimensions): grouped(outcomes, dimensions) for dimensions in (
+            ('provider',), ('language',), ('month',), ('provider', 'language'),
+            ('provider', 'month'), ('language', 'month'), ('provider', 'language', 'month'))},
     }
 
 
@@ -349,11 +393,15 @@ def main() -> None:
 
     profile = json.loads((PROJECT_ROOT / 'vercel.json').read_text(encoding='utf-8'))['env']
     evaluation_env = {**profile, 'TRUSTED_AUTHSERV_IDS': ','.join(trusted_ids),
-                      'SENDER_HISTORY_ENABLED': 'false'}
+                      'SENDER_HISTORY_ENABLED': 'false', 'VERIFICATION_MODE': 'off',
+                      'CASE_MANAGEMENT_ENABLED': 'false', 'PHISHGUARD_JEV_ENABLED': 'false'}
     # Import-time settings must not inherit the invoking shell's trust or services.
     with patch.dict(os.environ, evaluation_env, clear=True):
         import app
     settings = load_settings(evaluation_env)
+    configuration = {'trusted_authserv_ids': sorted(settings.trusted_authserv_ids),
+                     'observe_sender_history': False, 'verification_mode': settings.effective_verification_mode,
+                     'content_model_enabled': settings.content_model_enabled, 'auxiliary_enabled': False}
     model_sha256 = profile['CONTENT_MODEL_ARTIFACT_SHA256'].lower()
     pipeline = load_content_pipeline_artifact(
         PROJECT_ROOT / profile['CONTENT_MODEL_ARTIFACT'], model_sha256,
@@ -361,11 +409,9 @@ def main() -> None:
 
     with patch.object(app, '_content_pipeline', pipeline), patch.object(app, 'SETTINGS', settings):
         report = evaluate_records(_jsonl_records(args.input), analyze_record,
-                                  model_sha256=model_sha256, duplicate_policy=args.duplicate_policy)
-    report['reproducibility'] = _evaluation_metadata({
-        'trusted_authserv_ids': trusted_ids,
-        'observe_sender_history': False,
-    })
+                                  model_sha256=model_sha256, duplicate_policy=args.duplicate_policy,
+                                  configuration=configuration)
+    report['reproducibility'] = _evaluation_metadata(configuration)
     print(json.dumps(report, indent=2, sort_keys=True))
 
 

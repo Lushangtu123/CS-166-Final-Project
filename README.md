@@ -961,6 +961,12 @@ Do not use these numbers to describe sender-address or full-email detection.
 
 ### Team case workspace
 
+Case creation retains its original submission for safe retries after uncertain
+failures, while keeping later edits as a separate draft. Retained EML feedback
+also has a decoded text preview with parsing warnings; original evidence is unchanged.
+Private evaluation reports support the same-cohort release comparison described
+in [the evaluation guide](docs/evaluation.md#3-compare-a-baseline-before-release).
+
 The optional `/cases` workspace adds authenticated case creation, evidence review,
 human verdicts, status changes and operation history. Vercel requires persistent
 Upstash storage; the feature is disabled until configured. See
