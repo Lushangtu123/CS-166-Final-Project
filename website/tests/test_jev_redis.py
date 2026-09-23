@@ -153,6 +153,25 @@ class JevRedisTests(unittest.TestCase):
         with self.assertRaises(CaseInvalid):
             self.store.update(case['id'],actor='alice',expected_version=202,status='in_progress',verdict='legitimate',note='Reopen')
 
+    def test_real_lua_legacy_byte_capacity_recovers_without_reopening(self):
+        from case_store import CaseInvalid, history_capacity
+        from case_cloud import encoded, summary
+        case=self.store.create(actor='alice',request_key='byte-full',input_sha256='f'*64,
+            source={'subject':'Synthetic'},analysis={'risk_level':'low'},provenance={})
+        case['analysis']['synthetic_legacy_evidence']=''
+        case['analysis']['synthetic_legacy_evidence']='x'*(750000-len(encoded(case).encode()))
+        self.store.execute('HSET',self.store.key,'r:'+case['id'],encoded(case),'s:'+case['id'],summary(case))
+        self.assertFalse(history_capacity(self.store.get(case['id']))['can_save_opinion'])
+        with self.assertRaises(CaseInvalid):
+            self.store.update(case['id'],actor='alice',expected_version=1,status='pending',verdict=None,note='More')
+        self.store.update(case['id'],actor='alice',expected_version=1,status='in_progress',verdict='legitimate',note='🧪'*4000)
+        closed=self.store.update(case['id'],actor='alice',expected_version=2,status='closed',verdict='legitimate',note='🧪'*4000)
+        self.assertEqual(self.store.get(case['id']),closed)
+        self.assertEqual(self.store.list()['items'][0]['status'],'closed')
+        self.assertLessEqual(len(encoded(closed).encode()),850000)
+        with self.assertRaises(CaseInvalid):
+            self.store.update(case['id'],actor='alice',expected_version=3,status='in_progress',verdict='legitimate',note='Reopen')
+
     def test_real_lua_midnight_retains_receipt_then_expiry_allows_new_claim(self):
         first = self.control.reserve('b' * 64, 1)
         snapshot = self.control.snapshot(1)

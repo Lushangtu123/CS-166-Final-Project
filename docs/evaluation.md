@@ -2,6 +2,13 @@
 
 ## Reviewed user feedback draft
 
+Contradictory review reasons and verdicts are excluded from draft export and
+counted as `inconsistent_review`. The private cohort builder applies the same
+rule to older drafts: false alert requires legitimate, missed threat requires
+phishing, and insufficient evidence requires uncertain. Resolve the original
+human review and regenerate the draft before evaluation; labels are never
+silently corrected by these tools.
+
 The workspace feedback overview summarizes retained report reviews. It is not an
 evaluation cohort: duplicate reports may be counted, reporting is self-selected,
 and there is no denominator of all analyzed messages. Do not present those counts

@@ -16,7 +16,7 @@ WEBSITE_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WEBSITE_DIR))
 
 from tools.case_archive import read_archive, validate_archive, write_private_bytes, _canonical
-from case_store import feedback_review_fields, ambiguous_feedback_subject
+from case_store import feedback_review_fields, ambiguous_feedback_subject, feedback_review_consistent
 
 
 def _source_row(record):
@@ -69,7 +69,7 @@ def build_reviewed_draft(archive):
     records, _requests = validate_archive(archive)['feedback']
     counts = {'total': len(records), 'no_evaluation_consent': 0, 'not_closed_or_labeled': 0,
               'unstructured_review': 0, 'invalid_source': 0, 'duplicates': 0,
-              'conflicting_labels': 0, 'ambiguous_legacy_subject': 0}
+              'conflicting_labels': 0, 'ambiguous_legacy_subject': 0, 'inconsistent_review': 0}
     groups = {}
     for record in records.values():
         provenance = record['provenance']
@@ -82,6 +82,9 @@ def build_reviewed_draft(archive):
             counts['not_closed_or_labeled'] += 1
             continue
         review = feedback_review_fields(record)
+        if not feedback_review_consistent(record['verdict'], review['feedback_reason']):
+            counts['inconsistent_review'] += 1
+            continue
         if not review['feedback_reason'] or review['evidence_basis'] not in {
                 'retained_message', 'external_verification'}:
             counts['unstructured_review'] += 1

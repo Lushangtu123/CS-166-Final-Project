@@ -67,7 +67,8 @@ Saving increments the case revision with the same atomic conflict checks as a
 review; risk, status, verdict and original detection evidence are unchanged.
 Only open formal cases support a new opinion entry; reopen closed cases first.
 Ordinary history writes reserve the final workflow steps within the 200-event
-limit; the 750 KB limit still applies. Retrying the same analyst/receipt returns
+limit; ordinary writes also preserve closing space within the 750 KB byte limit.
+Retrying the same analyst/receipt returns
 the existing record without another event, including after receipt expiry.
 The response's `auxiliary_save.outcome` distinguishes `saved` from `already_saved`,
 with the submitted `base_version` and `receipt_id`. Only an actual new opinion
@@ -82,6 +83,10 @@ not a provider connectivity test or an automatic rollback. CI also runs the Lua
 control tests against its own disposable Redis, using random synthetic namespaces.
 
 ## Opening and reviewing cases
+
+Pagination commits a new page only after its request succeeds. A failed Next or
+Previous request keeps the displayed page and offset; retry requests the same
+target page. Late responses cannot replace a more recent filter or page result.
 
 While a review save is in progress, newer edits to the note or review selections
 remain in the form after the saved revision arrives. The notice identifies them
@@ -220,14 +225,22 @@ Provider plan limits can reject writes earlier; failures never claim success.
 History limits are shared by SQLite and Upstash. An open case reserves two
 entries while pending (start and close), or one while in progress (close).
 Ordinary notes and auxiliary opinions cannot consume those reserved entries.
-The detail panel shows remaining ordinary writes and disables actions that no
+The detail panel shows remaining history slots and bytes and disables actions that no
 longer fit. Existing full records can use at most two additional entries, up to
 202 total, only to advance pending → in progress → closed. Those recovery slots
 cannot be used for notes, opinions or reopening. Full closed cases require a
 new follow-up investigation. Existing history is never truncated or deleted.
-Archives and local restore accept the bounded 202-entry recovery history.
-The 750 KB byte limit remains independent; a large record may still need a
-shorter closing note. Capacity checks are repeated atomically when saving.
+Byte reservations use 50 KB per remaining workflow step: pending records reserve
+100 KB, and in-progress records reserve 50 KB. This includes a full 4,000-character
+note even when non-BMP characters require 12 bytes each in escaped JSON. New
+records and ordinary notes/opinions cannot consume these reservations.
+Older records that already used this space may advance only through start/close,
+with the same per-step reservation inside a hard 850 KB recovery ceiling. They
+cannot use recovery space for ordinary notes, auxiliary opinions or reopening.
+Archives and local restore accept the bounded 202-entry, 850 KB recovery history.
+Existing records are not rewritten. The UI shows exact encoded storage use;
+the submitted note and event are checked again within the transaction or before
+the atomic cloud compare-and-set operation.
 
 ## Feedback overview and review filters
 
@@ -237,6 +250,9 @@ retained feedback, independently of queue filters: pending/in-progress reports,
 closed reports, confirmed false alerts and confirmed missed threats. A confirmed
 finding requires a closed record with the matching human verdict and structured
 reason, plus external verification or a consented retained-message evidence basis.
+New closures require consistent choices: false alert → legitimate, missed threat
+→ phishing, and insufficient evidence → uncertain. Other reasons do not prescribe
+a verdict. In-progress reviews may keep provisional choices until closure.
 Uncertain, reopened, reporter-only and inconsistent reviews do not contribute to
 confirmed counts. Duplicate reports can still be counted separately. These are
 reviewed-report counts, not overall model false-positive or false-negative rates.

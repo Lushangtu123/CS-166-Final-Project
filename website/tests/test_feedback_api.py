@@ -150,7 +150,7 @@ class FeedbackAPITests(unittest.TestCase):
         self.assertEqual(self.call('PATCH', path, payload={**closure,
             'evidence_basis': 'report_only'})[0], 422)
         self.assertEqual(self.call('PATCH', path, payload={**closure,
-            'verdict': 'uncertain', 'evidence_basis': 'report_only'})[0], 200)
+            'verdict': 'uncertain', 'feedback_reason': 'insufficient_evidence', 'evidence_basis': 'report_only'})[0], 200)
 
     def test_in_progress_feedback_can_clear_an_incorrect_reason(self):
         _, receipt, _ = self.submit()

@@ -977,7 +977,9 @@ tools do not automatically train or validate the model. See [evaluation scope](d
 The workspace also shows counts of open/closed feedback and evidence-supported
 review findings, with verdict and review-reason filters. These counts describe
 retained reports, not model-wide error rates. Per-case history capacity reserves
-room for final workflow steps, and repeated Jev saves preserve review conflicts.
+history slots and byte space for final workflow steps, and repeated Jev saves
+preserve review conflicts. Failed page loads retain the current page for retry.
+Contradictory review reasons and verdicts cannot be closed or enter evaluation drafts.
 
 ## Image and QR recognition
 

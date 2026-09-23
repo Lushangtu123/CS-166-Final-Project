@@ -21,7 +21,7 @@ WEBSITE_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WEBSITE_DIR))
 
 from tools.case_archive import PROJECT_ROOT, _canonical, write_private_bytes
-from case_store import FEEDBACK_REASONS, ambiguous_feedback_subject
+from case_store import FEEDBACK_REASONS, ambiguous_feedback_subject, feedback_review_consistent
 
 
 MAX_INPUT_BYTES = 160_000_000
@@ -100,6 +100,8 @@ def build_cohort(draft, annotations):
                 row['reviewed_by'] not in row['case_reviewer_ids']:
             raise ValueError('Draft contains a duplicate or unreviewed record.')
         fingerprint = row.get('content_sha256')
+        if not feedback_review_consistent(row['label'], row['review_reason']):
+            raise ValueError('Draft has an inconsistent review reason and label; resolve the case review and regenerate the draft.')
         if not isinstance(fingerprint, str) or not re.fullmatch(r'[0-9a-f]{64}', fingerprint) or \
                 fingerprint in fingerprints:
             raise ValueError('Draft contains duplicate or invalid message fingerprints.')

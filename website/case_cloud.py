@@ -9,7 +9,7 @@ import re
 import uuid
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 
-from case_store import CaseConflict, CaseInvalid, CaseNotFound, RISKS, now, validate_review, case_title, bounded_record, summarize_feedback
+from case_store import CaseConflict, CaseInvalid, CaseNotFound, RISKS, now, validate_review, case_title, validate_record_write, summarize_feedback
 
 
 class CaseUnavailable(Exception):
@@ -180,20 +180,21 @@ class UpstashCaseStore:
             self.request_id(actor, request_key), input_sha256, case_id, self._bounded(case),
             summary(case), encoded({'id': case_id, 'digest': input_sha256})))
 
-    def _bounded(self, case):
-        return bounded_record(case)
+    def _bounded(self, case, previous_status=None):
+        return validate_record_write(case, previous_status)
 
     def update(self, case_id, *, actor, expected_version, status, verdict, note,
                feedback_reason=None, evidence_basis=None):
         case = self.get(case_id)
         changes = validate_review(case, expected_version, status, verdict, note,
                                   feedback_reason, evidence_basis)
+        previous_status = case['status']
         timestamp = now()
         case['events'].append(dict(actor=actor, happened_at=timestamp,
             action='reopened' if case['status'] == 'closed' else 'reviewed', changes=changes, note=note.strip()))
         case.update(status=status, verdict=verdict, updated_at=timestamp, version=expected_version + 1)
         return self._result(self.execute('EVAL', UPDATE_SCRIPT, 1, self.key, case_id,
-            expected_version, self._bounded(case), summary(case)))
+            expected_version, self._bounded(case, previous_status), summary(case)))
 
     def list(self, *, status=None, risk=None, verdict=None, feedback_reason=None, created_from=None, created_to=None, limit=25, offset=0):
         values = self.execute('EVAL', FEEDBACK_LIST_SCRIPT if feedback_reason else LIST_SCRIPT, 1, self.key)

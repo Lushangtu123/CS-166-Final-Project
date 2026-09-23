@@ -29,7 +29,11 @@ class FeedbackOverviewTests(unittest.TestCase):
             if verdict:
                 store.update(case['id'],actor='alice',expected_version=1,status='in_progress',verdict=verdict,
                     note='Private assessment',feedback_reason=reason,evidence_basis=basis)
-                if close: store.update(case['id'],actor='alice',expected_version=2,status='closed',verdict=verdict,note='Reviewed')
+                if close:
+                    # Seed historical inconsistent records as well; new reviews reject them.
+                    with store.connection(write=True) as db:
+                        store._event(db,case['id'],'alice',case['created_at'],'reviewed',{'status':{'from':'in_progress','to':'closed'}},'Reviewed')
+                        db.execute('UPDATE cases SET status=?,version=3 WHERE id=?',('closed',case['id']))
         return store,ids
 
     def test_overview_is_private_and_counts_only_supported_closed_findings(self):

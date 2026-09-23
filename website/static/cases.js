@@ -10,6 +10,7 @@
   const latestVersions = new Map();
   let reviewBaseline = null;
   let capacityTurn = 0, overviewTurn = 0;
+  let queueError = '';
   let token = '', epoch = 0, listEpoch = 0, detailEpoch = 0, offset = 0, selected = null;
   let creation = null, inputVersion = 0, total = 0;
   let jevAvailable = false, jevTurn = 0, createPending = false;
@@ -114,7 +115,7 @@
     $('visual-evidence').replaceChildren(); $('visual-evidence').hidden = true;
     token = ''; epoch++; listEpoch++; detailEpoch++; selected = null; creation = null;
     reviewDrafts.clear(); reviewSaves.clear(); opinionSaves.clear(); reviewBaseline = null; renderDraftState();
-    latestVersions.clear(); $('queue-warning').textContent = ''; $('history-capacity').textContent = '';
+    latestVersions.clear(); queueError = ''; $('queue-warning').textContent = ''; $('history-capacity').textContent = '';
     capacityTurn++; overviewTurn++;
     for (const name of ['open','closed','false-alerts','missed-threats']) $('feedback-' + name + '-count').textContent = '—';
     $('feedback-overview-status').textContent = '';
@@ -146,16 +147,21 @@
     catch (error) { if (current === epoch || error.status === 401) notice(error.message || 'Request failed. Reload to check whether your last operation completed.', true); }
     finally { button.disabled = false; $('previous').disabled = offset === 0; $('next').disabled = offset + PAGE_SIZE >= total; }
   }
-  async function loadList() {
+  async function loadList(requestedOffset = offset) {
     const turn = ++listEpoch;
-    const params = new URLSearchParams({limit: PAGE_SIZE, offset});
+    const params = new URLSearchParams({limit: PAGE_SIZE, offset: requestedOffset});
     if ($('filter-kind').value) params.set('kind', $('filter-kind').value);
     for (const [id, key] of [['filter-status', 'status'], ['filter-risk', 'risk'], ['filter-verdict', 'verdict'], ['filter-from', 'created_from'], ['filter-to', 'created_to']]) {
       if ($(id).value) params.set(key, $(id).value);
     }
     if ($('filter-kind').value === 'feedback' && $('filter-feedback-reason').value) params.set('feedback_reason', $('filter-feedback-reason').value);
-    const data = await api('?' + params);
+    let data;
+    try { data = await api('?' + params); }
+    catch (error) { if (turn !== listEpoch) return; queueError = error.message; throw error; }
     if (turn !== listEpoch) return;
+    if (queueError && $('notice').dataset.error === 'true' && $('notice').textContent === queueError) notice();
+    queueError = '';
+    offset = requestedOffset;
     total = data.total;
     $('case-list').replaceChildren();
     $('count').textContent = `${data.total} ${data.partial ? 'records from available sources' : 'matching records'}`;
@@ -231,13 +237,15 @@
     renderJevAvailability();
     $('case-title').textContent = value.title;
     const capacity = value.history_capacity;
+    const limited = capacity && (capacity.remaining === 0 || capacity.bytes_remaining === 0);
     $('history-capacity').textContent = capacity
-      ? `${capacity.used}/${capacity.limit} history entries · ${capacity.remaining} ordinary writes remaining. ` +
-        (capacity.remaining ? 'Final entries are reserved for starting work and closing the case.'
-          : capacity.review_statuses.length ? 'Capacity is reserved for starting work or closing. Choose an available status.'
-          : 'History is full. This case cannot be reopened; create a follow-up investigation.')
+      ? `${capacity.used}/${capacity.limit} history entries · ${capacity.remaining} ordinary history slots remaining. ` +
+        (Number.isInteger(capacity.bytes_used) ? `Storage: ${(capacity.bytes_used / 1000).toFixed(1)} / ${capacity.byte_limit / 1000} KB · ${(capacity.bytes_remaining / 1000).toFixed(1)} KB available after closure reserves. ` : '') +
+        (!limited ? 'History slots and bytes are reserved for the final workflow steps; saving checks the note size.'
+          : capacity.review_statuses.length ? `Capacity is reserved for starting work or closing. Choose an available status.${capacity.bytes_remaining === 0 ? ' Legacy recovery is limited to ' + capacity.byte_recovery_limit / 1000 + ' KB.' : ''}`
+          : 'History or storage is full. This case cannot be reopened; create a follow-up investigation.')
       : '';
-    $('history-capacity').dataset.warning = String(capacity?.remaining === 0);
+    $('history-capacity').dataset.warning = String(Boolean(limited));
     $('case-meta').textContent = `${value.id} · Revision ${value.version} · Created by ${value.created_by}`;
     $('badges').replaceChildren(riskBadge(value.risk), ...[labels[value.status], value.verdict || 'Not reviewed'].map(text => node('span', text, 'badge')));
     if (value.kind === 'feedback') $('badges').append(node('span', 'USER FEEDBACK', 'badge feedback-badge'));
@@ -560,15 +568,15 @@
     $('filter-feedback-reason-field').hidden = !feedback;
     if (!feedback) $('filter-feedback-reason').value = '';
   });
-  $('filters').addEventListener('submit', event => { event.preventDefault(); offset = 0; action(event.submitter, loadList); });
+  $('filters').addEventListener('submit', event => { event.preventDefault(); action(event.submitter, () => loadList(0)); });
   $('refresh').addEventListener('click', event => action(event.currentTarget, async () => { await refreshJev(); await loadList(); }));
   $('reload-case').addEventListener('click', event => { if (selected) {
     const id = selected.id, kind = selected.kind, turn = detailEpoch;
     action(event.currentTarget, async () => { await refreshJev(); if (turn === detailEpoch) await loadCase(id, kind); });
   } });
   for (const [id, delta] of [['previous', -PAGE_SIZE], ['next', PAGE_SIZE]]) $(id).addEventListener('click', async event => {
-    const button = event.currentTarget; offset = Math.max(0, offset + delta);
-    await action(button, loadList);
+    const button = event.currentTarget;
+    await action(button, () => loadList(Math.max(0, offset + delta)));
     // loadList owns pagination availability, including the last page.
     if (token) button.disabled = id === 'previous' ? offset === 0 : button.disabled;
   });

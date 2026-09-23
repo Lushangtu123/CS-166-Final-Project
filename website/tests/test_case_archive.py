@@ -40,7 +40,7 @@ def record(number, *, feedback=False, consent=True, verdict='legitimate', status
              'action': 'created', 'changes': {'status': {'from': None, 'to': 'pending'}}, 'note': ''},
             {'actor': 'analyst', 'happened_at': STAMP, 'action': 'reviewed',
              'changes': {'status': {'from': 'pending', 'to': status},
-                         'feedback_reason': {'from': None, 'to': 'false_alert'},
+                         'feedback_reason': {'from': None, 'to': {'legitimate':'false_alert','phishing':'missed_threat','uncertain':'insufficient_evidence'}[verdict]},
                          'evidence_basis': {'from': None, 'to': 'retained_message'}} if feedback
                         else {'status': {'from': 'pending', 'to': status}},
              'note': 'Reviewed synthetic mail'},

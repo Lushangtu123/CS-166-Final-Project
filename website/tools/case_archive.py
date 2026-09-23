@@ -19,7 +19,7 @@ PROJECT_ROOT = WEBSITE_DIR.parent
 sys.path.insert(0, str(WEBSITE_DIR))
 
 from case_cloud import CaseUnavailable, UpstashCaseStore, SUMMARY_FIELDS, feedback_workspace_name
-from case_store import CaseStore, RISKS, STATUSES, VERDICTS, HISTORY_RECOVERY_LIMIT
+from case_store import CaseStore, RISKS, STATUSES, VERDICTS, HISTORY_RECOVERY_LIMIT, RECORD_RECOVERY_BYTE_LIMIT
 
 
 FORMAT = 'phishguard-case-archive-v1'
@@ -38,7 +38,7 @@ def validate_namespace(fields):
     for field, raw in fields.items():
         if not isinstance(field, str) or not FIELD.fullmatch(field) or not isinstance(raw, str):
             raise ValueError('Archive contains an invalid field.')
-        if len(raw.encode()) > 750_000:
+        if len(raw.encode()) > RECORD_RECOVERY_BYTE_LIMIT:
             raise ValueError('Archive contains an oversized field.')
         try:
             value = json.loads(raw)

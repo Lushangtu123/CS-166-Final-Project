@@ -36,6 +36,36 @@ function setup(handler, vision = {cancel() {}, render() {}}) {
 }
 const standard = async url => ({status: 200, data: url.endsWith('/me') ? {actor: 'alice'} : url.startsWith('/api/cases?') ? {items: [caseValue()], total: 1} : caseValue()});
 
+test('failed pagination retries the same page and keeps committed rows and controls', async () => {
+  const offsets=[]; let fail=true;
+  const ui=setup(async url => {
+    if (!url.startsWith('/api/cases?')) return standard(url);
+    const offset=Number(new URL(url,'https://synthetic.test').searchParams.get('offset'));
+    offsets.push(offset);
+    if (offset===25 && fail) { fail=false; return {status:503,data:{detail:'Temporarily unavailable'}}; }
+    return {status:200,data:{items:[{...caseValue(),title:'Row '+offset}],total:75}};
+  });
+  await ui.login(); await ui.fire('next');
+  assert.equal(ui.el('page').textContent,'Page 1');
+  assert.equal(ui.el('case-list').children[0].children[1].children[0].textContent,'Row 0');
+  assert.equal(ui.el('previous').disabled,true);
+  await ui.fire('next');
+  assert.deepEqual(offsets,[0,25,25]);
+  assert.equal(ui.el('page').textContent,'Page 2');
+  assert.equal(ui.el('notice').textContent,'');
+});
+
+test('only the newest page request can commit its offset', async () => {
+  let release;
+  const ui=setup(async url=>url.startsWith('/api/cases?') && url.includes('offset=25')
+    ? await new Promise(resolve=>{release=resolve;}) : standard(url));
+  await ui.login(); await ui.fire('next');
+  await ui.fire('filters','submit');
+  release({status:200,data:{items:[{...caseValue(),title:'Old page'}],total:75}}); await tick();
+  assert.equal(ui.el('page').textContent,'Page 1');
+  assert.equal(ui.el('previous').disabled,true);
+});
+
 test('a detail read started before a save cannot replace the saved revision', async () => {
   let releaseSave, releaseRead, delayRead = false;
   const ui = setup(async (url, options) => options.method === 'PATCH'
@@ -667,6 +697,22 @@ test('feedback overview uses all retained reports and clears counts when storage
   assert.equal(ui.el('filter-feedback-reason').value,'');
   assert.equal(ui.el('filter-feedback-reason').disabled,true);
   await ui.fire('logout'); assert.equal(ui.el('feedback-overview-status').textContent,'');
+});
+
+test('byte-full legacy cases explain storage limits and offer only forward review', async () => {
+  const full={...caseValue(),status:'in_progress',version:34,
+    history_capacity:{used:34,limit:200,remaining:165,bytes_used:750000,byte_limit:750000,
+      bytes_remaining:0,byte_recovery_limit:850000,review_statuses:['closed'],can_save_opinion:false}};
+  const ui=setup(async url=>url.endsWith('/me') ? {status:200,data:{actor:'alice'}}
+    :url.startsWith('/api/cases?') ? {status:200,data:{items:[full],total:1}} : {status:200,data:full});
+  await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
+  assert.match(ui.el('history-capacity').textContent,/165 ordinary history slots/);
+  assert.match(ui.el('history-capacity').textContent,/750\.0 \/ 750 KB/);
+  assert.match(ui.el('history-capacity').textContent,/0\.0 KB available/);
+  assert.match(ui.el('history-capacity').textContent,/850 KB/);
+  assert.equal(ui.el('save-review').disabled,true);
+  ui.el('review-status').value='closed'; await ui.fire('review-form','change');
+  assert.equal(ui.el('save-review').disabled,false);
 });
 
 test('an old feedback overview cannot overwrite a newer refresh or a signed-out screen', async () => {

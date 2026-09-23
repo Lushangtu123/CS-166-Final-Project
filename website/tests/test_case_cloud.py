@@ -89,7 +89,7 @@ class CloudCaseTests(unittest.TestCase):
             with self.assertRaises(error):
                 store._result(result)
         with self.assertRaises(CaseInvalid):
-            store._bounded({'body': 'x' * 750001})
+            store._bounded({'status':'pending', 'body': 'x' * 750001})
 
     def test_cloud_filters_and_summary_only(self):
         store = self.store()
