@@ -29,6 +29,7 @@ window.PhishGuardFeedback = (() => {
     $('feedback-cancel').textContent = 'Cancel';
     $('feedback-submit').hidden = false;
     $('feedback-submit').disabled = false;
+    $('feedback-submit').textContent = 'Submit report';
     $('feedback-dialog').showModal();
     $('feedback-type').focus();
   }
@@ -63,6 +64,10 @@ window.PhishGuardFeedback = (() => {
     $('feedback-error').classList.add('hidden');
     try {
       let submission = session.retry;
+      if (submission?.sent && submission.revision !== revision && !window.confirm(
+        'Retry the originally submitted report' + (JSON.parse(submission.body).include_source
+          ? ', including the original input you previously agreed to retain' : ', without original input') +
+        '? Your later edits and consent changes will not be sent.')) return;
       if (!submission) {
         const include = $('feedback-consent').checked;
         const payload = {
@@ -76,32 +81,44 @@ window.PhishGuardFeedback = (() => {
         // Closing, replacing or editing this dialog invalidates unsent work.
         if (!current()) return;
         payload.source = include ? consentedSource(context) : null;
-        submission = {key: crypto.randomUUID(), body: JSON.stringify(payload)};
+        submission = {key: crypto.randomUUID(), body: JSON.stringify(payload), revision};
         session.retry = submission;
       }
+      submission.sent = true;
       const response = await fetch('/api/feedback', {method: 'POST', cache: 'no-store',
         credentials: 'same-origin',
         headers: {'Content-Type': 'application/json', 'Idempotency-Key': submission.key},
         body: submission.body});
       let result;
       try { result = await response.json(); } catch (_error) { throw new Error('The server returned an unreadable response.'); }
-      if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : 'Report could not be saved.');
-      if (!current()) return;
-      $('feedback-success').textContent = 'Report received. Reference: ' + result.id;
+      if (!response.ok) {
+        // A definite rejection cannot settle an earlier ambiguous attempt.
+        if ([400, 413, 422, 429].includes(response.status) && !submission.uncertain) session.retry = null;
+        throw new Error(typeof result.detail === 'string' ? result.detail : 'Report could not be saved.');
+      }
+      if (active !== session) return;
+      const edited = session.revision !== submission.revision;
+      $('feedback-success').textContent = 'Report received. Reference: ' + result.id +
+        (edited ? '. Later edits were not sent. Copy them before closing.' : '');
       $('feedback-success').classList.remove('hidden');
-      $('feedback-fields').hidden = true;
+      $('feedback-fields').hidden = !edited;
       $('feedback-cancel').textContent = 'Close';
       button.hidden = true;
       session.submitted = true;
       session.retry = null;
     } catch (error) {
-      if (current()) {
-        $('feedback-error').textContent = error.message || 'Report could not be saved. Try again.';
+      if (session.retry?.sent) session.retry.uncertain = true;
+      if (active === session) {
+        $('feedback-error').textContent = (error.message || 'Report could not be saved.') +
+          (session.retry?.sent ? ' The outcome is unconfirmed. Retry checks the original submission; later edits are not sent.' : ' Correct the report and try again.');
         $('feedback-error').classList.remove('hidden');
       }
     } finally {
       session.pending = false;
-      if (active === session) button.disabled = false;
+      if (active === session) {
+        button.disabled = false;
+        button.textContent = session.retry?.sent ? 'Retry original report' : 'Submit report';
+      }
     }
   }
   function setup() {
@@ -110,7 +127,7 @@ window.PhishGuardFeedback = (() => {
     $('feedback-close').addEventListener('click', close);
     $('feedback-dialog').addEventListener('close', () => { if (!$('feedback-dialog').open) active = null; });
     for (const event of ['input', 'change']) $('feedback-form').addEventListener(event, () => {
-      if (active) { active.retry = null; active.revision++; }
+      if (active) { if (!active.retry?.sent) active.retry = null; active.revision++; }
     });
     $('feedback-consent').addEventListener('change', () => {
       const allowed = $('feedback-consent').checked && !($('feedback-evaluation-consent-row').hidden);

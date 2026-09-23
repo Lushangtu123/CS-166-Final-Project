@@ -87,6 +87,11 @@ control tests against its own disposable Redis, using random synthetic namespace
 Pagination commits a new page only after its request succeeds. A failed Next or
 Previous request keeps the displayed page and offset; retry requests the same
 target page. Late responses cannot replace a more recent filter or page result.
+If closing a filtered record or an unavailable source removes the current page,
+the queue makes at most one extra read of the last valid page using the same
+filters. Zero results return to page one. If results shrink again during that
+read, the UI asks for a refresh instead of claiming that no records match.
+Failed corrective reads preserve the previously displayed page and drafts.
 
 While a review save is in progress, newer edits to the note or review selections
 remain in the form after the saved revision arrives. The notice identifies them
@@ -129,6 +134,16 @@ diagnostic summary, and whether the user consented to retain original input.
 The report does not change the prediction or retrain the model. An analyst
 should verify the evidence before recording a human verdict.
 The public report action appears only while the case workspace is configured.
+
+Editing a report after sending it does not invalidate its receipt. A successful
+response identifies the saved report; later edits remain visible for copying and
+are explicitly marked as not sent. The same dialog cannot submit it again.
+An unreadable response, network failure or storage failure preserves the original
+body and idempotency key. After editing, **Retry original report** asks permission
+to resend that original snapshot, including its original input-retention choice.
+A definite rejection permits correction only if no earlier attempt is unconfirmed;
+for example, a rate-limited retry cannot settle an earlier storage timeout.
+Before a request has been sent, editing or closing still cancels pending preparation.
 
 Reports omit the sender address, email text, raw EML, OCR text, QR payloads and
 image bytes by default. With explicit consent, they can retain the address,
@@ -302,6 +317,12 @@ archive on encrypted private storage **outside this repository**:
 ```
 
 Pass `--feedback-workspace` if Production overrides the derived name. Files are
+bounded at 342,016,384 bytes: two namespaces of 100 records, up to 850 KB per
+record with up to twice that size when its ASCII JSON is embedded in the archive,
+10 KB per record for indexes/framing, and 16 KiB for the envelope. Both export and
+read enforce this ceiling. Curation drafts and other private exports retain their
+separate 160 MB limit. The archive format and checksums remain compatible; use
+the updated tool to read archives above the previous 160 MB ceiling. Files are
 created with owner-only permissions and are never overwritten. The local recovery
 drill builds separate case and feedback SQLite databases and compares every
 restored record. The original request keys cannot be recovered from their Redis

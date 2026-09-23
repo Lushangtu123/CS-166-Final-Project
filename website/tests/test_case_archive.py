@@ -10,12 +10,13 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from case_cloud import SUMMARY_FIELDS
 from case_store import CaseStore
 from tools.case_archive import (create_archive, read_archive, restore_local,
-                                validate_archive, validate_namespace, write_archive)
+                                validate_archive, validate_namespace, write_archive, write_private_bytes)
 from tools.export_reviewed_feedback import build_reviewed_draft
 from tools.case_retention import PURGE_SCRIPT, main as retention_main, purge_one, retention_candidates
 
@@ -82,6 +83,44 @@ def archive_with(case_fields=None, feedback_fields=None):
 
 
 class CaseArchiveTests(unittest.TestCase):
+    def test_archive_size_ceiling_rejects_both_reads_and_writes(self):
+        archive = archive_with(fields(record(1)))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = write_archive(root / 'original.json', archive)
+            with patch('tools.case_archive.MAX_ARCHIVE_BYTES', 100):
+                with self.assertRaisesRegex(ValueError, 'size limit'):
+                    write_archive(root / 'rejected.json', archive)
+                with self.assertRaisesRegex(ValueError, 'size limit'):
+                    read_archive(original)
+            self.assertFalse((root / 'rejected.json').exists())
+
+    def test_full_workspaces_with_unicode_history_export_and_restore(self):
+        # Each record fits even the ordinary 750 KB limit; the enclosing JSON
+        # escapes the already-escaped Unicode again and exceeds the old 160 MB cap.
+        records = []
+        for number in range(1, 201):
+            item = record(number, feedback=number > 100)
+            event = item['events'].pop()
+            item['events'].extend({**event, 'note': '😀' * 4000} for _ in range(15))
+            item['events'].append(event)
+            item['version'] = len(item['events'])
+            self.assertLess(len(json.dumps(item).encode()), 750_000)
+            records.append(item)
+        archive = archive_with(fields(*records[:100]), fields(*records[100:]))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = write_archive(root / 'full.json', archive)
+            self.assertGreater(path.stat().st_size, 160_000_000)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            loaded = read_archive(path)
+            self.assertEqual(loaded, archive)
+            self.assertEqual(restore_local(loaded, root / 'restored'), {'case':100, 'feedback':100})
+            # Raising the archive ceiling must not broaden other private exports.
+            with self.assertRaisesRegex(ValueError, 'size limit'):
+                write_private_bytes(root / 'not-an-archive.json', path.read_bytes())
+            self.assertFalse((root / 'not-an-archive.json').exists())
+
     def test_private_archive_round_trip_and_isolated_sqlite_recovery(self):
         original_case = record(1)
         original_feedback = record(2, feedback=True)

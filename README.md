@@ -979,6 +979,10 @@ review findings, with verdict and review-reason filters. These counts describe
 retained reports, not model-wide error rates. Per-case history capacity reserves
 history slots and byte space for final workflow steps, and repeated Jev saves
 preserve review conflicts. Failed page loads retain the current page for retry.
+If the last filtered page disappears after a review, the queue returns to a valid
+page with one bounded extra read. Public feedback keeps submission receipts and
+original retry keys when edits are made during a request. Archives account for
+JSON escaping at full workspace capacity and retain complete restore verification.
 Contradictory review reasons and verdicts cannot be closed or enter evaluation drafts.
 
 ## Image and QR recognition

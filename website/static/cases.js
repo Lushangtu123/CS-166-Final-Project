@@ -155,12 +155,29 @@
       if ($(id).value) params.set(key, $(id).value);
     }
     if ($('filter-kind').value === 'feedback' && $('filter-feedback-reason').value) params.set('feedback_reason', $('filter-feedback-reason').value);
-    let data;
-    try { data = await api('?' + params); }
+    let data, unstable = false;
+    try {
+      // Closing a filtered record or losing one queue source can remove the
+      // last page. Reuse the filter snapshot and allow only one corrective read.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        data = await api('?' + params);
+        if (turn !== listEpoch) return;
+        const lastOffset = Math.max(0, Math.floor((data.total - 1) / PAGE_SIZE) * PAGE_SIZE);
+        if (requestedOffset <= lastOffset) break;
+        if (data.total === 0) { requestedOffset = 0; break; }
+        if (attempt === 1) { unstable = true; break; }
+        requestedOffset = lastOffset; params.set('offset', requestedOffset);
+      }
+    }
     catch (error) { if (turn !== listEpoch) return; queueError = error.message; throw error; }
     if (turn !== listEpoch) return;
-    if (queueError && $('notice').dataset.error === 'true' && $('notice').textContent === queueError) notice();
-    queueError = '';
+    if (unstable) {
+      queueError = 'The queue changed again while loading. Refresh to show the remaining records.';
+      notice(queueError, true);
+    } else {
+      if (queueError && $('notice').dataset.error === 'true' && $('notice').textContent === queueError) notice();
+      queueError = '';
+    }
     offset = requestedOffset;
     total = data.total;
     $('case-list').replaceChildren();
@@ -168,7 +185,9 @@
     $('queue-warning').textContent = data.partial
       ? Object.entries(data.sources || {}).filter(([,status]) => status === 'unavailable')
         .map(([kind]) => `${kind === 'case' ? 'Cases' : 'User feedback'} unavailable.`).join(' ') + ' Showing available records only. Refresh to retry.' : '';
-    if (!data.items.length) $('case-list').append(node('p', 'No cases match these filters.'));
+    if (!data.items.length) $('case-list').append(node('p', unstable ? queueError
+      : data.partial ? 'No matching records from the available sources. Refresh to retry unavailable sources.'
+      : 'No cases match these filters.'));
     for (const item of data.items) {
       const button = node('button', '', 'case-row'); button.type = 'button';
       button.setAttribute('aria-pressed', String(item.id === selected?.id));

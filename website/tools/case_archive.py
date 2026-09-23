@@ -23,7 +23,13 @@ from case_store import CaseStore, RISKS, STATUSES, VERDICTS, HISTORY_RECOVERY_LI
 
 
 FORMAT = 'phishguard-case-archive-v1'
-MAX_ARCHIVE_BYTES = 160_000_000
+MAX_PRIVATE_OUTPUT_BYTES = 160_000_000
+# Two namespaces of 100 records. Application-written ASCII JSON may double
+# when embedded as a JSON string. Allow another 10 KB per record for its compact
+# summary/retry indexes and framing, plus 16 KiB for the archive envelope.
+# This includes the 850 KB legacy recovery ceiling, without raising the limit
+# for curation drafts or other private exports that use write_private_bytes.
+MAX_ARCHIVE_BYTES = 2 * 100 * (2 * RECORD_RECOVERY_BYTE_LIMIT + 10_000) + 16_384
 FIELD = re.compile(r'(?:[rs]:[0-9a-f-]{36}|q:[0-9a-f]{64})')
 
 
@@ -139,12 +145,12 @@ def validate_archive(archive):
     return {kind: validate_namespace(archive['namespaces'][kind]) for kind in ('case', 'feedback')}
 
 
-def write_private_bytes(path, payload):
+def write_private_bytes(path, payload, *, max_bytes=MAX_PRIVATE_OUTPUT_BYTES):
     path = Path(path).expanduser()
     path = path.parent.resolve() / path.name
     if path.is_relative_to(PROJECT_ROOT):
         raise ValueError('Save private output outside the Git repository.')
-    if len(payload) > MAX_ARCHIVE_BYTES:
+    if len(payload) > max_bytes:
         raise ValueError('Private output exceeds the local size limit.')
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_NOFOLLOW', 0)
     fd = os.open(path, flags, 0o600)
@@ -161,7 +167,7 @@ def write_private_bytes(path, payload):
 
 def write_archive(path, archive):
     validate_archive(archive)
-    return write_private_bytes(path, _canonical(archive) + b'\n')
+    return write_private_bytes(path, _canonical(archive) + b'\n', max_bytes=MAX_ARCHIVE_BYTES)
 
 
 def read_archive(path):

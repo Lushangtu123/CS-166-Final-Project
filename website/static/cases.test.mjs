@@ -36,6 +36,90 @@ function setup(handler, vision = {cancel() {}, render() {}}) {
 }
 const standard = async url => ({status: 200, data: url.endsWith('/me') ? {actor: 'alice'} : url.startsWith('/api/cases?') ? {items: [caseValue()], total: 1} : caseValue()});
 
+test('closing the only row on a filtered last page returns to the last valid page', async () => {
+  let total = 26; const offsets = [];
+  const ui = setup(async (url, options) => {
+    if (options.method === 'PATCH') { total = 25; return {status:200,data:{...caseValue(),status:'closed',version:3}}; }
+    if (url.startsWith('/api/cases?')) {
+      const offset = Number(new URL(url,'https://synthetic.test').searchParams.get('offset'));
+      offsets.push(offset);
+      return {status:200,data:{items:offset >= total ? [] : [{...caseValue(),status:'in_progress',version:2}],total}};
+    }
+    return url.split('?')[0].endsWith('/case-1')
+      ? {status:200,data:{...caseValue(),status:'in_progress',version:2}} : standard(url);
+  });
+  await ui.login(); ui.el('filter-status').value = 'in_progress'; await ui.fire('filters','submit');
+  await ui.fire('next'); ui.el('case-list').children[0].listeners.click(); await tick();
+  ui.el('review-status').value = 'closed'; ui.el('note').value = 'Closing';
+  await ui.fire('review-form','submit');
+  assert.equal(ui.el('page').textContent, 'Page 1');
+  assert.deepEqual(offsets.slice(-2), [25,0]);
+  assert.equal(ui.el('count').textContent, '25 matching records');
+  assert.equal(ui.el('case-list').children[0].className, 'case-row');
+});
+
+test('a corrected page request cannot overwrite a newer filter or its review draft', async () => {
+  let shrink = false, release; let loads = 0;
+  const ui = setup(async url => {
+    if (!url.startsWith('/api/cases?')) return standard(url);
+    const params = new URL(url,'https://synthetic.test').searchParams;
+    if (params.get('risk') === 'low') return {status:200,data:{items:[caseValue()],total:1}};
+    if (!shrink) return {status:200,data:{items:[caseValue()],total:26}};
+    loads++;
+    if (params.get('offset') === '25') return {status:200,data:{items:[],total:25}};
+    return await new Promise(resolve => { release = resolve; });
+  });
+  await ui.login(); await ui.fire('next');
+  ui.el('case-list').children[0].listeners.click(); await tick(); ui.el('note').value = 'Keep draft';
+  shrink = true; await ui.fire('refresh'); assert.equal(loads, 2);
+  ui.el('filter-risk').value = 'low'; await ui.fire('filters','submit');
+  release({status:200,data:{items:[],total:0}}); await tick();
+  assert.equal(ui.el('count').textContent, '1 matching records');
+  assert.equal(ui.el('note').value, 'Keep draft');
+});
+
+test('page recovery is bounded while a partial queue keeps shrinking', async () => {
+  let shrinking = false; const offsets = [];
+  const ui = setup(async url => {
+    if (!url.startsWith('/api/cases?')) return standard(url);
+    const offset = Number(new URL(url,'https://synthetic.test').searchParams.get('offset'));
+    if (!shrinking) return {status:200,data:{items:[caseValue()],total:75}};
+    offsets.push(offset);
+    return {status:200,data:{items:[],total:offset ? offset : 0,partial:true,sources:{case:'unavailable',feedback:'available'}}};
+  });
+  await ui.login(); await ui.fire('next'); await ui.fire('next');
+  shrinking = true; await ui.fire('refresh');
+  assert.deepEqual(offsets, [50,25]);
+  assert.match(ui.el('notice').textContent, /changed.*refresh/i);
+  assert.match(ui.el('queue-warning').textContent, /Cases unavailable/);
+  assert.doesNotMatch(ui.el('case-list').children[0].textContent, /No cases match/);
+});
+
+test('failed corrective read preserves the page and retries safely; zero results reset to page one', async () => {
+  let phase = 'initial'; const offsets = [];
+  const ui = setup(async url => {
+    if (!url.startsWith('/api/cases?')) return standard(url);
+    const offset = Number(new URL(url,'https://synthetic.test').searchParams.get('offset')); offsets.push(offset);
+    if (phase === 'initial') return {status:200,data:{items:[caseValue()],total:26}};
+    if (phase === 'empty') return {status:200,data:{items:[],total:0}};
+    if (offset === 25) return {status:200,data:{items:[],total:25}};
+    if (phase === 'failure') return {status:503,data:{detail:'Corrective read failed'}};
+    return {status:200,data:{items:[caseValue()],total:25}};
+  });
+  await ui.login(); await ui.fire('next');
+  phase = 'failure'; await ui.fire('refresh');
+  assert.equal(ui.el('page').textContent, 'Page 2');
+  assert.equal(ui.el('case-list').children[0].className, 'case-row');
+  phase = 'recovered'; await ui.fire('refresh');
+  assert.deepEqual(offsets.slice(-2), [25,0]);
+  assert.equal(ui.el('page').textContent, 'Page 1');
+  phase = 'initial'; await ui.fire('next');
+  phase = 'empty'; await ui.fire('refresh');
+  assert.equal(ui.el('page').textContent, 'Page 1');
+  assert.equal(ui.el('previous').disabled, true);
+  assert.equal(ui.el('next').disabled, true);
+});
+
 test('failed pagination retries the same page and keeps committed rows and controls', async () => {
   const offsets=[]; let fail=true;
   const ui=setup(async url => {

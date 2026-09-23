@@ -20,7 +20,7 @@ function setup(handler, cryptoOverride = {}) {
     return items.get(id);
   };
   const document = {getElementById: element, addEventListener(_name, callback) { this.ready = callback; }};
-  const window = {};
+  const window = {confirm: () => true};
   let sequence = 0;
   const crypto = {subtle: webcrypto.subtle, randomUUID: () => `00000000-0000-4000-8000-${String(++sequence).padStart(12, '0')}`, ...cryptoOverride};
   const context = vm.createContext({document, window, crypto, TextEncoder, Uint8Array,
@@ -29,11 +29,81 @@ function setup(handler, cryptoOverride = {}) {
   document.ready();
   element('feedback-type').value = 'false_positive';
   const submit = async () => { await element('feedback-form').listeners.submit({preventDefault(){}}); };
-  return {element, submit, requests, feedback: window.PhishGuardFeedback};
+  return {element, submit, requests, feedback: window.PhishGuardFeedback, window};
 }
 const ok = async () => ({ok:true, json: async () => ({id:'report-1'})});
 const context = buildSource => ({inputMode:'content', fingerprintInput:'Private email text',
   analysis:{risk_level:'high', risk_score:78, evidence_codes:['high']}, buildSource});
+
+test('editing a sent report cannot hide its receipt or create a second report', async () => {
+  let finish;
+  const ui = setup(() => new Promise(resolve => { finish = resolve; }));
+  ui.feedback.set('content', context(() => ({body:'Synthetic'}))); ui.feedback.open('content');
+  ui.element('feedback-note').value = 'Submitted note';
+  const pending = ui.submit(); while (!finish) await new Promise(setImmediate);
+  ui.element('feedback-note').value = 'Later draft'; ui.element('feedback-form').listeners.input();
+  finish({ok:true, json:async()=>({id:'accepted'})}); await pending;
+  assert.match(ui.element('feedback-success').textContent, /accepted/);
+  assert.match(ui.element('feedback-success').textContent, /edits.*not.*sent/i);
+  assert.equal(ui.element('feedback-note').value, 'Later draft');
+  assert.equal(ui.element('feedback-fields').hidden, false);
+  await ui.submit(); assert.equal(ui.requests.length, 1);
+});
+
+test('unknown outcome keeps the sent body and key despite edits and requires retry confirmation', async () => {
+  let finish, attempts = 0;
+  const ui = setup(() => ++attempts === 1 ? new Promise(resolve => { finish = resolve; })
+    : {ok:true,json:async()=>({id:'accepted'})});
+  ui.feedback.set('content', context(() => ({body:'Synthetic retained input'}))); ui.feedback.open('content');
+  ui.element('feedback-consent').checked = true;
+  const first = ui.submit(); while (!finish) await new Promise(setImmediate);
+  ui.element('feedback-consent').checked = false; ui.element('feedback-form').listeners.change();
+  finish({ok:false,status:503,json:async()=>({detail:'Storage unavailable'})}); await first;
+  ui.window.confirm = () => false; await ui.submit(); assert.equal(ui.requests.length, 1);
+  let prompt; ui.window.confirm = message => { prompt = message; return true; };
+  await ui.submit();
+  assert.match(prompt, /original input/i);
+  assert.equal(ui.requests[0].options.body, ui.requests[1].options.body);
+  assert.equal(ui.requests[0].options.headers['Idempotency-Key'], ui.requests[1].options.headers['Idempotency-Key']);
+  assert.match(ui.element('feedback-success').textContent, /accepted/);
+});
+
+test('a definite validation rejection allows a corrected report with a new key', async () => {
+  let attempts = 0;
+  const ui = setup(async () => ++attempts === 1
+    ? {ok:false,status:422,json:async()=>({detail:'Note is too long'})} : ok());
+  ui.feedback.set('content', context(() => ({body:'Synthetic'}))); ui.feedback.open('content');
+  ui.element('feedback-note').value = 'Rejected'; await ui.submit();
+  ui.element('feedback-note').value = 'Corrected'; ui.element('feedback-form').listeners.input();
+  await ui.submit();
+  assert.equal(JSON.parse(ui.requests[1].options.body).note, 'Corrected');
+  assert.notEqual(ui.requests[0].options.headers['Idempotency-Key'], ui.requests[1].options.headers['Idempotency-Key']);
+});
+
+test('a rate-limited retry does not forget an earlier unconfirmed submission', async () => {
+  let attempts = 0;
+  const ui = setup(async () => ++attempts === 1
+    ? {ok:false,status:503,json:async()=>({detail:'Unconfirmed'})}
+    : attempts === 2 ? {ok:false,status:429,json:async()=>({detail:'Wait before retrying'})} : ok());
+  ui.feedback.set('content', context(() => ({body:'Synthetic'}))); ui.feedback.open('content');
+  await ui.submit(); await ui.submit();
+  ui.element('feedback-note').value = 'Later edit'; ui.element('feedback-form').listeners.input();
+  await ui.submit();
+  assert.equal(ui.requests.length, 3);
+  assert.equal(ui.requests[2].options.body, ui.requests[0].options.body);
+  assert.equal(ui.requests[2].options.headers['Idempotency-Key'], ui.requests[0].options.headers['Idempotency-Key']);
+});
+
+test('editing during hashing invalidates only unsent work', async () => {
+  let finish;
+  const ui = setup(ok, {subtle:{digest:()=>new Promise(resolve=>{finish=resolve;})}});
+  ui.feedback.set('content', context(() => ({body:'Synthetic'}))); ui.feedback.open('content');
+  const pending = ui.submit();
+  ui.element('feedback-note').value = 'New draft'; ui.element('feedback-form').listeners.input();
+  finish(new Uint8Array(32).buffer); await pending;
+  assert.equal(ui.requests.length, 0);
+  assert.equal(ui.element('feedback-submit').disabled, false);
+});
 
 test('closing during hashing prevents the old report from being sent or reused by a new dialog', async () => {
   let finishHash, reads = 0, hashes = 0;
