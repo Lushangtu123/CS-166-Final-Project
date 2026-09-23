@@ -22,9 +22,70 @@ class CaseNotFound(Exception):
 STATUSES = {'pending', 'in_progress', 'closed'}
 VERDICTS = {'phishing', 'legitimate', 'uncertain'}
 RISKS = {'safe', 'low', 'medium', 'high', 'critical', 'unknown'}
+HISTORY_LIMIT = 200
+HISTORY_RECOVERY_LIMIT = 202
+HISTORY_RESERVE = {'pending': 2, 'in_progress': 1, 'closed': 0}
+REVIEW_TRANSITIONS = {'pending': ('pending', 'in_progress'),
+                      'in_progress': ('in_progress', 'closed'), 'closed': ('in_progress',)}
+
+
+def history_write_allowed(case, target_status, *, auxiliary=False):
+    used = len(case['events'])
+    if used + 1 + HISTORY_RESERVE[target_status] <= HISTORY_LIMIT:
+        return True
+    forward = (case['status'], target_status) in {('pending', 'in_progress'), ('in_progress', 'closed')}
+    # Legacy records may already have consumed the previously unreserved slots.
+    return not auxiliary and forward and used + 1 + HISTORY_RESERVE[target_status] <= HISTORY_RECOVERY_LIMIT
+
+
+def history_capacity(case):
+    used = len(case['events'])
+    return {'used': used, 'limit': HISTORY_LIMIT, 'recovery_limit': HISTORY_RECOVERY_LIMIT,
+            'remaining': max(0, HISTORY_LIMIT - used - HISTORY_RESERVE[case['status']]),
+            'review_statuses': [status for status in REVIEW_TRANSITIONS[case['status']]
+                                if history_write_allowed(case, status)],
+            'can_save_opinion': case['status'] != 'closed' and history_write_allowed(case, case['status'], auxiliary=True)}
+
+
+def validate_history_write(case, target_status, *, auxiliary=False):
+    if not history_write_allowed(case, target_status, auxiliary=auxiliary):
+        raise CaseInvalid('History capacity is reserved for starting or closing this case. '
+                          'A full closed case cannot be reopened; create a follow-up case.')
+
+
+def bounded_record(case):
+    raw = json.dumps(case, separators=(',', ':'), ensure_ascii=True)
+    if len(raw.encode()) > 750_000:
+        raise CaseInvalid('Case exceeds the 750 KB storage limit')
+    return raw
+
+
 FEEDBACK_REASONS = {'false_alert', 'missed_threat', 'risk_level', 'evidence_error',
                     'no_issue_found', 'insufficient_evidence', 'other'}
 EVIDENCE_BASES = {'retained_message', 'external_verification', 'report_only'}
+
+
+
+# Only the latest explicit review-field change counts, including clearing it.
+FEEDBACK_REASON_SQL = "(SELECT json_extract(changes, '$.feedback_reason.to') FROM case_events WHERE case_id=cases.id AND json_type(changes, '$.feedback_reason')='object' ORDER BY sequence DESC LIMIT 1)"
+EVIDENCE_BASIS_SQL = "(SELECT json_extract(changes, '$.evidence_basis.to') FROM case_events WHERE case_id=cases.id AND json_type(changes, '$.evidence_basis')='object' ORDER BY sequence DESC LIMIT 1)"
+
+
+def summarize_feedback(items):
+    counts = dict(total=0, pending=0, in_progress=0, closed=0, false_alerts=0, missed_threats=0)
+    for item in items:
+        if item.get('record_kind') != 'user_feedback':
+            continue
+        counts['total'] += 1
+        counts[item['status']] += 1
+        supported = item.get('evidence_basis') == 'external_verification' or (
+            item.get('evidence_basis') == 'retained_message' and item.get('source_consent') in (True, 1))
+        if item['status'] == 'closed' and supported:
+            if item.get('feedback_reason') == 'false_alert' and item.get('verdict') == 'legitimate':
+                counts['false_alerts'] += 1
+            if item.get('feedback_reason') == 'missed_threat' and item.get('verdict') == 'phishing':
+                counts['missed_threats'] += 1
+    return counts
 
 
 def case_title(source, provenance):
@@ -150,7 +211,9 @@ class CaseStore:
                 timestamp, timestamp, actor, request_key, input_sha256,
                 json.dumps(source), json.dumps(analysis), json.dumps(provenance)))
             self._event(db, case_id, actor, timestamp, 'created', {'status': {'from': None, 'to': 'pending'}}, '')
-            return self._get(db, case_id)
+            result = self._get(db, case_id)
+            bounded_record(result)
+            return result
 
     def _event(self, db, case_id, actor, timestamp, action, changes, note):
         db.execute('INSERT INTO case_events(case_id,actor,happened_at,action,changes,note) '
@@ -167,14 +230,19 @@ class CaseStore:
                        (status, verdict, timestamp, case_id))
             self._event(db, case_id, actor, timestamp,
                         'reopened' if current['status'] == 'closed' else 'reviewed', changes, note.strip())
-            return self._get(db, case_id)
+            result = self._get(db, case_id)
+            bounded_record(result)
+            return result
 
-    def list(self, *, status=None, risk=None, created_from=None, created_to=None, limit=25, offset=0):
+    def list(self, *, status=None, risk=None, verdict=None, feedback_reason=None, created_from=None, created_to=None, limit=25, offset=0):
         clauses, params = [], []
-        for column, value in (('status', status), ('risk', risk)):
+        for column, value in (('status', status), ('risk', risk), ('verdict', verdict)):
             if value:
                 clauses.append(column + '=?')
                 params.append(value)
+        if feedback_reason:
+            clauses.append(FEEDBACK_REASON_SQL + '=?')
+            params.append(feedback_reason)
         if created_from:
             clauses.append('created_at>=?')
             params.append(created_from + 'T00:00:00')
@@ -189,20 +257,27 @@ class CaseStore:
                               [*params, min(100, max(1, limit)), max(0, offset)]).fetchall()
             return {'items': [dict(row) for row in rows], 'total': count}
 
+    def feedback_overview(self):
+        with self.connection() as db:
+            rows = db.execute("SELECT status,verdict,json_extract(provenance,'$.record_kind') AS record_kind, "
+                              "json_extract(provenance,'$.source_consent') AS source_consent, "
+                              + FEEDBACK_REASON_SQL + " AS feedback_reason, "
+                              + EVIDENCE_BASIS_SQL + " AS evidence_basis FROM cases").fetchall()
+            return summarize_feedback(dict(row) for row in rows)
+
     def save_opinion(self, case_id, *, actor, expected_version, opinion):
         from case_opinions import opinion_changes
         with self.connection(write=True) as db:
             current = self._get(db, case_id)
             changes = opinion_changes(current, actor, expected_version, opinion)
             if changes is None:
-                return current
+                return current, False
             timestamp = now()
             self._event(db, case_id, actor, timestamp, 'auxiliary_saved', changes, '')
             db.execute('UPDATE cases SET version=version+1,updated_at=? WHERE id=?', (timestamp, case_id))
             result = self._get(db, case_id)
-            if len(json.dumps(result, separators=(',', ':'), ensure_ascii=True).encode()) > 750_000:
-                raise CaseInvalid('Case exceeds the 750 KB storage limit')
-            return result
+            bounded_record(result)
+            return result, True
 
 
 def feedback_review_fields(case):
@@ -259,4 +334,5 @@ def validate_review(current, expected_version, status, verdict, note,
         raise CaseInvalid('Provide a change or a note')
     if verdict != current['verdict'] and not note.strip():
         raise CaseInvalid('Explain the verdict change in a note')
+    validate_history_write(current, status)
     return changes

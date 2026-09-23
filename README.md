@@ -974,6 +974,11 @@ private development and holdout inputs. An archive-first, confirmation-gated
 operator tool can remove one eligible closed record and its indexes. These
 tools do not automatically train or validate the model. See [evaluation scope](docs/evaluation.md).
 
+The workspace also shows counts of open/closed feedback and evidence-supported
+review findings, with verdict and review-reason filters. These counts describe
+retained reports, not model-wide error rates. Per-case history capacity reserves
+room for final workflow steps, and repeated Jev saves preserve review conflicts.
+
 ## Image and QR recognition
 
 On **Email Content** or **Case workspace → New case**, select a PNG/JPEG/WebP

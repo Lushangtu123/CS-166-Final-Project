@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
-from case_store import CaseStore, CaseConflict, CaseInvalid, CaseNotFound, RISKS, STATUSES
+from case_store import CaseStore, CaseConflict, CaseInvalid, CaseNotFound, RISKS, STATUSES, VERDICTS, FEEDBACK_REASONS, history_capacity
 from case_cloud import UpstashCaseStore, CaseUnavailable, feedback_workspace_name
 from visual_evidence import VisualRequest
 from jev import JevClient, MODEL, QUESTIONS_SHA256, input_state, _encoded, prepare_case_input, configuration as jev_configuration
@@ -161,6 +161,8 @@ def make_case_router(analyze, *, visible_text, mask_inline_data):
 
     def with_kind(record, kind):
         record['kind'] = kind
+        if 'events' in record:
+            record['history_capacity'] = history_capacity(record)
         return record
 
     async def find_record(service, case_id, kind=None):
@@ -191,12 +193,15 @@ def make_case_router(analyze, *, visible_text, mask_inline_data):
 
     @router.get('')
     async def listing(request: Request, status: str | None = None, risk: str | None = None,
-                      kind: str = 'all',
+                      kind: str = 'all', verdict: str | None = None, feedback_reason: str | None = None,
                       created_from: date | None = None, created_to: date | None = None,
                       limit: int = Query(25, ge=1, le=100), offset: int = Query(0, ge=0),
                       access=Depends(identity)):
         if status is not None and status not in STATUSES or risk is not None and risk not in RISKS or kind not in {'all', 'case', 'feedback'}:
             raise HTTPException(422, 'Invalid status, risk, or kind filter')
+        if verdict is not None and verdict not in VERDICTS or feedback_reason is not None and (
+                feedback_reason not in FEEDBACK_REASONS or kind != 'feedback'):
+            raise HTTPException(422, 'Invalid verdict or feedback reason filter; reasons require the feedback queue')
         if created_from and created_to and created_from > created_to:
             raise HTTPException(422, 'Start date must not be after end date')
         service = request.app.state.case_service
@@ -215,7 +220,7 @@ def make_case_router(analyze, *, visible_text, mask_inline_data):
             store_items = []
             try:
                 while True:
-                    page = await call(store.list, status=status, risk=risk,
+                    page = await call(store.list, status=status, risk=risk, verdict=verdict, feedback_reason=feedback_reason,
                                       limit=min(100, needed - store_offset), offset=store_offset,
                                       created_from=created_from.isoformat() if created_from else None,
                                       created_to=created_to.isoformat() if created_to else None)
@@ -237,6 +242,18 @@ def make_case_router(analyze, *, visible_text, mask_inline_data):
         items.sort(key=lambda item: (item['created_at'], item['id']), reverse=True)
         return {'items': items[offset:offset + limit], 'total': total,
                 'partial': partial, 'sources': sources}
+
+    @router.get('/feedback-overview')
+    async def feedback_overview(request: Request, access=Depends(identity)):
+        store = request.app.state.case_service.feedback_store
+        if store is None:
+            return {'status': 'disabled'}
+        try:
+            return {'status': 'available', **await call(store.feedback_overview)}
+        except HTTPException as exc:
+            if exc.status_code != 503:
+                raise
+            return {'status': 'unavailable'}
 
     @router.get('/capacity')
     async def capacity(request: Request, access=Depends(identity)):
@@ -366,9 +383,13 @@ def make_case_router(analyze, *, visible_text, mask_inline_data):
             raise HTTPException(422, 'Confirm retention in case history before saving')
         service = request.app.state.case_service
         store, case = await find_record(service, case_id, 'case')
+        def response(value, created):
+            return {**with_kind(value, 'case'), 'auxiliary_save': {
+                'outcome': 'saved' if created else 'already_saved',
+                'base_version': payload.expected_version, 'receipt_id': payload.receipt_id}}
         # A retry of an already retained opinion never needs a live receipt or provider.
         if saved_opinion(case, access[1], payload.receipt_id) is not None:
-            return case
+            return response(case, False)
         try:
             prepared, request_id = prepared_identity(case, access[1])
         except ValueError:
@@ -386,8 +407,9 @@ def make_case_router(analyze, *, visible_text, mask_inline_data):
                    'input_sha256', 'probabilities', 'evidence_incomplete', 'affects_risk')}
         opinion.update(receipt_id=receipt['receipt_id'], requested_at=datetime.fromtimestamp(
             receipt['expires_at'] - DAY, timezone.utc).isoformat().replace('+00:00', 'Z'))
-        return with_kind(await call(store.save_opinion, case_id, actor=access[1],
-                         expected_version=payload.expected_version, opinion=opinion), 'case')
+        saved, created = await call(store.save_opinion, case_id, actor=access[1],
+                                    expected_version=payload.expected_version, opinion=opinion)
+        return response(saved, created)
 
     @router.patch('/{case_id}')
     async def update(case_id: str, payload: CaseReview, request: Request,

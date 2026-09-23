@@ -3,7 +3,7 @@ import math
 import re
 from datetime import datetime
 
-from case_store import CaseConflict, CaseInvalid
+from case_store import CaseConflict, CaseInvalid, validate_history_write
 
 
 def saved_opinion(case, actor, receipt_id):
@@ -42,6 +42,5 @@ def opinion_changes(case, actor, expected_version, opinion):
         raise CaseConflict('Case changed; reload before saving the opinion')
     if case['status'] == 'closed' or case.get('provenance', {}).get('record_kind') == 'user_feedback':
         raise CaseInvalid('Save auxiliary opinions only to an open case')
-    if len(case['events']) >= 200:
-        raise CaseInvalid('Case reached its 200-event limit; contact the administrator')
+    validate_history_write(case, case['status'], auxiliary=True)
     return {'auxiliary_opinion': {'from': None, 'to': opinion}}

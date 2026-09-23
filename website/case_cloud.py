@@ -9,7 +9,7 @@ import re
 import uuid
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 
-from case_store import CaseConflict, CaseInvalid, CaseNotFound, RISKS, now, validate_review, case_title
+from case_store import CaseConflict, CaseInvalid, CaseNotFound, RISKS, now, validate_review, case_title, bounded_record, summarize_feedback
 
 
 class CaseUnavailable(Exception):
@@ -45,6 +45,27 @@ local result = {}
 for _, field in ipairs(redis.call('HKEYS', KEYS[1])) do
   if string.sub(field, 1, 2) == 's:' then
     table.insert(result, redis.call('HGET', KEYS[1], field))
+  end
+end
+return result
+'''
+# Existing compact indexes stay unchanged. This read-only projection supports
+# legacy records too and returns no message text or analyst notes.
+FEEDBACK_LIST_SCRIPT = '''
+local result = {}
+for _, field in ipairs(redis.call('HKEYS', KEYS[1])) do
+  if string.sub(field, 1, 2) == 's:' then
+    local item = cjson.decode(redis.call('HGET', KEYS[1], field))
+    local record = cjson.decode(redis.call('HGET', KEYS[1], 'r:' .. string.sub(field, 3)))
+    item.record_kind = record.provenance.record_kind
+    item.source_consent = record.provenance.source_consent == true
+    for _, event in ipairs(record.events) do
+      for _, name in ipairs({'feedback_reason', 'evidence_basis'}) do
+        local change = event.changes[name]
+        if type(change) == 'table' then item[name] = change.to end
+      end
+    end
+    table.insert(result, cjson.encode(item))
   end
 end
 return result
@@ -160,18 +181,13 @@ class UpstashCaseStore:
             summary(case), encoded({'id': case_id, 'digest': input_sha256})))
 
     def _bounded(self, case):
-        raw = encoded(case)
-        if len(raw.encode()) > 750_000:
-            raise CaseInvalid('Case exceeds the 750 KB storage limit')
-        return raw
+        return bounded_record(case)
 
     def update(self, case_id, *, actor, expected_version, status, verdict, note,
                feedback_reason=None, evidence_basis=None):
         case = self.get(case_id)
         changes = validate_review(case, expected_version, status, verdict, note,
                                   feedback_reason, evidence_basis)
-        if len(case['events']) >= 200:
-            raise CaseInvalid('Case reached its 200-event limit; contact the administrator')
         timestamp = now()
         case['events'].append(dict(actor=actor, happened_at=timestamp,
             action='reopened' if case['status'] == 'closed' else 'reviewed', changes=changes, note=note.strip()))
@@ -179,13 +195,15 @@ class UpstashCaseStore:
         return self._result(self.execute('EVAL', UPDATE_SCRIPT, 1, self.key, case_id,
             expected_version, self._bounded(case), summary(case)))
 
-    def list(self, *, status=None, risk=None, created_from=None, created_to=None, limit=25, offset=0):
-        values = self.execute('EVAL', LIST_SCRIPT, 1, self.key)
+    def list(self, *, status=None, risk=None, verdict=None, feedback_reason=None, created_from=None, created_to=None, limit=25, offset=0):
+        values = self.execute('EVAL', FEEDBACK_LIST_SCRIPT if feedback_reason else LIST_SCRIPT, 1, self.key)
         try:
             items = [json.loads(value) for value in values]
             items = [item for item in items if
                      (not status or item['status'] == status) and
                      (not risk or item['risk'] == risk) and
+                     (not verdict or item.get('verdict') == verdict) and
+                     (not feedback_reason or item.get('feedback_reason') == feedback_reason) and
                      (not created_from or item['created_at'][:10] >= created_from) and
                      (not created_to or item['created_at'][:10] <= created_to)]
             items.sort(key=lambda item: (item['created_at'], item['id']), reverse=True)
@@ -193,15 +211,22 @@ class UpstashCaseStore:
         except (ValueError, KeyError, TypeError):
             raise CaseUnavailable('Invalid case list') from None
 
+    def feedback_overview(self):
+        values = self.execute('EVAL', FEEDBACK_LIST_SCRIPT, 1, self.key)
+        try:
+            return summarize_feedback(json.loads(value) for value in values)
+        except (ValueError, KeyError, TypeError):
+            raise CaseUnavailable('Invalid feedback overview') from None
+
     def save_opinion(self, case_id, *, actor, expected_version, opinion):
         from case_opinions import opinion_changes
         case = self.get(case_id)
         changes = opinion_changes(case, actor, expected_version, opinion)
         if changes is None:
-            return case
+            return case, False
         timestamp = now()
         case['events'].append(dict(actor=actor, happened_at=timestamp, action='auxiliary_saved',
                                    changes=changes, note=''))
         case.update(version=expected_version + 1, updated_at=timestamp)
         return self._result(self.execute('EVAL', UPDATE_SCRIPT, 1, self.key, case_id,
-            expected_version, self._bounded(case), summary(case)))
+            expected_version, self._bounded(case), summary(case))), True

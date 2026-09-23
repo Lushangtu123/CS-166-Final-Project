@@ -2,6 +2,11 @@
 
 ## Reviewed user feedback draft
 
+The workspace feedback overview summarizes retained report reviews. It is not an
+evaluation cohort: duplicate reports may be counted, reporting is self-selected,
+and there is no denominator of all analyzed messages. Do not present those counts
+as model-wide false-positive or false-negative rates.
+
 Each public report dialog owns its pending request and retry key. Closing or
 replacing a dialog invalidates work still preparing the request; a response from
 an older dialog cannot change a new report. Once a request has been sent,

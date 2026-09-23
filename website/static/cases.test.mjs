@@ -76,7 +76,7 @@ test('cached Jev lookup uses GET while disabled; explicit save retains history a
   const receipt = 'a'.repeat(64);
   const opinion = {receipt_id:receipt,model:'jev-1.13.0',requested_at:'2026-09-22T00:00:00Z',
     probabilities:{phishing_intent:0.75},affects_risk:false};
-  const saved = {...caseValue(),version:2,events:[...caseValue().events,{actor:'alice',action:'auxiliary_saved',
+  const saved = {...caseValue(),version:2,auxiliary_save:{outcome:'saved',base_version:1,receipt_id:receipt},events:[...caseValue().events,{actor:'alice',action:'auxiliary_saved',
     happened_at:'2026-09-22T00:00:01Z',changes:{auxiliary_opinion:{from:null,to:opinion}},note:''}]};
   const ui = setup(async (url, options) => url.endsWith('/auxiliary/save') ? {status:200,data:saved}
     : url.endsWith('/auxiliary') ? {status:200,data:{...opinion,status:'available',case_id:'case-1',case_version:1,reused:true}}
@@ -99,6 +99,24 @@ test('cached Jev lookup uses GET while disabled; explicit save retains history a
   assert.match(text(ui.el('history')), /75\.0%/);
   assert.match(text(ui.el('history')), /jev-1\.13\.0/);
   assert.doesNotMatch(text(ui.el('history')), /\[object Object\]/);
+});
+
+test('repeated opinion save keeps a conflict when another review advanced the case', async () => {
+const opinion={receipt_id:'a'.repeat(64),model:'jev-1.13.0',requested_at:'2026-09-22T00:00:00Z',probabilities:{phishing_intent:.75},affects_risk:false};
+const original={...caseValue(),version:2,status:'in_progress',events:[...caseValue().events,{actor:'alice',action:'auxiliary_saved',happened_at:'2026-09-22T00:00:01Z',changes:{auxiliary_opinion:{from:null,to:opinion}},note:''}]};
+const changed={...original,version:3,auxiliary_save:{outcome:'already_saved',base_version:2,receipt_id:opinion.receipt_id},verdict:'phishing',events:[...original.events,{actor:'alice',action:'reviewed',happened_at:'2026-09-22T00:00:02Z',changes:{verdict:{from:null,to:'phishing'}},note:'Updated in another tab'}]};
+const ui=setup(async url=>url.endsWith('/me') ? {status:200,data:{actor:'alice'}}
+ :url.startsWith('/api/cases?') ? {status:200,data:{items:[original],total:1}}
+ :url.endsWith('/auxiliary/save') ? {status:200,data:changed}
+ :url.endsWith('/auxiliary') ? {status:200,data:{...opinion,status:'available',case_id:'case-1',case_version:2,reused:true}}
+ : {status:200,data:original});
+await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
+ui.el('verdict').value='legitimate'; ui.el('note').value='Unsaved competing verdict'; await ui.fire('review-form','input');
+await ui.fire('jev-read'); await ui.fire('jev-save');
+assert.equal(ui.el('draft-rebase').hidden,false);
+assert.equal(ui.el('save-review').disabled,true);
+assert.equal(ui.el('verdict').value,'legitimate');
+assert.match(ui.el('notice').textContent,/already saved/i);
 });
 
 test('late cached lookup is cleared at signout and never posts to the model route', async () => {
@@ -609,4 +627,57 @@ test('new feedback choices survive saving and unavailable status requires a new 
   await ui.fire('review-form', 'submit');
   assert.match(ui.el('notice').textContent, /Choose an available status/);
   assert.equal(ui.calls.filter(c => c.options.method === 'PATCH').length, 1);
+});
+
+test('history capacity protects reserved slots while allowing a final close', async () => {
+  const full = {...caseValue(), status:'in_progress', version:199,
+    history_capacity:{used:199,limit:200,recovery_limit:202,remaining:0,review_statuses:['closed'],can_save_opinion:false}};
+  const ui=setup(async url=>url.endsWith('/auxiliary')
+    ? {status:200,data:{status:'available',case_id:full.id,case_version:199,receipt_id:'a'.repeat(64)}}
+    : url.endsWith('/me') ? {status:200,data:{actor:'alice'}}
+    : url.startsWith('/api/cases?') ? {status:200,data:{items:[full],total:1}}
+    : {status:200,data:full});
+  await ui.login(); ui.el('case-list').children[0].listeners.click(); await tick();
+  assert.match(ui.el('history-capacity').textContent,/199/);
+  assert.match(ui.el('history-capacity').textContent,/reserved/i);
+  assert.equal(ui.el('save-review').disabled,true);
+  await ui.fire('jev-read'); assert.equal(ui.el('jev-save').disabled,true);
+  ui.el('review-status').value='closed'; await ui.fire('review-form','change');
+  assert.equal(ui.el('save-review').disabled,false);
+});
+
+test('feedback overview uses all retained reports and clears counts when storage fails', async () => {
+  let overview={status:'available',total:7,pending:2,in_progress:1,closed:4,false_alerts:1,missed_threats:2};
+  const ui=setup(async url=>url.endsWith('/feedback-overview') ? {status:200,data:overview} : standard(url));
+  await ui.login();
+  assert.equal(ui.el('feedback-open-count').textContent,'3');
+  assert.equal(ui.el('feedback-closed-count').textContent,'4');
+  assert.equal(ui.el('feedback-false-alerts-count').textContent,'1');
+  assert.equal(ui.el('feedback-missed-threats-count').textContent,'2');
+  ui.el('filter-kind').value='feedback'; ui.el('filter-verdict').value='legitimate';
+  ui.el('filter-feedback-reason').value='false_alert'; await ui.fire('filters','submit');
+  const url=ui.calls.filter(c=>c.url.startsWith('/api/cases?')).at(-1).url;
+  assert.match(url,/verdict=legitimate/); assert.match(url,/feedback_reason=false_alert/);
+  assert.match(ui.el('feedback-overview-status').textContent,/not.*model/i);
+  assert.equal(ui.el('feedback-open-count').textContent,'3');
+  overview={status:'unavailable'}; await ui.fire('refresh');
+  assert.equal(ui.el('feedback-open-count').textContent,'—');
+  assert.match(ui.el('feedback-overview-status').textContent,/unavailable/i);
+  ui.el('filter-kind').value='case'; await ui.fire('filter-kind','change');
+  assert.equal(ui.el('filter-feedback-reason').value,'');
+  assert.equal(ui.el('filter-feedback-reason').disabled,true);
+  await ui.fire('logout'); assert.equal(ui.el('feedback-overview-status').textContent,'');
+});
+
+test('an old feedback overview cannot overwrite a newer refresh or a signed-out screen', async () => {
+  let release;
+  const ui=setup(async url=>url.endsWith('/feedback-overview') ? await new Promise(resolve=>{release=resolve;}) : standard(url));
+  await ui.login(); const old=release; await ui.fire('refresh');
+  release({status:200,data:{status:'available',total:1,pending:0,in_progress:0,closed:1,false_alerts:1,missed_threats:0}}); await tick();
+  old({status:200,data:{status:'available',total:2,pending:2,in_progress:0,closed:0,false_alerts:0,missed_threats:0}}); await tick();
+  assert.equal(ui.el('feedback-open-count').textContent,'0');
+  await ui.fire('refresh'); await ui.fire('logout');
+  release({status:200,data:{status:'available',total:9,pending:9,in_progress:0,closed:0,false_alerts:0,missed_threats:0}}); await tick();
+  assert.equal(ui.el('feedback-overview-status').textContent,'');
+  assert.equal(ui.el('feedback-open-count').textContent,'—');
 });

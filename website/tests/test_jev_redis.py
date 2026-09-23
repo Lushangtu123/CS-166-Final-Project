@@ -107,14 +107,51 @@ class JevRedisTests(unittest.TestCase):
                 return None
         with ThreadPoolExecutor(4) as pool:
             results=list(pool.map(save,range(4)))
-        self.assertTrue(any(results))
-        saved=self.store.save_opinion(case['id'],actor='alice',expected_version=1,opinion=synthetic_opinion())
+        self.assertEqual(sum(bool(result and result[1]) for result in results),1)
+        saved,created=self.store.save_opinion(case['id'],actor='alice',expected_version=1,opinion=synthetic_opinion())
+        self.assertFalse(created)
         self.assertEqual(saved['version'],2)
         self.assertEqual(len(saved['events']),2)
         self.assertEqual(saved['status'],'pending')
         self.assertEqual(self.store.capacity(),{'used':1,'limit':100})
         self.assertEqual(self.store.existing('alice','synthetic','f'*64),saved)
         self.assertEqual(self.store.list()['items'][0]['version'],2)
+
+    def test_real_lua_feedback_projection_is_read_only_and_uses_latest_review(self):
+        case=self.store.create(actor='user_feedback',request_key='feedback',input_sha256='f'*64,
+            source={'subject':'Private subject','body':'Private message'},analysis={'risk_level':'high'},
+            provenance={'record_kind':'user_feedback','source_consent':True,'report_type':'false_negative'})
+        self.store.update(case['id'],actor='alice',expected_version=1,status='in_progress',verdict='legitimate',
+            note='Private note',feedback_reason='false_alert',evidence_basis='retained_message')
+        self.store.update(case['id'],actor='alice',expected_version=2,status='closed',verdict='legitimate',note='Reviewed')
+        before=self.store.execute('HGETALL',self.store.key)
+        counts=self.store.feedback_overview()
+        self.assertEqual(counts['false_alerts'],1)
+        self.assertEqual(counts['missed_threats'],0)
+        page=self.store.list(verdict='legitimate',feedback_reason='false_alert')
+        self.assertEqual(page['total'],1)
+        self.assertNotIn('Private message',json.dumps(page))
+        self.assertNotIn('Private note',json.dumps(page))
+        self.assertEqual(self.store.execute('HGETALL',self.store.key),before)
+        self.store.update(case['id'],actor='alice',expected_version=3,status='in_progress',verdict='legitimate',
+            note='Recheck',feedback_reason='',evidence_basis='')
+        self.assertEqual(self.store.feedback_overview()['false_alerts'],0)
+        self.assertEqual(self.store.list(feedback_reason='false_alert')['total'],0)
+
+    def test_real_lua_legacy_full_history_can_close_but_not_reopen(self):
+        from case_store import CaseInvalid
+        from case_cloud import encoded, summary
+        case=self.store.create(actor='alice',request_key='full-history',input_sha256='f'*64,
+            source={'subject':'Synthetic','body':'Synthetic'},analysis={'risk_level':'low'},provenance={})
+        case['version']=200
+        case['events']=[case['events'][0]]*200
+        self.store.execute('HSET',self.store.key,'r:'+case['id'],encoded(case),'s:'+case['id'],summary(case))
+        self.store.update(case['id'],actor='alice',expected_version=200,status='in_progress',verdict='legitimate',note='Reviewed')
+        closed=self.store.update(case['id'],actor='alice',expected_version=201,status='closed',verdict='legitimate',note='Done')
+        self.assertEqual(closed['version'],202)
+        self.assertEqual(self.store.list()['items'][0]['version'],202)
+        with self.assertRaises(CaseInvalid):
+            self.store.update(case['id'],actor='alice',expected_version=202,status='in_progress',verdict='legitimate',note='Reopen')
 
     def test_real_lua_midnight_retains_receipt_then_expiry_allows_new_claim(self):
         first = self.control.reserve('b' * 64, 1)

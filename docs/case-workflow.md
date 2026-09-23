@@ -66,8 +66,13 @@ archive/restore/purge operations, even after the temporary receipt expires.
 Saving increments the case revision with the same atomic conflict checks as a
 review; risk, status, verdict and original detection evidence are unchanged.
 Only open formal cases support a new opinion entry; reopen closed cases first.
-The 200-event and 750 KB limits still apply. Retrying the same analyst/receipt
-returns the existing record without another event, including after receipt expiry.
+Ordinary history writes reserve the final workflow steps within the 200-event
+limit; the 750 KB limit still applies. Retrying the same analyst/receipt returns
+the existing record without another event, including after receipt expiry.
+The response's `auxiliary_save.outcome` distinguishes `saved` from `already_saved`,
+with the submitted `base_version` and `receipt_id`. Only an actual new opinion
+write can automatically advance a matching review draft. A repeated save that
+returns somebody else's newer review keeps the draft conflict visible.
 A concurrent writer may cause a conflict: reload the case before retrying.
 
 `/health` and `/api/config` expose only `jev_enabled` and `jev_configured` flags.
@@ -206,11 +211,44 @@ old token returns 401 on every retained accessible deployment.
 ## Storage, limits and responsibility
 
 This is a single-organization team pilot: 100 cases and 100 feedback reports,
-200 events per record, 750 KB
-encoded case limit. It has no automatic expiry/deletion, mailbox actions, SSO,
+200 normal history events per record and a 750 KB encoded case limit. It has no
+automatic expiry/deletion, mailbox actions, SSO,
 roles, tenant isolation, or guaranteed provider SLA. A full workspace requires an
 administrator-managed archive/export/migration before accepting more cases.
 Provider plan limits can reject writes earlier; failures never claim success.
+
+History limits are shared by SQLite and Upstash. An open case reserves two
+entries while pending (start and close), or one while in progress (close).
+Ordinary notes and auxiliary opinions cannot consume those reserved entries.
+The detail panel shows remaining ordinary writes and disables actions that no
+longer fit. Existing full records can use at most two additional entries, up to
+202 total, only to advance pending → in progress → closed. Those recovery slots
+cannot be used for notes, opinions or reopening. Full closed cases require a
+new follow-up investigation. Existing history is never truncated or deleted.
+Archives and local restore accept the bounded 202-entry recovery history.
+The 750 KB byte limit remains independent; a large record may still need a
+shorter closing note. Capacity checks are repeated atomically when saving.
+
+## Feedback overview and review filters
+
+The authenticated `GET /api/cases/feedback-overview` returns counts only, without
+message text, titles, analyst identities or notes. The overview covers all
+retained feedback, independently of queue filters: pending/in-progress reports,
+closed reports, confirmed false alerts and confirmed missed threats. A confirmed
+finding requires a closed record with the matching human verdict and structured
+reason, plus external verification or a consented retained-message evidence basis.
+Uncertain, reopened, reporter-only and inconsistent reviews do not contribute to
+confirmed counts. Duplicate reports can still be counted separately. These are
+reviewed-report counts, not overall model false-positive or false-negative rates.
+Unavailable storage is shown as unknown, never zero. Refresh retries the read.
+
+The queue accepts `verdict=phishing|legitimate|uncertain`. When `kind=feedback`,
+`feedback_reason` accepts the existing structured review reasons. Filters use the
+latest review-field changes and apply before totals and pagination. Redis reads
+project compact review metadata from existing records without changing indexes
+or retaining new copies of message text. SQLite uses the same review semantics.
+
+## Workspace capacity and backups
 
 The workspace displays unfiltered case and feedback counts separately, refreshes
 them with the queue, and warns at 80% of each cloud limit or when full. Counts

@@ -19,7 +19,7 @@ PROJECT_ROOT = WEBSITE_DIR.parent
 sys.path.insert(0, str(WEBSITE_DIR))
 
 from case_cloud import CaseUnavailable, UpstashCaseStore, SUMMARY_FIELDS, feedback_workspace_name
-from case_store import CaseStore, RISKS, STATUSES, VERDICTS
+from case_store import CaseStore, RISKS, STATUSES, VERDICTS, HISTORY_RECOVERY_LIMIT
 
 
 FORMAT = 'phishguard-case-archive-v1'
@@ -56,8 +56,8 @@ def validate_namespace(fields):
                     not isinstance(value.get('status'), str) or value['status'] not in STATUSES or \
                     (value.get('verdict') is not None and
                      (not isinstance(value['verdict'], str) or value['verdict'] not in VERDICTS)) or \
-                    type(value.get('version')) is not int or not 1 <= value['version'] <= 200 or \
-                    not isinstance(value.get('events'), list) or not 1 <= len(value['events']) <= 200 or \
+                    type(value.get('version')) is not int or not 1 <= value['version'] <= HISTORY_RECOVERY_LIMIT or \
+                    not isinstance(value.get('events'), list) or not 1 <= len(value['events']) <= HISTORY_RECOVERY_LIMIT or \
                     any(not isinstance(value.get(key), str) for key in
                         ('title', 'created_at', 'updated_at', 'created_by', 'input_sha256')) or \
                     any(not isinstance(value.get(key), dict) for key in ('source', 'analysis', 'provenance')):

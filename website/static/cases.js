@@ -9,7 +9,7 @@
   const opinionSaves = new Map();
   const latestVersions = new Map();
   let reviewBaseline = null;
-  let capacityTurn = 0;
+  let capacityTurn = 0, overviewTurn = 0;
   let token = '', epoch = 0, listEpoch = 0, detailEpoch = 0, offset = 0, selected = null;
   let creation = null, inputVersion = 0, total = 0;
   let jevAvailable = false, jevTurn = 0, createPending = false;
@@ -95,7 +95,9 @@
     $('draft-rebase').hidden = !conflict;
     $('draft-discard').hidden = !draft;
     $('draft-discard').disabled = reviewSaves.has(selected?.id);
-    $('save-review').disabled = Boolean(conflict || reviewSaves.has(selected?.id) || opinionSaves.has(selected?.id));
+    const capacity = selected?.history_capacity;
+    const historyBlocked = capacity && !capacity.review_statuses.includes($('review-status').value);
+    $('save-review').disabled = Boolean(historyBlocked || conflict || reviewSaves.has(selected?.id) || opinionSaves.has(selected?.id));
     renderJevAvailability();
   }
   function hasUnsavedWork() {
@@ -112,8 +114,10 @@
     $('visual-evidence').replaceChildren(); $('visual-evidence').hidden = true;
     token = ''; epoch++; listEpoch++; detailEpoch++; selected = null; creation = null;
     reviewDrafts.clear(); reviewSaves.clear(); opinionSaves.clear(); reviewBaseline = null; renderDraftState();
-    latestVersions.clear(); $('queue-warning').textContent = '';
-    capacityTurn++;
+    latestVersions.clear(); $('queue-warning').textContent = ''; $('history-capacity').textContent = '';
+    capacityTurn++; overviewTurn++;
+    for (const name of ['open','closed','false-alerts','missed-threats']) $('feedback-' + name + '-count').textContent = '—';
+    $('feedback-overview-status').textContent = '';
     for (const id of ['case-capacity', 'feedback-capacity', 'capacity-warning']) $(id).textContent = '';
     $('token').value = ''; $('workspace').hidden = true; $('session').hidden = true; $('login-panel').hidden = false;
     $('case-list').replaceChildren(); $('history').replaceChildren(); $('evidence').replaceChildren();
@@ -146,9 +150,10 @@
     const turn = ++listEpoch;
     const params = new URLSearchParams({limit: PAGE_SIZE, offset});
     if ($('filter-kind').value) params.set('kind', $('filter-kind').value);
-    for (const [id, key] of [['filter-status', 'status'], ['filter-risk', 'risk'], ['filter-from', 'created_from'], ['filter-to', 'created_to']]) {
+    for (const [id, key] of [['filter-status', 'status'], ['filter-risk', 'risk'], ['filter-verdict', 'verdict'], ['filter-from', 'created_from'], ['filter-to', 'created_to']]) {
       if ($(id).value) params.set(key, $(id).value);
     }
+    if ($('filter-kind').value === 'feedback' && $('filter-feedback-reason').value) params.set('feedback_reason', $('filter-feedback-reason').value);
     const data = await api('?' + params);
     if (turn !== listEpoch) return;
     total = data.total;
@@ -175,7 +180,23 @@
     syncSelection();
     $('page').textContent = `Page ${Math.floor(offset / PAGE_SIZE) + 1}`;
     $('previous').disabled = offset === 0; $('next').disabled = offset + PAGE_SIZE >= data.total;
-    await refreshCapacity();
+    await Promise.all([refreshCapacity(), refreshFeedbackOverview()]);
+  }
+  async function refreshFeedbackOverview() {
+    const turn = ++overviewTurn, session = epoch;
+    let data = {};
+    try { data = await api('/feedback-overview'); } catch (_) { /* The queue remains usable. */ }
+    if (turn !== overviewTurn || session !== epoch || !token) return;
+    const keys = ['total','pending','in_progress','closed','false_alerts','missed_threats'];
+    const available = data.status === 'available' && keys.every(key => Number.isInteger(data[key]) && data[key] >= 0) &&
+      data.pending + data.in_progress + data.closed === data.total && data.false_alerts + data.missed_threats <= data.closed;
+    for (const [name, count] of [['open',data.pending + data.in_progress],['closed',data.closed],
+        ['false-alerts',data.false_alerts],['missed-threats',data.missed_threats]]) {
+      $('feedback-' + name + '-count').textContent = available ? String(count) : '—';
+    }
+    $('feedback-overview-status').textContent = available
+      ? `${data.total} retained reports across all dates; queue filters do not affect these counts. Confirmed findings require a closed human review and supporting evidence. These are report counts, not overall model error rates; duplicate reports may be included.`
+      : data.status === 'disabled' ? 'Feedback storage is not configured.' : 'Feedback overview unavailable. Refresh to retry; counts are unknown.';
   }
   async function refreshCapacity() {
     const turn = ++capacityTurn, session = epoch;
@@ -209,6 +230,14 @@
     selected = value; syncSelection(); $('detail').hidden = false; $('empty-detail').hidden = true;
     renderJevAvailability();
     $('case-title').textContent = value.title;
+    const capacity = value.history_capacity;
+    $('history-capacity').textContent = capacity
+      ? `${capacity.used}/${capacity.limit} history entries · ${capacity.remaining} ordinary writes remaining. ` +
+        (capacity.remaining ? 'Final entries are reserved for starting work and closing the case.'
+          : capacity.review_statuses.length ? 'Capacity is reserved for starting work or closing. Choose an available status.'
+          : 'History is full. This case cannot be reopened; create a follow-up investigation.')
+      : '';
+    $('history-capacity').dataset.warning = String(capacity?.remaining === 0);
     $('case-meta').textContent = `${value.id} · Revision ${value.version} · Created by ${value.created_by}`;
     $('badges').replaceChildren(riskBadge(value.risk), ...[labels[value.status], value.verdict || 'Not reviewed'].map(text => node('span', text, 'badge')));
     if (value.kind === 'feedback') $('badges').append(node('span', 'USER FEEDBACK', 'badge feedback-badge'));
@@ -238,7 +267,7 @@
       ? 'Original input was not included. Review is limited to the diagnostic summary and reporter note.'
       : value.source.text_truncated ? 'Saved text was truncated. See analysis warnings for other coverage limitations.'
       : 'Message text is displayed without rendering HTML or loading external content.';
-    $('review-status').replaceChildren(...transitions[value.status].map(status => { const option = node('option', labels[status]); option.value = status; return option; }));
+    $('review-status').replaceChildren(...transitions[value.status].map(status => { const allowed = !value.history_capacity || value.history_capacity.review_statuses.includes(status); const option = node('option', labels[status] + (allowed ? '' : ' (history capacity)')); option.value = status; option.disabled = !allowed; return option; }));
     $('review-status').value = transitions[value.status][0];
     $('feedback-review-fields').hidden = value.kind !== 'feedback';
     reviewBaseline = reviewDefaults(value);
@@ -308,7 +337,7 @@
     $('jev-consent').disabled = !jevAvailable || busy;
     $('jev-read').disabled = busy;
     $('jev-save').hidden = !jevOpinion;
-    $('jev-save').disabled = jevBusy || reviewSaves.has(selected?.id) || opinionSaves.has(selected?.id) || selected?.status === 'closed';
+    $('jev-save').disabled = jevBusy || reviewSaves.has(selected?.id) || opinionSaves.has(selected?.id) || selected?.status === 'closed' || selected?.history_capacity?.can_save_opinion === false;
   }
   async function refreshJev() {
     const turn = ++jevStatusTurn;
@@ -399,7 +428,7 @@
   $('jev-run').addEventListener('click', () => loadOpinion(false));
   $('jev-read').addEventListener('click', () => loadOpinion(true));
   $('jev-save').addEventListener('click', async () => {
-    if (!selected || !jevOpinion || jevBusy || reviewSaves.has(selected.id) || opinionSaves.has(selected.id) || selected.status === 'closed') return;
+    if (!selected || !jevOpinion || jevBusy || reviewSaves.has(selected.id) || opinionSaves.has(selected.id) || selected.status === 'closed' || selected.history_capacity?.can_save_opinion === false) return;
     if (!window.confirm('Save this structured Jev opinion to case history for all workspace analysts? It will remain after the 24-hour cache expires. Risk and human verdict will not change.')) return;
     const opinion = jevOpinion, session = epoch, turn = jevTurn, operation = {};
     const version = selected.version;
@@ -411,9 +440,13 @@
       if (opinionSaves.get(opinion.id) === operation) opinionSaves.delete(opinion.id);
       const draft = reviewDrafts.get(opinion.id);
       // This write changes only history. Preserve drafts based on the same prior revision.
-      if (draft?.version === version && saved.version === version + 1) draft.version = saved.version;
+      const created = saved.auxiliary_save?.outcome === 'saved' &&
+        saved.auxiliary_save.base_version === version && saved.auxiliary_save.receipt_id === opinion.receipt;
+      if (created && draft?.version === version && saved.version === version + 1) draft.version = saved.version;
       if (selected?.id === opinion.id && selected.version <= saved.version) {
-        renderCase(saved, {capture:false}); notice('Jev opinion saved to case history. Human assessment is unchanged.');
+        renderCase(saved, {capture:false});
+        notice(created ? 'Jev opinion saved to case history. Human assessment is unchanged.'
+          : 'This opinion was already saved. The latest case revision is displayed; review any draft conflict before saving.');
       }
       await loadList();
     } catch (error) {
@@ -480,6 +513,9 @@
     if (reviewDrafts.get(selected.id)?.version !== undefined && reviewDrafts.get(selected.id).version !== selected.version) {
       renderDraftState(); notice('Compare the latest case history, then confirm your draft against the current revision.', true); return;
     }
+    if (selected.history_capacity && !selected.history_capacity.review_statuses.includes($('review-status').value)) {
+      notice('History capacity is reserved for closing this case. Choose an available status.', true); return;
+    }
     if (!transitions[selected.status].includes($('review-status').value)) {
       notice('The saved case no longer supports this status. Choose an available status; your edits are still here.', true); return;
     }
@@ -517,6 +553,12 @@
       if (reviewSaves.get(id) === operation) reviewSaves.delete(id);
       if (session === epoch) { captureDraft(); renderDraftState(); }
     });
+  });
+  $('filter-kind').addEventListener('change', () => {
+    const feedback = $('filter-kind').value === 'feedback';
+    $('filter-feedback-reason').disabled = !feedback;
+    $('filter-feedback-reason-field').hidden = !feedback;
+    if (!feedback) $('filter-feedback-reason').value = '';
   });
   $('filters').addEventListener('submit', event => { event.preventDefault(); offset = 0; action(event.submitter, loadList); });
   $('refresh').addEventListener('click', event => action(event.currentTarget, async () => { await refreshJev(); await loadList(); }));

@@ -60,6 +60,7 @@ class CaseOpinionTests(unittest.TestCase):
             status, saved, _ = self.call('POST', path + '/save', payload=save)
             self.assertEqual(status, 200)
             self.assertEqual(saved['version'], 2)
+            self.assertEqual(saved['auxiliary_save'], {'outcome':'saved','base_version':1,'receipt_id':found['receipt_id']})
             for key in ('risk','status','verdict','source','analysis'):
                 self.assertEqual(saved[key], case[key])
             event = saved['events'][-1]
@@ -75,6 +76,14 @@ class CaseOpinionTests(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertEqual(again['version'], 2)
             self.assertEqual(len(again['events']), 2)
+            self.assertEqual(again['auxiliary_save']['outcome'], 'already_saved')
+            service = cases.app.app.state.case_service
+            service.store.update(case['id'], actor='alice', expected_version=2, status='in_progress', verdict='phishing', note='Another tab')
+            status, newer, _ = self.call('POST', path + '/save', payload={**save, 'expected_version':2})
+            self.assertEqual(status, 200)
+            self.assertEqual(newer['version'], 3)
+            self.assertEqual(newer['auxiliary_save']['outcome'], 'already_saved')
+            self.assertNotIn('auxiliary_save', service.store.get(case['id']))
 
     def test_missing_expired_wrong_actor_and_stale_revision_cannot_save(self):
         case, control, request_id = self.seed()
@@ -124,8 +133,9 @@ class OpinionStoreTests(unittest.TestCase):
             case = store.create(actor='alice',request_key='synthetic',input_sha256='f'*64,
                 source={'subject':'Synthetic','body':'Synthetic body'},analysis={'risk_level':'low'},provenance={})
             opinion = synthetic_opinion()
-            saved = store.save_opinion(case['id'],actor='alice',expected_version=1,opinion=opinion)
-            self.assertEqual(store.save_opinion(case['id'],actor='alice',expected_version=1,opinion=opinion),saved)
+            saved, created = store.save_opinion(case['id'],actor='alice',expected_version=1,opinion=opinion)
+            self.assertTrue(created)
+            self.assertEqual(store.save_opinion(case['id'],actor='alice',expected_version=1,opinion=opinion),(saved, False))
             with self.assertRaises(CaseConflict):
                 store.save_opinion(case['id'],actor='bob',expected_version=1,opinion=opinion)
             updated = store.update(case['id'],actor='alice',expected_version=2,status='in_progress',verdict='legitimate',note='Reviewed')
@@ -150,7 +160,7 @@ class OpinionStoreTests(unittest.TestCase):
         case = record(1,status='in_progress')
         store.get = Mock(side_effect=lambda _:deepcopy(case))
         store.execute = Mock(side_effect=lambda *cmd:['ok',cmd[6]])
-        saved = store.save_opinion(case['id'],actor='alice',expected_version=2,opinion=synthetic_opinion())
+        saved, created = store.save_opinion(case['id'],actor='alice',expected_version=2,opinion=synthetic_opinion())
         self.assertEqual(store.execute.call_args.args[:3],('EVAL',UPDATE_SCRIPT,1))
         self.assertEqual(saved['version'],3)
         for key in ('risk','status','verdict','source','analysis'):
@@ -159,5 +169,5 @@ class OpinionStoreTests(unittest.TestCase):
         with self.assertRaises(CaseConflict):
             store.save_opinion(case['id'],actor='alice',expected_version=2,opinion=synthetic_opinion())
         store.get.return_value=saved; store.get.side_effect=None; store.execute.reset_mock()
-        self.assertEqual(store.save_opinion(case['id'],actor='alice',expected_version=2,opinion=synthetic_opinion()),saved)
+        self.assertEqual(store.save_opinion(case['id'],actor='alice',expected_version=2,opinion=synthetic_opinion()),(saved, False))
         store.execute.assert_not_called()
