@@ -1984,7 +1984,10 @@ class _AnalysisHTMLParser(HTMLParser):
     _literal_elements = {'textarea', 'title', 'xmp'}
     CDATA_CONTENT_ELEMENTS = (*HTMLParser.CDATA_CONTENT_ELEMENTS, *_literal_elements)
 
-    def set_cdata_mode(self, elem):
+    def set_cdata_mode(self, elem, *, escapable=False):
+        # New CPython patch releases pass escapable here. Keep the base parser
+        # in raw mode: handle_data owns the one-time RCDATA decoding below.
+        # Omitting the keyword also supports older HTMLParser signatures.
         super().set_cdata_mode(elem)
         if elem in self._literal_elements:
             # Only the matching HTML end-tag name leaves RCDATA/RAWTEXT.

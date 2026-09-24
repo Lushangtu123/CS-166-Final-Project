@@ -88,6 +88,27 @@ class HTMLInputCoverageTests(unittest.TestCase):
         parser.close()
         self.assertEqual(''.join(parser.text), '<style>Password & code</style>After')
 
+    def test_literal_text_accepts_new_runtime_cdata_callback_without_double_decoding(self):
+        class Collector(app._AnalysisHTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.text = []
+
+            def collect_data(self, text):
+                self.text.append(text)
+
+        for tag in ('textarea', 'title', 'xmp', 'script', 'style'):
+            for escapable in (False, True):
+                with self.subTest(tag=tag, escapable=escapable):
+                    parser = Collector()
+                    # New CPython patch releases pass this keyword from
+                    # parse_starttag; exercise that contract on older Python too.
+                    parser.set_cdata_mode(tag, escapable=escapable)
+                    parser.feed(f'<b>Password &amp;lt; code</b></{tag}><p>After &amp;</p>')
+                    parser.close()
+                    expected = '&lt;' if tag in ('textarea', 'title') else '&amp;lt;'
+                    self.assertEqual(''.join(parser.text), f'<b>Password {expected} code</b>After &')
+
     def test_literal_end_tag_boundaries_restore_normal_html_parsing(self):
         for tag in ('textarea', 'xmp'):
             for ending in (f'</{tag.upper()} >', f'</{tag}/>', f'</{tag} ignored=">">'):
