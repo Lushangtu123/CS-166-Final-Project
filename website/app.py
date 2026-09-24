@@ -33,7 +33,7 @@ import tldextract
 from collections import deque
 from email.utils import getaddresses
 from html.parser import HTMLParser
-from html import escape as escape_html
+from html import escape as escape_html, unescape as unescape_html
 from itertools import product
 from urllib.parse import unquote, urlparse, urljoin
 
@@ -1981,6 +1981,54 @@ def _first_html_attributes(attrs):
 
 class _AnalysisHTMLParser(HTMLParser):
     _marked_declaration = re.compile(r'<!\[([a-zA-Z][-_.a-zA-Z0-9]*)')
+    _literal_elements = {'textarea', 'title', 'xmp'}
+    CDATA_CONTENT_ELEMENTS = (*HTMLParser.CDATA_CONTENT_ELEMENTS, *_literal_elements)
+
+    def set_cdata_mode(self, elem):
+        super().set_cdata_mode(elem)
+        if elem in self._literal_elements:
+            # Only the matching HTML end-tag name leaves RCDATA/RAWTEXT.
+            # In particular, </textareax> and </ textarea> remain literal.
+            self.interesting = re.compile(r'</' + elem + r'(?=[\t\n\f\r />])', re.I | re.ASCII)
+
+    def parse_endtag(self, index):
+        if self.cdata_elem in self._literal_elements:
+            # End tags may have (ignored) attributes or a trailing slash. Keep
+            # quoted '>' characters inside those attributes, including when
+            # input arrives in separate feed() calls.
+            ending = re.match(r'''</[a-z]+(?=[\t\n\f\r />])(?:[^'">]|"[^"]*"|'[^']*')*>''',
+                              self.rawdata[index:], re.I | re.ASCII)
+            if ending is None:
+                return -1
+            self.handle_endtag(self.cdata_elem)
+            self.clear_cdata_mode()
+            return index + ending.end()
+        return super().parse_endtag(index)
+
+    def handle_startendtag(self, tag, attrs):
+        # A self-closing slash does not close a non-void HTML element.
+        self.handle_starttag(tag, attrs)
+        if tag in _HTML_VOID_ELEMENTS:
+            self.handle_endtag(tag)
+        elif tag in self.CDATA_CONTENT_ELEMENTS:
+            self.set_cdata_mode(tag)
+
+    def handle_data(self, data):
+        # RCDATA decodes references once; RAWTEXT preserves them literally.
+        # Collectors receive text tokens, never reparse them as nested markup.
+        self.collect_data(unescape_html(data) if self.cdata_elem in {'textarea', 'title'} else data)
+
+    def collect_data(self, data):
+        pass
+
+    def goahead(self, end):
+        super().goahead(end)
+        if end and self.cdata_elem in self._literal_elements and self.rawdata:
+            # HTMLParser buffers unclosed CDATA even at EOF. A visible textarea
+            # or xmp still has text in that case, so do not silently drop it.
+            self.handle_data(self.rawdata)
+            self.updatepos(0, len(self.rawdata))
+            self.rawdata = ''
 
     def parse_html_declaration(self, index):
         # Recent CPython versions silently consume unknown marked declarations
@@ -2110,12 +2158,7 @@ def _extract_links(text: str, *, parse_html: bool = True, parse_warnings=None,
             elif self.href is not None:
                 self.label_markup.append(self.get_starttag_text() or f'<{tag}>')
 
-        def handle_startendtag(self, tag, attrs):
-            self.handle_starttag(tag, attrs)
-            if tag in _HTML_VOID_ELEMENTS:
-                self.handle_endtag(tag)
-
-        def handle_data(self, data):
+        def collect_data(self, data):
             if self.href is not None:
                 self.label_markup.append(escape_html(data))
 
@@ -2617,12 +2660,6 @@ def _visible_content_text(text: str, parse_warnings=None, *, structure_stats=Non
                         self._truncate_elements(index)
                         break
 
-        def handle_startendtag(self, tag, attrs):
-            # HTML ignores the self-closing slash on non-void elements.
-            self.handle_starttag(tag, attrs)
-            if tag in _HTML_VOID_ELEMENTS:
-                self.handle_endtag(tag)
-
         def handle_starttag(self, tag, attrs):
             attrs = list(_first_html_attributes(attrs).items())
             # A head end tag is optional: body content implicitly closes it.
@@ -2717,7 +2754,7 @@ def _visible_content_text(text: str, parse_warnings=None, *, structure_stats=Non
             if not self.hidden and not self._visually_hidden() and tag in {'p', 'div', 'li', 'tr', 'td', 'section'}:
                 self.parts.append(' ')
 
-        def handle_data(self, data):
+        def collect_data(self, data):
             if self.hidden == ['head'] and data.strip():
                 self.hidden.pop()
             if self.hidden:
@@ -2887,7 +2924,7 @@ def _image_reference_counts(text: str, parse_warnings=None) -> tuple[int, int, i
             elif tag == 'script':
                 self.in_script = False
 
-        def handle_data(self, data):
+        def collect_data(self, data):
             if self.in_style and not self.in_script:
                 self.add_css(data)
 

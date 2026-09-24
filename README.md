@@ -250,6 +250,14 @@ this check; supported CDATA and conditional declarations remain accepted.
 Visible-text extraction also handles an omitted `</head>` when body content
 begins, while retaining suppression of title, script/style, and template content.
 This is targeted recovery, not a complete browser DOM or CSS rendering engine.
+`textarea` and `xmp` contents remain literal text across the text, link, form,
+image, and conditional-comment collectors: markup written inside them cannot
+hide visible instructions or invent active forms/images. Character references
+are decoded once in `textarea` (RCDATA) and retained in `xmp` (RAWTEXT).
+Unclosed elements retain their text through end of input; the slash in
+`<textarea/>` or `<xmp/>` does not close them. The same token handling keeps
+`title` content hidden until its actual closing tag. This does not establish
+how an individual mail client sanitizes these elements.
 
 Encapsulated `message/rfc822` attachments (and parseable `message/global` parts)
 are analyzed as independent messages, including their subject, sender identity,
@@ -987,7 +995,11 @@ history slots and byte space for final workflow steps, and repeated Jev saves
 preserve review conflicts. Failed page loads retain the current page for retry.
 If the last filtered page disappears after a review, the queue returns to a valid
 page with one bounded extra read. Public feedback keeps submission receipts and
-original retry keys when edits are made during a request. Archives account for
+original retry keys when edits are made during a request or the report dialog is
+closed and reopened for the same analysis. Confirmed receipts remain available;
+use **Start new report** to send another report, with fresh consent for retaining
+input or using it in evaluation. These states remain in page memory only;
+refreshing the page or replacing the analysis clears them. Archives account for
 JSON escaping at full workspace capacity and retain complete restore verification.
 Contradictory review reasons and verdicts cannot be closed or enter evaluation drafts.
 

@@ -34,6 +34,87 @@ class HTMLInputCoverageTests(unittest.TestCase):
         )
         return json.loads(asyncio.run(app.analyze_content_endpoint(request)).body)
 
+    def test_literal_html_elements_preserve_markup_and_character_reference_semantics(self):
+        for tag, expected in (('textarea', '<style>Send your password & code</style>'),
+                              ('xmp', '<style>Send your password &amp; code</style>')):
+            with self.subTest(tag=tag):
+                warnings = []
+                html = f'<{tag}><style>Send your password &amp; code</style></{tag}><p>After</p>'
+                text = app._visible_content_text(html, warnings)
+                self.assertIn(expected, text)
+                self.assertIn('After', text)
+                self.assertEqual(warnings, [])
+        self.assertEqual(app._visible_content_text(
+            '<title><style>Hidden title</style></title><style>Hidden CSS</style><p>Visible</p>'), 'Visible')
+
+    def test_literal_markup_cannot_create_form_image_base_or_conditional_evidence(self):
+        literal = ('<base href="https://base.example/">'
+                   '<a href="/reset">Reset</a><form><input type="password"></form>'
+                   '<img src="data:image/png;base64,AA==">'
+                   '<!--[if mso]><img src="https://image.example/pixel"><![endif]-->')
+        for tag in ('textarea', 'xmp'):
+            with self.subTest(tag=tag):
+                html, warnings = f'<{tag}>{literal}</{tag}>', []
+                self.assertEqual(app._image_reference_counts(html, warnings), (0, 0, 0))
+                self.assertFalse(app._has_password_form(html, warnings))
+                self.assertNotIn('https://base.example/reset',
+                                 [target for _, target in app._extract_links(html, parse_warnings=warnings)])
+                self.assertIn(literal, app._visible_content_text(html, warnings))
+                self.assertEqual(warnings, [])
+        self.assertTrue(app._has_password_form('<form><input type="password"></form>'))
+        self.assertEqual(app._image_reference_counts('<img src="data:image/png;base64,AA==">'), (1, 0, 0))
+
+    def test_literal_elements_handle_self_closing_syntax_wrong_end_names_and_eof(self):
+        for tag in ('textarea', 'xmp'):
+            for opening in (f'<{tag}>', f'<{tag.upper()}/>'):
+                with self.subTest(opening=opening):
+                    inner = f'<style>Send your password</style></{tag}x><b>Still literal</b>'
+                    self.assertIn(inner, app._visible_content_text(opening + inner))
+                    self.assertIn(inner, app._visible_content_text(opening + inner + f'</{tag}><p>After</p>'))
+
+    def test_literal_text_is_retained_across_incremental_parser_feeds(self):
+        class Collector(app._AnalysisHTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.text = []
+
+            def collect_data(self, text):
+                self.text.append(text)
+
+        parser = Collector()
+        for fragment in ('<text', 'area><style>Pass', 'word &am', 'p; code</style></text',
+                         'area ignored="', '>">After'):
+            parser.feed(fragment)
+        parser.close()
+        self.assertEqual(''.join(parser.text), '<style>Password & code</style>After')
+
+    def test_literal_end_tag_boundaries_restore_normal_html_parsing(self):
+        for tag in ('textarea', 'xmp'):
+            for ending in (f'</{tag.upper()} >', f'</{tag}/>', f'</{tag} ignored=">">'):
+                with self.subTest(ending=ending):
+                    html = f'<{tag}><style>Visible</style></ {tag}><b>Still literal</b>'
+                    html += ending + '<style>Hidden CSS</style><p>After</p>'
+                    text = app._visible_content_text(html)
+                    self.assertIn(f'<style>Visible</style></ {tag}><b>Still literal</b>', text)
+                    self.assertNotIn('Hidden CSS', text)
+                    self.assertTrue(text.endswith('After'))
+
+    def test_committed_model_cannot_lose_credential_request_inside_literal_html(self):
+        phrase = 'Send your password and verification code immediately to avoid account suspension.'
+        base = '<p>Please review the project notes before our meeting tomorrow.</p>'
+        with patch.object(app, '_content_pipeline', self.deployment_pipeline()):
+            control = self.analyze(body=base + '<p>' + phrase + '</p>')
+            self.assertEqual(control['risk_level'], 'high')
+            for tag in ('textarea', 'xmp'):
+                body = base + f'<{tag}><style>{phrase}</style></{tag}>'
+                for mode in ('manual', 'eml'):
+                    with self.subTest(tag=tag, mode=mode):
+                        result = self.analyze(body=body) if mode == 'manual' else self.analyze(
+                            raw_email='Subject: Project update\nContent-Type: text/html\n\n' + body)
+                        self.assertIn(result['risk_level'], ('high', 'critical'))
+                        self.assertTrue(result['analysis_complete'])
+                        self.assertEqual(result['analysis_warnings'], [])
+
     def test_model_receives_visible_html_text_in_both_manual_and_mime_modes(self):
         html = ('<p>Please review the project notes before our meeting tomorrow.</p>'
                 '<style>urgent suspended account password ' + 'verify ' * 100 + '</style>')

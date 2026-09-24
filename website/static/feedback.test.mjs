@@ -14,7 +14,12 @@ function setup(handler, cryptoOverride = {}) {
           add(name) { classes.add(name); }, remove(name) { classes.delete(name); },
           contains(name) { return classes.has(name); }},
         addEventListener(name, callback) { this.listeners[name] = callback; },
-        reset() {}, focus() {}, showModal() { this.open = true; },
+        reset() {
+          element('feedback-type').value = 'false_positive';
+          element('feedback-note').value = '';
+          element('feedback-consent').checked = false;
+          element('feedback-evaluation-consent').checked = false;
+        }, focus() {}, showModal() { this.open = true; },
         close() { this.open = false; this.listeners.close?.(); }});
     }
     return items.get(id);
@@ -34,6 +39,190 @@ function setup(handler, cryptoOverride = {}) {
 const ok = async () => ({ok:true, json: async () => ({id:'report-1'})});
 const context = buildSource => ({inputMode:'content', fingerprintInput:'Private email text',
   analysis:{risk_level:'high', risk_score:78, evidence_codes:['high']}, buildSource});
+
+for (const closeWith of ['feedback-cancel', 'feedback-close', 'native Escape']) {
+  test(`${closeWith}: reopening an uncertain report preserves its draft, original consent, body and key`, async () => {
+    let attempts = 0, reads = 0;
+    const ui = setup(async () => ++attempts === 1
+      ? {ok:false,status:503,json:async()=>({detail:'Committed, response lost'})} : ok());
+    ui.feedback.set('content', context(() => { reads++; return {body:'Retained original'}; }));
+    ui.feedback.open('content');
+    ui.element('feedback-note').value = 'Original note';
+    ui.element('feedback-consent').checked = true;
+    ui.element('feedback-consent').listeners.change();
+    ui.element('feedback-evaluation-consent').checked = true;
+    await ui.submit();
+    ui.element('feedback-note').value = 'Later draft';
+    ui.element('feedback-consent').checked = false;
+    ui.element('feedback-consent').listeners.change();
+    ui.element('feedback-form').listeners.change();
+    if (closeWith === 'native Escape') ui.element('feedback-dialog').close();
+    else ui.element(closeWith).listeners.click();
+    ui.feedback.open('content');
+    assert.equal(ui.element('feedback-note').value, 'Later draft');
+    assert.equal(ui.element('feedback-consent').checked, false);
+    assert.equal(ui.element('feedback-evaluation-consent').checked, false);
+    assert.equal(ui.element('feedback-submit').textContent, 'Retry original report');
+    assert.match(ui.element('feedback-error').textContent, /outcome is unconfirmed/i);
+    assert.equal(ui.element('feedback-new-report').hidden, true);
+    ui.window.confirm = () => false;
+    await ui.submit(); assert.equal(ui.requests.length, 1);
+    let prompt;
+    ui.window.confirm = message => { prompt = message; return true; };
+    await ui.submit();
+    assert.match(prompt, /original input/i);
+    assert.match(prompt, /private detection evaluation/i);
+    assert.equal(ui.requests[1].options.body, ui.requests[0].options.body);
+    assert.equal(ui.requests[1].options.headers['Idempotency-Key'], ui.requests[0].options.headers['Idempotency-Key']);
+    assert.equal(reads, 1);
+    assert.match(ui.element('feedback-success').textContent, /report-1/);
+    assert.equal(ui.element('feedback-note').value, 'Later draft');
+  });
+}
+
+test('reopening the same analysis while its request is pending waits for the original receipt', async () => {
+  let finish;
+  const ui = setup(() => new Promise(resolve => { finish = resolve; }));
+  ui.feedback.set('content', context(() => ({body:'Original'}))); ui.feedback.open('content');
+  const pending = ui.submit(); while (!finish) await new Promise(setImmediate);
+  ui.element('feedback-close').listeners.click(); ui.feedback.open('content');
+  assert.equal(ui.element('feedback-submit').disabled, true);
+  assert.equal(ui.element('feedback-new-report').hidden, true);
+  await ui.submit(); assert.equal(ui.requests.length, 1);
+  finish({ok:true,json:async()=>({id:'original-receipt'})}); await pending;
+  assert.match(ui.element('feedback-success').textContent, /original-receipt/);
+  await ui.submit(); assert.equal(ui.requests.length, 1);
+});
+
+test('a receipt arriving while closed remains available when the same analysis is reopened', async () => {
+  let finish;
+  const ui = setup(() => new Promise(resolve => { finish = resolve; }));
+  ui.feedback.set('content', context(() => ({body:'Original'}))); ui.feedback.open('content');
+  const pending = ui.submit(); while (!finish) await new Promise(setImmediate);
+  ui.element('feedback-dialog').close();
+  finish({ok:true,json:async()=>({id:'closed-receipt'})}); await pending;
+  assert.equal(ui.element('feedback-dialog').open, false);
+  ui.feedback.open('content');
+  assert.match(ui.element('feedback-success').textContent, /closed-receipt/);
+  assert.equal(ui.element('feedback-submit').hidden, true);
+  await ui.submit(); assert.equal(ui.requests.length, 1);
+});
+
+test('an uncertain response arriving while closed is resumed with the original key', async () => {
+  let finish, attempts = 0;
+  const ui = setup(() => ++attempts === 1 ? new Promise(resolve => { finish = resolve; }) : ok());
+  ui.feedback.set('content', context(() => ({body:'Original'}))); ui.feedback.open('content');
+  const pending = ui.submit(); while (!finish) await new Promise(setImmediate);
+  ui.element('feedback-cancel').listeners.click();
+  finish({ok:false,status:503,json:async()=>({detail:'Unknown outcome'})}); await pending;
+  ui.feedback.open('content'); await ui.submit();
+  assert.equal(ui.requests[1].options.body, ui.requests[0].options.body);
+  assert.equal(ui.requests[1].options.headers['Idempotency-Key'], ui.requests[0].options.headers['Idempotency-Key']);
+});
+
+test('only the explicit new-report action replaces a submitted report and renews consent', async () => {
+  let finish, attempts = 0;
+  const ui = setup(() => ++attempts === 1 ? new Promise(resolve => { finish = resolve; }) : ok());
+  ui.feedback.set('content', context(() => ({body:'Original'}))); ui.feedback.open('content');
+  ui.element('feedback-consent').checked = true;
+  ui.element('feedback-consent').listeners.change();
+  ui.element('feedback-evaluation-consent').checked = true;
+  const pending = ui.submit(); while (!finish) await new Promise(setImmediate);
+  ui.element('feedback-note').value = 'Later draft'; ui.element('feedback-form').listeners.input();
+  finish({ok:true,json:async()=>({id:'received'})}); await pending;
+  ui.element('feedback-close').listeners.click(); ui.feedback.open('content');
+  assert.match(ui.element('feedback-success').textContent, /received/);
+  assert.equal(ui.element('feedback-note').value, 'Later draft');
+  assert.equal(ui.element('feedback-new-report').hidden, false);
+  await ui.submit(); assert.equal(ui.requests.length, 1);
+  ui.element('feedback-new-report').listeners.click();
+  assert.equal(ui.element('feedback-note').value, 'Later draft');
+  assert.equal(ui.element('feedback-consent').checked, false);
+  assert.equal(ui.element('feedback-evaluation-consent').checked, false);
+  assert.equal(ui.element('feedback-evaluation-consent').disabled, true);
+  await ui.submit();
+  assert.notEqual(ui.requests[1].options.headers['Idempotency-Key'], ui.requests[0].options.headers['Idempotency-Key']);
+  const body = JSON.parse(ui.requests[1].options.body);
+  assert.equal(body.note, 'Later draft');
+  assert.equal(body.include_source, false); assert.equal(body.evaluation_consent, false);
+  assert.equal(body.source, null);
+});
+
+test('closing during hashing cancels unsent work even when the same analysis is immediately reopened', async () => {
+  let finishHash, hashes = 0;
+  const ui = setup(ok, {subtle:{digest:(...args) => ++hashes === 1
+    ? new Promise(resolve => { finishHash = resolve; }) : webcrypto.subtle.digest(...args)}});
+  ui.feedback.set('content', context(() => ({body:'Original'}))); ui.feedback.open('content');
+  ui.element('feedback-note').value = 'Saved draft';
+  const pending = ui.submit();
+  ui.element('feedback-dialog').close(); ui.feedback.open('content');
+  assert.equal(ui.element('feedback-note').value, 'Saved draft');
+  assert.equal(ui.element('feedback-submit').disabled, false);
+  finishHash(new Uint8Array(32).buffer); await pending;
+  assert.equal(ui.requests.length, 0);
+  await ui.submit(); assert.equal(ui.requests.length, 1);
+});
+
+test('a queued close event cannot detach a dialog that has already reopened', async () => {
+  const ui = setup(ok);
+  ui.feedback.set('content', context(() => ({body:'Original'}))); ui.feedback.open('content');
+  ui.element('feedback-cancel').listeners.click(); ui.feedback.open('content');
+  ui.element('feedback-dialog').listeners.close();
+  await ui.submit(); assert.equal(ui.requests.length, 1);
+  assert.match(ui.element('feedback-success').textContent, /report-1/);
+});
+
+test('native close cancels a hash before the queued close event is dispatched', async () => {
+  let finishHash;
+  const ui = setup(ok, {subtle:{digest:() => new Promise(resolve => { finishHash = resolve; })}});
+  ui.feedback.set('content', context(() => ({body:'Original'}))); ui.feedback.open('content');
+  const pending = ui.submit();
+  // Native dialogs clear open immediately and dispatch close in a later task.
+  ui.element('feedback-dialog').open = false;
+  finishHash(new Uint8Array(32).buffer); await pending;
+  ui.element('feedback-dialog').listeners.close();
+  assert.equal(ui.requests.length, 0);
+});
+
+test('a canceled hash failure cannot make a newer definite rejection uncertain or unlock its request', async () => {
+  let rejectHash, finishRequest, hashes = 0, requests = 0;
+  const ui = setup(() => ++requests === 1 ? new Promise(resolve => { finishRequest = resolve; }) : ok(),
+    {subtle:{digest:(...args) => ++hashes === 1
+      ? new Promise((_resolve, reject) => { rejectHash = reject; }) : webcrypto.subtle.digest(...args)}});
+  ui.feedback.set('content', context(() => ({body:'Original'}))); ui.feedback.open('content');
+  const old = ui.submit();
+  ui.element('feedback-cancel').listeners.click(); ui.feedback.open('content');
+  const current = ui.submit(); while (!finishRequest) await new Promise(setImmediate);
+  rejectHash(new Error('Canceled hash failed')); await old;
+  assert.equal(ui.element('feedback-submit').disabled, true);
+  finishRequest({ok:false,status:422,json:async()=>({detail:'Correct the note'})}); await current;
+  ui.element('feedback-note').value = 'Corrected note'; ui.element('feedback-form').listeners.input();
+  await ui.submit();
+  assert.equal(JSON.parse(ui.requests[1].options.body).note, 'Corrected note');
+  assert.notEqual(ui.requests[1].options.headers['Idempotency-Key'], ui.requests[0].options.headers['Idempotency-Key']);
+});
+
+test('clearing an analysis isolates its late receipt from another analyzer and a replacement context', async () => {
+  let finish, attempts = 0;
+  const ui = setup(() => ++attempts === 1 ? new Promise(resolve => { finish = resolve; }) : ok());
+  ui.feedback.set('content', context(() => ({body:'Original'}))); ui.feedback.open('content');
+  const pending = ui.submit(); while (!finish) await new Promise(setImmediate);
+  ui.feedback.clear('content');
+  ui.feedback.set('sender', {inputMode:'sender', fingerprintInput:'new@example.com', analysis:{risk_level:'low'},
+    buildSource:() => ({email:'new@example.com'})});
+  ui.feedback.open('sender');
+  finish({ok:true,json:async()=>({id:'old-content-receipt'})}); await pending;
+  assert.equal(ui.element('feedback-success').textContent, '');
+  assert.equal(ui.element('feedback-submit').disabled, false);
+  await ui.submit();
+  ui.feedback.set('content', {...context(() => ({body:'Replacement'})), fingerprintInput:'Replacement'});
+  ui.feedback.open('content');
+  assert.equal(ui.element('feedback-success').textContent, '');
+  assert.equal(ui.element('feedback-consent').checked, false);
+  await ui.submit();
+  assert.equal(ui.requests.length, 3);
+  assert.equal(new Set(ui.requests.map(item => item.options.headers['Idempotency-Key'])).size, 3);
+});
 
 test('editing a sent report cannot hide its receipt or create a second report', async () => {
   let finish;
@@ -131,6 +320,7 @@ test('an old response cannot release a new submission or replace its retry', asy
   const first = ui.submit();
   while (releases.length < 1) await new Promise(setImmediate);
   ui.element('feedback-cancel').listeners.click();
+  ui.feedback.set('content', {...context(() => ({body:'B'})), fingerprintInput:'New analysis'});
   ui.feedback.open('content'); ui.element('feedback-note').value = 'New report';
   const second = ui.submit();
   while (releases.length < 2) await new Promise(setImmediate);
