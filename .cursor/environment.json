@@ -1,0 +1,17 @@
+{
+  "name": "PhishGuard (CS166)",
+  "install": "sudo apt-get update && sudo apt-get install -y python3-venv && python3 -m venv .venv && ./.venv/bin/pip install --upgrade pip && ./.venv/bin/pip install -r website/requirements.txt",
+  "terminals": [
+    {
+      "name": "web",
+      "command": "cd website && APP_ENV=development ../.venv/bin/uvicorn app:app --host 0.0.0.0 --port 8000",
+      "description": "PhishGuard FastAPI web app (uvicorn) on port 8000. Health check at /health."
+    }
+  ],
+  "ports": [
+    {
+      "name": "web",
+      "port": 8000
+    }
+  ]
+}

@@ -22,7 +22,26 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
-## [2026-09-17 13:39 PT] — Integrate fluid frontend with disposable classification
+## [2026-09-26 10:31 PT] — Add Cloud Agent development environment config
+
+### Why
+- Cloud Agents booted without a defined environment, so dependencies were not
+  installed and the FastAPI app was not started automatically. The base image
+  also lacked `python3-venv`, breaking `python3 -m venv`.
+
+### Files changed
+- `.cursor/environment.json` — new repository-managed environment: `install`
+  installs `python3-venv`, creates `.venv`, and runs
+  `pip install -r website/requirements.txt`; a `web` terminal launches
+  `uvicorn app:app` on port 8000 (`APP_ENV=development`); exposes port 8000.
+
+### Effect
+- Fresh Cloud Agents now install the backend and serve PhishGuard on
+  `http://localhost:8000`. Verified locally: 83 backend `unittest` cases and 9
+  Node frontend tests pass; `/health` returns `{"status":"ok",...}`;
+  `POST /api/analyze-email` scores `support@paypa1-secure.tk` at 100/100
+  (critical) and `alice@gmail.com` at 0/100; `POST /api/analyze-content`
+  flags an urgent raw-IP-link message as `critical`.
 
 ### Why
 - The frontend redesign and disposable-email improvements diverged from the
