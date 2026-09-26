@@ -18,7 +18,7 @@
     })();
   </script>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="/static/style.css?v=33" />
+  <link rel="stylesheet" href="/static/style.css?v=34" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -658,94 +658,146 @@
       <p>The sender-only mode evaluates 30 address and domain indicators. They are heuristic evidence—not probabilities learned from the UCI website dataset.</p>
     </div>
 
-    <div class="feature-cards-grid">
-      <div class="feature-category-card">
-        <div class="fc-header url-header">
-          <span class="fc-icon icon-tile tile-grad-cyan"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1.2 1.2"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1.2-1.2"/></svg></span>
-          <div>
-            <div class="fc-title">URL / Address Structure</div>
-            <div class="fc-count">8 features</div>
-          </div>
+    <div class="bento">
+      <article class="bento-card bento-hero">
+        <div class="bento-head">
+          <span class="icon-tile tile-grad-cyan"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a13.5 13.5 0 0 1 0 18M12 3a13.5 13.5 0 0 0 0 18"/></svg></span>
+          <div><h3 class="bento-title">Brand &amp; look-alike domains</h3><p class="bento-kicker">High-risk heuristic</p></div>
         </div>
-        <ul class="fc-list">
-          <li>IP address used as domain</li>
-          <li>Total email address length</li>
-          <li>URL shortener service domain</li>
-          <li>Multiple @ symbols</li>
-          <li>Double slash in domain</li>
-          <li>Hyphen in domain name</li>
-          <li>Subdomain depth</li>
-          <li>"http" token inside address</li>
-        </ul>
-      </div>
+        <p class="bento-desc">Flags brand names embedded in unrelated or look-alike domains—a more direct sender-risk signal than username length alone.</p>
+        <div class="bento-demo lookalike">
+          <div class="lk-row"><span class="lk-label">Sender</span><code class="lk-domain">paypa<mark>1</mark>-verify<mark>.xyz</mark></code><span class="demo-tag tag-bad">Homoglyph · risky TLD</span></div>
+          <div class="lk-row"><span class="lk-label">Brand</span><code class="lk-domain">paypal.com</code><span class="demo-tag tag-good">Expected domain</span></div>
+        </div>
+      </article>
 
-      <div class="feature-category-card">
-        <div class="fc-header domain-header">
-          <span class="fc-icon icon-tile tile-grad-mint"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a13.5 13.5 0 0 1 0 18M12 3a13.5 13.5 0 0 0 0 18"/></svg></span>
-          <div>
-            <div class="fc-title">Domain Reputation</div>
-            <div class="fc-count">8 features · Highest signal</div>
-          </div>
+      <article class="bento-card bento-tall">
+        <div class="bento-head">
+          <span class="icon-tile tile-grad-violet"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.8"/><path d="M4.5 20.5c0-3.9 3.4-6.5 7.5-6.5s7.5 2.6 7.5 6.5"/></svg></span>
+          <div><h3 class="bento-title">Randomized usernames</h3><p class="bento-kicker">Six-factor pattern check</p></div>
         </div>
-        <ul class="fc-list">
-          <li>Known legitimate mail provider</li>
-          <li>Top-level domain type (TLD)</li>
-          <li>Domain label character length</li>
-          <li>Digits mixed into domain</li>
-          <li>High-traffic mail platform</li>
-          <li>Phishing keywords in domain</li>
-          <li>Phishing keywords in username</li>
-          <li>Suspicious / high-risk TLD</li>
-        </ul>
-      </div>
+        <p class="bento-desc">Entropy, vowel ratio, digit mix, and repetition flag mailboxes that look machine-generated. Major providers need more factors before anything is reported.</p>
+        <div class="bento-demo randomness">
+          <code class="rnd-name">xq7m9v2k4p8z<span>@gmail.com</span></code>
+          <div class="rnd-meter" role="img" aria-label="5 of 6 randomness factors matched">
+            <span class="on"></span><span class="on"></span><span class="on"></span><span class="on"></span><span class="on"></span><span></span>
+          </div>
+          <p class="rnd-caption">5 / 6 factors · reported as suspicious, not confirmed disposable</p>
+        </div>
+      </article>
 
-      <div class="feature-category-card">
-        <div class="fc-header html-header">
-          <span class="fc-icon icon-tile tile-grad-violet"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.8"/><path d="M4.5 20.5c0-3.9 3.4-6.5 7.5-6.5s7.5 2.6 7.5 6.5"/></svg></span>
-          <div>
-            <div class="fc-title">Username Patterns</div>
-            <div class="fc-count">14 features</div>
+      <article class="bento-card">
+        <div class="bento-head">
+          <span class="icon-tile tile-high"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.8 2.9 19.5h18.2z"/><path d="M12 10v4.2"/><path d="M12 17.3h.01"/></svg></span>
+          <div><h3 class="bento-title">Risky TLDs</h3><p class="bento-kicker">Domain reputation</p></div>
+        </div>
+        <p class="bento-desc">Free or cheap extensions that are heavily abused in phishing raise the score.</p>
+        <div class="tld-chips"><code>.tk</code><code>.xyz</code><code>.top</code><code>.gq</code><code>.ml</code></div>
+      </article>
+
+      <article class="bento-card">
+        <div class="bento-head">
+          <span class="icon-tile tile-purple"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 13.5h5l1.8 2.5h4.4l1.8-2.5h5"/><path d="M5.5 5h13l2.5 8.5V19a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 19v-5.5z"/></svg></span>
+          <div><h3 class="bento-title">Mailbox service type</h3><p class="bento-kicker">Evidence-scoped</p></div>
+        </div>
+        <div class="svc-list">
+          <div class="svc-row"><code>mailinator.com</code><span class="demo-tag tag-purple">Disposable provider</span></div>
+          <div class="svc-row"><code>relay.firefox.com</code><span class="demo-tag tag-info">Privacy relay</span></div>
+        </div>
+        <p class="bento-note">A relay protects a real inbox and is not phishing evidence by itself.</p>
+      </article>
+
+      <article class="bento-card">
+        <div class="bento-head">
+          <span class="icon-tile tile-low"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8.5 12.2 2.4 2.4 4.6-5"/></svg></span>
+          <div><h3 class="bento-title">Known provider context</h3><p class="bento-kicker">Explainable heuristic</p></div>
+        </div>
+        <p class="bento-desc">Recognizes common providers as context while still requiring users to inspect the complete message for spoofing and compromised-account attacks.</p>
+      </article>
+
+      <article class="bento-card bento-wide">
+        <div class="bento-head">
+          <span class="icon-tile tile-grad-mint"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.5 4.5 5.5v6c0 4.6 3.2 8.6 7.5 9.9 4.3-1.3 7.5-5.3 7.5-9.9v-6L12 2.5z"/><path d="m9 12 2 2 4-4.5"/></svg></span>
+          <div><h3 class="bento-title">Authentication &amp; identity alignment</h3><p class="bento-kicker">Available with raw .eml input</p></div>
+        </div>
+        <div class="auth-layout">
+          <p class="bento-desc">Checks SPF, DKIM, and DMARC results plus From, Reply-To, and Return-Path domain mismatches.</p>
+          <div class="bento-demo auth-demo">
+            <div class="auth-pills"><span class="demo-tag tag-good">SPF pass</span><span class="demo-tag tag-bad">DKIM fail</span><span class="demo-tag tag-bad">DMARC fail</span></div>
+            <div class="align-row"><span class="lk-label">From</span><code>billing@paypal.com</code></div>
+            <div class="align-row"><span class="lk-label">Reply-To</span><code>support@paypa1-help.top</code><span class="demo-tag tag-bad">Mismatch</span></div>
           </div>
         </div>
-        <ul class="fc-list">
-          <li>Digit ratio in username</li>
-          <li>Username randomness (entropy)</li>
-          <li>Non-standard special characters</li>
-          <li>Username length</li>
-          <li>Brand domain spoofing</li>
-          <li>noreply / system sender type</li>
-          <li>Repeated character ratio</li>
-          <li>Digit-letter mix in domain</li>
-          <li>Abused country-code TLD</li>
-          <li>Auto-generated username pattern</li>
-          <li>… and composite risk features</li>
-        </ul>
-      </div>
+      </article>
     </div>
 
-    <div class="top3-section">
-      <h3>Highest-Priority Sender Checks</h3>
-      <div class="top3-grid">
-        <div class="top3-card">
-          <div class="top3-rank">#1</div>
-          <div class="top3-name">Known Legitimate Provider</div>
-          <div class="top3-imp">Explainable heuristic</div>
-          <div class="top3-desc">Recognizes common providers as context while still requiring users to inspect the complete message for spoofing and compromised-account attacks.</div>
+    <details class="signals-all">
+      <summary><span class="signals-all-title">View all 30 sender signals</span><span class="signals-all-sub">URL / address structure · domain reputation · username patterns</span></summary>
+      <div class="feature-cards-grid">
+        <div class="feature-category-card">
+          <div class="fc-header url-header">
+            <span class="fc-icon icon-tile tile-grad-cyan"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1.2 1.2"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1.2-1.2"/></svg></span>
+            <div>
+              <div class="fc-title">URL / Address Structure</div>
+              <div class="fc-count">8 features</div>
+            </div>
+          </div>
+          <ul class="fc-list">
+            <li>IP address used as domain</li>
+            <li>Total email address length</li>
+            <li>URL shortener service domain</li>
+            <li>Multiple @ symbols</li>
+            <li>Double slash in domain</li>
+            <li>Hyphen in domain name</li>
+            <li>Subdomain depth</li>
+            <li>"http" token inside address</li>
+          </ul>
         </div>
-        <div class="top3-card">
-          <div class="top3-rank">#2</div>
-          <div class="top3-name">Brand/Domain Mismatch</div>
-          <div class="top3-imp">High-risk heuristic</div>
-          <div class="top3-desc">Flags brand names embedded in unrelated or look-alike domains, a more direct sender-risk signal than username length alone.</div>
+
+        <div class="feature-category-card">
+          <div class="fc-header domain-header">
+            <span class="fc-icon icon-tile tile-grad-mint"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a13.5 13.5 0 0 1 0 18M12 3a13.5 13.5 0 0 0 0 18"/></svg></span>
+            <div>
+              <div class="fc-title">Domain Reputation</div>
+              <div class="fc-count">8 features · Highest signal</div>
+            </div>
+          </div>
+          <ul class="fc-list">
+            <li>Known legitimate mail provider</li>
+            <li>Top-level domain type (TLD)</li>
+            <li>Domain label character length</li>
+            <li>Digits mixed into domain</li>
+            <li>High-traffic mail platform</li>
+            <li>Phishing keywords in domain</li>
+            <li>Phishing keywords in username</li>
+            <li>Suspicious / high-risk TLD</li>
+          </ul>
         </div>
-        <div class="top3-card">
-          <div class="top3-rank">#3</div>
-          <div class="top3-name">Authentication & Identity Alignment</div>
-          <div class="top3-imp">Available with raw .eml input</div>
-          <div class="top3-desc">Checks SPF, DKIM, and DMARC results plus From, Reply-To, and Return-Path domain mismatches.</div>
+
+        <div class="feature-category-card">
+          <div class="fc-header html-header">
+            <span class="fc-icon icon-tile tile-grad-violet"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.8"/><path d="M4.5 20.5c0-3.9 3.4-6.5 7.5-6.5s7.5 2.6 7.5 6.5"/></svg></span>
+            <div>
+              <div class="fc-title">Username Patterns</div>
+              <div class="fc-count">14 features</div>
+            </div>
+          </div>
+          <ul class="fc-list">
+            <li>Digit ratio in username</li>
+            <li>Username randomness (entropy)</li>
+            <li>Non-standard special characters</li>
+            <li>Username length</li>
+            <li>Brand domain spoofing</li>
+            <li>noreply / system sender type</li>
+            <li>Repeated character ratio</li>
+            <li>Digit-letter mix in domain</li>
+            <li>Abused country-code TLD</li>
+            <li>Auto-generated username pattern</li>
+            <li>… and composite risk features</li>
+          </ul>
         </div>
       </div>
-    </div>
+    </details>
   </div>
 </section>
 
@@ -860,7 +912,7 @@
 <script src="/static/vision.js?v=4"></script>
 <script src="/static/file-intake.js?v=1"></script>
 <script src="/static/feedback.js?v=7"></script>
-<script src="/static/app.js?v=36"></script>
+<script src="/static/app.js?v=37"></script>
 <!-- Vercel's same-origin page-view and web-vitals collectors. No email input is sent as a custom event. -->
 <script>
   window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };

@@ -303,10 +303,10 @@ function setupMobileNav() {
 const REVEAL_SELECTORS = [
   '.section-header', '.demo-tabs', '.email-input-card', '.content-input-card',
   '.disposable-info-card', '.metrics-table-wrap', '.chart-card',
-  '.feature-category-card', '.top3-section h3', '.top3-card', '.step', '.tech-stack',
+  '.signals-all', '.step', '.tech-stack',
 ];
 const REVEAL_GROUPS = [
-  '.hero-stats', '.charts-row', '.feature-cards-grid', '.top3-grid', '.pipeline-steps',
+  '.hero-stats', '.charts-row', '.bento', '.pipeline-steps',
 ];
 
 function setupScrollReveal() {

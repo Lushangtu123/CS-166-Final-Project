@@ -22,6 +22,36 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-26 12:32 PT] — Signals section as a bento grid with live examples
+
+### Why
+- `Explainable Sender Signals` showed three equal-height bullet lists (8 / 8 /
+  14 items) followed by a separate `Highest-Priority Sender Checks` row that
+  repeated the same ideas; it read like documentation rather than a product.
+
+### Files changed
+- `website/static/index.html` — replace the lists + top-3 row with a 6-card
+  `.bento` grid: look-alike domain (`paypa1-verify.xyz` vs `paypal.com`),
+  randomized username (`xq7m9v2k4p8z`, 5/6-factor meter), risky TLDs
+  (`.tk .xyz .top .gq .ml`, all in `SPAM_TLDS`), mailbox service type
+  (mailinator vs Firefox Relay), known-provider context, and
+  authentication/identity alignment (SPF/DKIM/DMARC + From vs Reply-To).
+  The three top-3 descriptions are kept verbatim in the matching cards; the
+  full 30-signal lists move into a `<details class="signals-all">`;
+  `style.css?v=34`, `app.js?v=37`.
+- `website/static/style.css` — `.bento` (6 columns → 2 at ≤1024 px → 1 at
+  ≤640 px), card/demo/tag styles, `.signals-all` disclosure, reduced-motion
+  hover overrides.
+- `website/static/app.js` — scroll-reveal targets `.bento` cards and
+  `.signals-all` instead of the removed top-3 elements.
+
+### Effect
+- 1440 px: one hero card (4 columns) + tall randomness card, two small cards,
+  then provider + wide authentication card; each shows a concrete example
+  consistent with the detector's current output.
+- 390 px: single column with no horizontal overflow (`scrollWidth` 390).
+- `node --test website/static/*.test.mjs` 174/174.
+
 ## [2026-09-26 10:41 PT] — Align the case workspace with the homepage and reduce density
 
 ### Why
