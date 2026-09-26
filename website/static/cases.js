@@ -1,6 +1,8 @@
 'use strict';
 (() => {
   const $ = id => document.getElementById(id);
+  const askConfirm = (message, options) => window.PhishGuardConfirm
+    ? window.PhishGuardConfirm(message, options) : Promise.resolve(window.confirm(message));
   const labels = {pending: 'Pending', in_progress: 'In progress', closed: 'Closed'};
   const transitions = {pending: ['pending', 'in_progress'], in_progress: ['in_progress', 'closed'], closed: ['in_progress']};
   const reviewFields = {status: 'review-status', verdict: 'verdict', note: 'note',
@@ -375,8 +377,8 @@
     if (createPending) { notice('Wait for the current case submission to finish before closing the form.', true); return; }
     closeComposer();
   });
-  $('logout').addEventListener('click', () => {
-    if (!hasUnsavedWork() || window.confirm('Sign out and discard unsaved drafts in this tab?')) signOut();
+  $('logout').addEventListener('click', async () => {
+    if (!hasUnsavedWork() || await askConfirm('Sign out and discard unsaved drafts in this tab?', {confirmLabel: 'Sign out'})) signOut();
   });
   function renderJevAvailability() {
     $('jev-panel').hidden = !token || !selected || selected.kind === 'feedback';
@@ -489,8 +491,12 @@
   $('jev-run').addEventListener('click', () => loadOpinion(false));
   $('jev-read').addEventListener('click', () => loadOpinion(true));
   $('jev-save').addEventListener('click', async () => {
-    if (!selected || !jevOpinion || jevBusy || reviewSaves.has(selected.id) || opinionSaves.has(selected.id) || selected.status === 'closed' || selected.history_capacity?.can_save_opinion === false) return;
-    if (!window.confirm('Save this structured Jev opinion to case history for all workspace analysts? It will remain after the 24-hour cache expires. Risk and human verdict will not change.')) return;
+    const blocked = () => !selected || !jevOpinion || jevBusy || reviewSaves.has(selected.id) || opinionSaves.has(selected.id) || selected.status === 'closed' || selected.history_capacity?.can_save_opinion === false;
+    if (blocked()) return;
+    const pending = jevOpinion, pendingCase = selected;
+    if (!await askConfirm('Save this structured Jev opinion to case history for all workspace analysts? It will remain after the 24-hour cache expires. Risk and human verdict will not change.', {confirmLabel: 'Save to history'})) return;
+    // The case, opinion, or busy state may have changed while the dialog was open.
+    if (blocked() || jevOpinion !== pending || selected !== pendingCase) return;
     const opinion = jevOpinion, session = epoch, turn = jevTurn, operation = {};
     const version = selected.version;
     captureDraft(); opinionSaves.set(opinion.id, operation); jevBusy = true; renderDraftState();
@@ -548,10 +554,14 @@
     if (createPending || !creation?.saved) return;
     creation = null; renderCreation(); notice('Draft ready for a new case. Review the input before submitting.');
   });
-  $('create-form').addEventListener('submit', event => {
+  $('create-form').addEventListener('submit', async event => {
     event.preventDefault();
     if (createPending || creation?.saved) return;
-    if (creation?.sent && creation.version !== inputVersion && !window.confirm('Retry the original case submission? Only the original message and extracted evidence will be sent. Your later edits will stay here for a separate case.')) return;
+    if (creation?.sent && creation.version !== inputVersion) {
+      const pending = creation, session = epoch;
+      if (!await askConfirm('Retry the original case submission? Only the original message and extracted evidence will be sent. Your later edits will stay here for a separate case.', {confirmLabel: 'Retry original'})) return;
+      if (createPending || creation !== pending || session !== epoch) return;
+    }
     const current = epoch; createPending = true; renderCreation();
     action(event.submitter, async () => {
       if (!creation) {

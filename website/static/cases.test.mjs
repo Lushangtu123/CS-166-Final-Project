@@ -91,6 +91,20 @@ test('programmatic submits without a submitter still run and the filter summary 
   assert(ui.calls.some(call => call.url.startsWith('/api/cases?') && call.url.includes('risk=high')));
 });
 
+test('sign-out with unsaved input waits for the themed confirmation', async () => {
+  const ui = setup(standard);
+  await ui.login();
+  ui.el('subject').value = 'Unsaved subject';
+  const prompts = [];
+  ui.window.PhishGuardConfirm = async message => { prompts.push(message); return false; };
+  await ui.fire('logout');
+  assert.equal(ui.el('workspace').hidden, false);
+  ui.window.PhishGuardConfirm = async () => true;
+  await ui.fire('logout');
+  assert.equal(ui.el('workspace').hidden, true);
+  assert.match(prompts[0], /discard unsaved drafts/);
+});
+
 test('a corrected page request cannot overwrite a newer filter or its review draft', async () => {
   let shrink = false, release; let loads = 0;
   const ui = setup(async url => {

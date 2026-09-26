@@ -22,6 +22,41 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-26 12:43 PT] — Animated dialogs and a themed confirm dialog
+
+### Why
+- The feedback dialog appeared in a single frame and the case drawer only
+  animated on open, not on close.
+- Four confirmations (feedback retry; case sign-out, Jev save, case retry)
+  used the browser's native `window.confirm`, which ignores the page theme.
+
+### Files changed
+- `website/static/confirm-dialog.js` — new `window.PhishGuardConfirm(message,
+  {confirmLabel, cancelLabel})` builds a `<dialog>` with DOM APIs only
+  (compatible with the `/cases` CSP), focuses Cancel by default, resolves
+  `true` only for the confirm button, and falls back to `window.confirm`
+  without `<dialog>` support.
+- `website/static/feedback.js`, `website/static/cases.js` — `askConfirm()`
+  uses `PhishGuardConfirm` when loaded, else `window.confirm`; the four call
+  sites await it and re-check their session/case/opinion state after the
+  dialog closes before continuing.
+- `website/static/style.css`, `website/static/cases.css` — `@starting-style` +
+  `transition-behavior: allow-discrete` enter/exit for the feedback dialog,
+  the case drawer (slide from the right) and `.pg-confirm`; reduced motion
+  disables them.
+- `website/static/index.html`, `website/static/cases.html` — load
+  `confirm-dialog.js?v=1`; `feedback.js?v=8`, `cases.js?v=22`.
+- `website/static/confirm-dialog.test.mjs`, `website/static/cases.test.mjs` —
+  native fallback, confirm/dismiss resolution, cancel focus, and sign-out
+  waiting for the themed confirm.
+
+### Effect
+- Chrome 148: the feedback dialog fades and lifts in; closing the case drawer
+  slides it out; sign-out with an unsaved subject shows a themed
+  `Sign out` / `Cancel` dialog, and Cancel keeps the session.
+- Existing tests that stub `window.confirm` still exercise the same branches.
+- `node --test website/static/*.test.mjs` 179/179.
+
 ## [2026-09-26 12:38 PT] — Skeleton loading states and view transitions
 
 ### Why

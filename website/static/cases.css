@@ -489,8 +489,37 @@ pre {
   color: var(--text);
 }
 .compose-dialog::backdrop { background: rgba(0,0,0,.58); backdrop-filter: blur(2px); }
-.compose-dialog[open] .drawer-shell { animation: drawer-in .22s cubic-bezier(.2,.8,.2,1); }
-@keyframes drawer-in { from { transform: translateX(24px); opacity: .65; } to { transform: translateX(0); opacity: 1; } }
+/* Drawer and confirm dialog enter/exit, with @starting-style for the opening frame. */
+.compose-dialog {
+  opacity: 0; transform: translateX(32px);
+  transition: opacity .22s ease, transform .3s cubic-bezier(.2,.8,.2,1), overlay .3s allow-discrete, display .3s allow-discrete;
+}
+.compose-dialog[open] { opacity: 1; transform: none; }
+.pg-confirm {
+  opacity: 0; transform: translateY(8px) scale(.98);
+  transition: opacity .2s ease, transform .26s cubic-bezier(.2,.8,.2,1), overlay .26s allow-discrete, display .26s allow-discrete;
+}
+.pg-confirm[open] { opacity: 1; transform: none; }
+.compose-dialog::backdrop, .pg-confirm::backdrop { transition: background-color .25s, overlay .3s allow-discrete, display .3s allow-discrete; }
+@starting-style {
+  .compose-dialog[open] { opacity: 0; transform: translateX(32px); }
+  .pg-confirm[open] { opacity: 0; transform: translateY(8px) scale(.98); }
+  .compose-dialog[open]::backdrop, .pg-confirm[open]::backdrop { background-color: transparent; }
+}
+.pg-confirm {
+  width: min(420px, calc(100vw - 28px));
+  margin: auto;
+  padding: 20px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 24px 60px rgba(0,0,0,.35);
+}
+.pg-confirm::backdrop { background: rgba(0,0,0,.5); }
+.pg-confirm-message { margin: 0; color: var(--text); font-size: 13px; line-height: 1.6; }
+.pg-confirm-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+.pg-confirm-cancel { background: transparent; color: var(--muted); }
 .drawer-shell { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr); }
 .drawer-header { min-height: 70px; padding: 15px 18px 13px 22px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--line); }
 .drawer-header .eyebrow { margin-bottom: 4px; }

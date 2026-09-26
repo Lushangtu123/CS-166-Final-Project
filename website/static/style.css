@@ -910,6 +910,33 @@ code {
 .feedback-dialog { width: min(520px, calc(100vw - 28px)); max-height: min(88vh, 800px); overflow: auto; margin: auto; padding: 27px; border: 1px solid var(--border-hi); border-radius: var(--radius); background: var(--bg-card2); color: var(--text); box-shadow: var(--shadow); }
 .feedback-dialog [hidden] { display: none !important; }
 .feedback-dialog::backdrop { background: rgba(2, 6, 15, .78); backdrop-filter: blur(5px); }
+
+/* Dialog enter/exit: fade + lift, with @starting-style for the opening frame. */
+.feedback-dialog, .pg-confirm {
+  opacity: 0; transform: translateY(10px) scale(0.98);
+  transition: opacity 0.25s var(--ease), transform 0.32s var(--ease), overlay 0.32s allow-discrete, display 0.32s allow-discrete;
+}
+.feedback-dialog[open], .pg-confirm[open] { opacity: 1; transform: none; }
+.feedback-dialog::backdrop, .pg-confirm::backdrop {
+  transition: background-color 0.3s, backdrop-filter 0.3s, overlay 0.32s allow-discrete, display 0.32s allow-discrete;
+}
+@starting-style {
+  .feedback-dialog[open], .pg-confirm[open] { opacity: 0; transform: translateY(10px) scale(0.98); }
+  .feedback-dialog[open]::backdrop, .pg-confirm[open]::backdrop { background-color: transparent; backdrop-filter: blur(0); }
+}
+
+.pg-confirm {
+  width: min(440px, calc(100vw - 28px)); margin: auto; padding: 24px;
+  border: 1px solid var(--border-hi); border-radius: var(--radius);
+  background: var(--bg-card2); color: var(--text); box-shadow: var(--shadow);
+}
+.pg-confirm::backdrop { background: rgba(2, 6, 15, .62); backdrop-filter: blur(4px); }
+.pg-confirm-message { font-size: 14.5px; line-height: 1.6; }
+.pg-confirm-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; flex-wrap: wrap; }
+.pg-confirm-ok { padding: 11px 20px; }
+@media (prefers-reduced-motion: reduce) {
+  .feedback-dialog, .pg-confirm, .feedback-dialog::backdrop, .pg-confirm::backdrop { transition: none; }
+}
 .feedback-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; }
 .feedback-head h2 { font-size: 26px; letter-spacing: -.03em; }
 .feedback-eyebrow { color: var(--accent); font-size: 10px; font-weight: 750; letter-spacing: .15em; }

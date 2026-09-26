@@ -7,6 +7,8 @@ window.PhishGuardFeedback = (() => {
   const sessions = {sender: null, content: null};
   let active = null;
   const $ = id => document.getElementById(id);
+  const askConfirm = (message, options) => window.PhishGuardConfirm
+    ? window.PhishGuardConfirm(message, options) : Promise.resolve(window.confirm(message));
 
   function clear(kind) {
     contexts[kind] = null;
@@ -112,10 +114,11 @@ window.PhishGuardFeedback = (() => {
       let submission = session.retry;
       if (submission?.sent && submission.revision !== revision) {
         const original = JSON.parse(submission.body);
-        if (!window.confirm('Retry the originally submitted report' + (original.include_source
+        const retry = await askConfirm('Retry the originally submitted report' + (original.include_source
           ? ', including the original input you previously agreed to retain' : ', without original input') +
           (original.evaluation_consent ? ' and allowing its use in private detection evaluation' : '') +
-          '? Your later edits and consent changes will not be sent.')) return;
+          '? Your later edits and consent changes will not be sent.', {confirmLabel: 'Retry original report'});
+        if (!retry || !current()) return;
       }
       session.error = '';
       render(session);
