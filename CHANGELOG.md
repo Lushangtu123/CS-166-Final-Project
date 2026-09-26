@@ -22,6 +22,26 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-26 12:54 PT] — Pin Chart.js with subresource integrity
+
+### Why
+- The homepage loaded `chart.js@4.4.0` from jsDelivr without an `integrity`
+  attribute, so a tampered CDN response would execute on the page (CSP already
+  allows `https://cdn.jsdelivr.net`).
+
+### Files changed
+- `website/static/index.html` — add
+  `integrity="sha384-e6nUZLBkQ86NJ6TVVKAeSaK8jWa3NhkYWZFomE39AvDbQWeie9PlQqM3pmYW5d1g"`
+  and `crossorigin="anonymous"` (hash of the 205,222-byte
+  `dist/chart.umd.min.js`; jsDelivr returns `Access-Control-Allow-Origin: *`).
+- `website/static/app.test.mjs` — every external `<script>` must be
+  version-pinned and carry a sha384 `integrity` plus `crossorigin="anonymous"`.
+
+### Effect
+- Chrome 148: `Chart` loads, the benchmark chart renders, 0 console errors; a
+  modified file would now be blocked instead of executed.
+- `node --test website/static/*.test.mjs` 183/183.
+
 ## [2026-09-26 12:53 PT] — Score breakdown, copy summary, and keyboard shortcuts
 
 ### Why

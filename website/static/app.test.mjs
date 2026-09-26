@@ -519,6 +519,17 @@ test('copy summaries describe the result without HTML and carry the disclaimer',
   }), /Verdict: High Risk \(72% risk\)\nCategories:\n- Urgency \(high, 2 signals\)/);
 });
 
+test('third-party scripts are pinned with subresource integrity', () => {
+  const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+  const external = [...html.matchAll(/<script[^>]+src="https?:\/\/[^"]+"[^>]*>/g)].map(match => match[0]);
+  assert.ok(external.length > 0);
+  for (const tag of external) {
+    assert.match(tag, /@\d+\.\d+\.\d+\//, tag);
+    assert.match(tag, /integrity="sha384-[A-Za-z0-9+/]{64}"/, tag);
+    assert.match(tag, /crossorigin="anonymous"/, tag);
+  }
+});
+
 test('narrow-screen section menu is wired to the collapsible link list', () => {
   const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
   assert.match(html, /<ul class="nav-links" id="nav-links">/);
