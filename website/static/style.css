@@ -205,6 +205,14 @@ code {
   letter-spacing: -0.03em; font-variant-numeric: tabular-nums;
 }
 .stat-label { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; }
+.stat-value.stat-text {
+  display: flex; align-items: center; justify-content: center; min-height: 36px;
+  font-size: 14px; line-height: 1.25; letter-spacing: -0.01em; text-wrap: balance;
+}
+
+/* Balanced headings and orphan-free paragraphs where supported. */
+h1, h2, h3, .hero-title, .bento-title, .step-title { text-wrap: balance; }
+p, .hero-subtitle, .step-desc, .bento-desc, .cat-desc, .di-col p { text-wrap: pretty; }
 .hero-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 
 /* Hero visual — fluid orb */
@@ -339,6 +347,9 @@ code {
   transition: opacity 0.2s, color 0.2s;
 }
 .btn-clear.visible { opacity: 1; pointer-events: auto; }
+.btn-clear .ico { width: 15px; height: 15px; vertical-align: -0.15em; }
+.safety-dot .ico { width: 15px; height: 15px; vertical-align: -0.2em; }
+.col-title .ico { width: 14px; height: 14px; vertical-align: 0; color: var(--accent2); }
 .btn-clear:hover { color: var(--text); }
 
 .btn-analyze { padding: 0 26px; white-space: nowrap; flex-shrink: 0; height: auto; }
@@ -813,10 +824,24 @@ code {
 .tech-badge:hover { border-color: var(--border-hi); color: var(--text); background: var(--surface-2); }
 
 /* ── Footer ──────────────────────────────────────────────────────────────── */
-.footer { border-top: 1px solid var(--border); padding: 28px 24px; }
-.footer-inner { max-width: 1200px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
-.footer-brand { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--text-muted); }
-.footer-info { font-size: 13px; color: var(--text-dim); }
+.footer { border-top: 1px solid var(--border); padding: 56px 24px 28px; }
+.footer-inner { max-width: 1200px; margin: 0 auto; }
+.footer-top { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 2fr); gap: 48px; padding-bottom: 36px; }
+.footer-brand { display: flex; align-items: center; gap: 8px; font-weight: 650; color: var(--text); font-size: 16px; }
+.footer-tagline { margin-top: 14px; max-width: 340px; font-size: 13px; line-height: 1.65; color: var(--text-muted); }
+.footer-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; }
+.footer-col { display: flex; flex-direction: column; gap: 10px; }
+.footer-col h4 { font-size: 12px; font-weight: 650; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-dim); margin-bottom: 4px; }
+.footer-col a { font-size: 13.5px; color: var(--text-muted); width: fit-content; transition: color 0.2s; }
+.footer-col a:hover { color: var(--text); text-decoration: none; }
+.footer-bottom {
+  display: flex; justify-content: space-between; gap: 12px 24px; flex-wrap: wrap;
+  padding-top: 20px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-dim);
+}
+@media (max-width: 768px) {
+  .footer-top { grid-template-columns: 1fr; gap: 32px; }
+  .footer-cols { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 
 /* ── Demo Tabs — segmented control ───────────────────────────────────────── */
 .demo-tabs {

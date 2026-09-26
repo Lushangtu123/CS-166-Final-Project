@@ -290,9 +290,10 @@ function caseLoginHref(hostname, deployedHref) {
 }
 
 function setupCaseLoginLink() {
-  const link = document.querySelector('.case-login');
-  if (!link || typeof location === 'undefined') return;
-  link.setAttribute('href', caseLoginHref(location.hostname, link.getAttribute('href')));
+  if (typeof location === 'undefined') return;
+  document.querySelectorAll('.case-login, .case-login-link').forEach(link => {
+    link.setAttribute('href', caseLoginHref(location.hostname, link.getAttribute('href')));
+  });
 }
 
 // ── Mobile section menu ──────────────────────────────────────────────────────
@@ -1444,7 +1445,7 @@ function renderContentResult(data) {
     safetyCard.style.display = '';
     safetyList.innerHTML = data.safety_signals.map(s => `
       <div class="safety-item">
-        <span class="safety-dot">✓</span>
+        <span class="safety-dot">${icon('check')}</span>
         <span class="safety-msg">${escapeHtml(s)}</span>
       </div>
     `).join('');

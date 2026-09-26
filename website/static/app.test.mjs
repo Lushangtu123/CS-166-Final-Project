@@ -457,6 +457,16 @@ test('loading states render a result-shaped skeleton', () => {
   assert.ok(html.indexOf('id="loading-area"') < html.indexOf('id="result-area"'));
 });
 
+test('homepage uses SVG icons instead of glyphs and links the renamed repository', () => {
+  const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+  const js = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(html, /[✓✕]/);
+  assert.doesNotMatch(js, /safety-dot">✓/);
+  assert.doesNotMatch(html, /CS-166-Final-Project/);
+  assert.match(html, /github\.com\/Lushangtu123\/Phishing-Scam-Email-Detection"/);
+  assert.match(html, /class="case-login-link" href="https:\/\/phishguard-email-analyzer\.vercel\.app\/cases"/);
+});
+
 test('narrow-screen section menu is wired to the collapsible link list', () => {
   const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
   assert.match(html, /<ul class="nav-links" id="nav-links">/);

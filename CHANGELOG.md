@@ -22,6 +22,44 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-26 12:47 PT] — Hero capability stats, footer, SVG glyphs, and balanced text
+
+### Why
+- The hero's four stats were UCI website-benchmark numbers (97.47 %, 0.9977,
+  11,055, 30), off-topic for an email detector and duplicated by the
+  Performance section.
+- The footer was one line and linked to the pre-rename repository
+  `CS-166-Final-Project`.
+- A few text glyphs remained (`✕` clear button, `✓` in the no-risk
+  placeholder, the safety-signal title and each safety-signal row).
+- Headings and paragraphs could end with a single orphaned word.
+
+### Files changed
+- `website/static/index.html` — hero stats: `30` sender risk signals, `6`
+  detection layers, `Auth headers` (SPF, DKIM & DMARC in .eml), `OCR + QR`
+  (run in your browser); three-column footer (Product / Analysts / Project)
+  with tagline, privacy line, and links to
+  `Lushangtu123/Phishing-Scam-Email-Detection` (GitHub, README, CHANGELOG);
+  SVG clear button (`aria-label`) and safety-title icon; `style.css?v=37`,
+  `app.js?v=39`.
+- `website/static/app.js` — safety rows use `icon('check')`;
+  `setupCaseLoginLink()` also rewrites the footer `.case-login-link` on local
+  hosts.
+- `website/static/style.css` — equal-width `minmax(0, 1fr)` hero stat
+  columns, `.stat-text`, footer grid (1 column ≤768 px), icon sizing,
+  `text-wrap: balance` for headings and `pretty` for paragraphs.
+- `website/static/cases.css` — the same `text-wrap` rules; `cases.css?v=13`
+  in `website/static/cases.html`.
+- `website/static/app.test.mjs` — no `✓`/`✕` glyphs, renamed repository
+  links, footer case link.
+
+### Effect
+- The benchmark numbers now appear only in `#performance`; hero cards are
+  equal width at 1440 px and 2 × 2 at 390 px.
+- Footer at 1440 px: brand + tagline beside three link columns; at 390 px
+  it stacks, and `Case workspace` resolves to `/cases` locally.
+- `node --test website/static/*.test.mjs` 180/180.
+
 ## [2026-09-26 12:43 PT] — Animated dialogs and a themed confirm dialog
 
 ### Why

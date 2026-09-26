@@ -73,7 +73,8 @@ label { display: block; margin: 16px 0 7px; color: var(--muted); font-size: 12px
 label select, label input { margin-top: 6px; }
 input[type="checkbox"] { display: inline-block; width: 15px; min-height: 15px; margin: 0 8px 0 0; vertical-align: -2px; accent-color: var(--signal); }
 p { color: var(--muted); }
-h1, h2, h3 { color: var(--text); }
+h1, h2, h3 { color: var(--text); text-wrap: balance; }
+p { text-wrap: pretty; }
 h1 { margin: 0; font-size: 30px; line-height: 1.15; font-weight: 650; letter-spacing: -.9px; }
 h2 { margin: 0; font-size: 18px; line-height: 1.35; font-weight: 620; letter-spacing: -.35px; }
 h3 { margin: 0; font-size: 14px; line-height: 1.4; font-weight: 620; letter-spacing: -.15px; }

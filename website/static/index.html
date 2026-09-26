@@ -18,7 +18,7 @@
     })();
   </script>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="/static/style.css?v=36" />
+  <link rel="stylesheet" href="/static/style.css?v=37" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -75,20 +75,20 @@
     </p>
     <div class="hero-stats">
       <div class="stat-card">
-        <div class="stat-value" data-count="97.47" data-decimals="2" data-suffix="%">97.47%</div>
-        <div class="stat-label">Website Benchmark Accuracy</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-value" data-count="0.9977" data-decimals="4">0.9977</div>
-        <div class="stat-label">Website Benchmark ROC AUC</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-value" data-count="11055" data-decimals="0">11,055</div>
-        <div class="stat-label">UCI Website Samples</div>
-      </div>
-      <div class="stat-card">
         <div class="stat-value" data-count="30" data-decimals="0">30</div>
-        <div class="stat-label">Sender Risk Signals</div>
+        <div class="stat-label">Sender risk signals</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" data-count="6" data-decimals="0">6</div>
+        <div class="stat-label">Detection layers</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value stat-text">Auth headers</div>
+        <div class="stat-label">SPF, DKIM &amp; DMARC in .eml</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value stat-text">OCR + QR</div>
+        <div class="stat-label">Run in your browser</div>
       </div>
     </div>
     <div class="hero-actions">
@@ -167,7 +167,7 @@
             spellcheck="false"
             onkeydown="if(event.key==='Enter') runEmailAnalysis()"
           />
-          <button class="btn-clear" id="btn-clear" onclick="clearEmail()" title="Clear">✕</button>
+          <button class="btn-clear" id="btn-clear" type="button" onclick="clearEmail()" title="Clear" aria-label="Clear email address"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
         </div>
         <button class="btn btn-primary btn-analyze" id="analyze-btn" onclick="runEmailAnalysis()">
           <span id="analyze-btn-text">Analyze</span>
@@ -264,7 +264,7 @@
           <div class="col-card">
             <h4 class="col-title">Risk Indicators <span class="col-count" id="risk-count"></span></h4>
             <div id="risk-indicators-list" class="risk-list">
-              <div class="no-risk">No risk indicators found ✓</div>
+              <div class="no-risk">No risk indicators found</div>
             </div>
           </div>
 
@@ -584,7 +584,7 @@
             <div id="content-extra-list" class="risk-list"></div>
           </div>
           <div class="col-card" id="content-safety-card" style="display:none">
-            <h4 class="col-title">Safety Signals Found ✓</h4>
+            <h4 class="col-title"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8.5 12.2 2.4 2.4 4.6-5"/></svg> Safety Signals Found</h4>
             <div id="content-safety-list" class="safety-list"></div>
           </div>
           <div class="col-card content-method-note">
@@ -889,12 +889,37 @@
 <!-- ── Footer ──────────────────────────────────────────────────────────────── -->
 <footer class="footer">
   <div class="footer-inner">
-    <div class="footer-brand">
-      <span class="brand-mark" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.5 4.5 5.5v6c0 4.6 3.2 8.6 7.5 9.9 4.3-1.3 7.5-5.3 7.5-9.9v-6L12 2.5z"/><path d="m9 12 2 2 4-4.5"/></svg></span> PhishGuard
+    <div class="footer-top">
+      <div class="footer-about">
+        <div class="footer-brand">
+          <span class="brand-mark" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.5 4.5 5.5v6c0 4.6 3.2 8.6 7.5 9.9 4.3-1.3 7.5-5.3 7.5-9.9v-6L12 2.5z"/><path d="m9 12 2 2 4-4.5"/></svg></span> PhishGuard
+        </div>
+        <p class="footer-tagline">Explainable phishing and scam email detection. Detection supports your judgment—a low-risk result is not a guarantee of safety.</p>
+      </div>
+      <nav class="footer-cols" aria-label="Footer">
+        <div class="footer-col">
+          <h4>Product</h4>
+          <a href="#demo">Live demo</a>
+          <a href="#features">Sender signals</a>
+          <a href="#about">How it works</a>
+          <a href="#performance">Benchmark</a>
+        </div>
+        <div class="footer-col">
+          <h4>Analysts</h4>
+          <a class="case-login-link" href="https://phishguard-email-analyzer.vercel.app/cases">Case workspace</a>
+          <a href="#disposable-info">Disposable email guide</a>
+        </div>
+        <div class="footer-col">
+          <h4>Project</h4>
+          <a href="https://github.com/Lushangtu123/Phishing-Scam-Email-Detection" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://github.com/Lushangtu123/Phishing-Scam-Email-Detection#readme" target="_blank" rel="noopener">Documentation</a>
+          <a href="https://github.com/Lushangtu123/Phishing-Scam-Email-Detection/blob/main/CHANGELOG.md" target="_blank" rel="noopener">Changelog</a>
+        </div>
+      </nav>
     </div>
-    <div class="footer-info">
-      CS 166 – Information Security · Final Project ·
-      <a href="https://github.com/Lushangtu123/CS-166-Final-Project" target="_blank" rel="noopener">GitHub →</a>
+    <div class="footer-bottom">
+      <span>CS 166 – Information Security · Final Project</span>
+      <span>Ordinary analysis does not retain message content; a report is saved only when you submit one.</span>
     </div>
   </div>
 </footer>
@@ -929,7 +954,7 @@
 <script src="/static/file-intake.js?v=1"></script>
 <script src="/static/confirm-dialog.js?v=1"></script>
 <script src="/static/feedback.js?v=8"></script>
-<script src="/static/app.js?v=38"></script>
+<script src="/static/app.js?v=39"></script>
 <!-- Vercel's same-origin page-view and web-vitals collectors. No email input is sent as a custom event. -->
 <script>
   window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };
