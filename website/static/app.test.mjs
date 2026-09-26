@@ -429,6 +429,34 @@ test('case login stays on the stable deployment except on a local server', () =>
   assert.match(html, /class="case-login" href="https:\/\/phishguard-email-analyzer\.vercel\.app\/cases"/);
 });
 
+test('view transitions wrap updates when supported and fall back to a direct update', async () => {
+  const { context } = loadFrontend();
+  const calls = [];
+  context.withViewTransition(() => calls.push('update'), () => calls.push('done'));
+  assert.deepEqual(calls, ['update', 'done']);
+
+  calls.length = 0;
+  context.document.startViewTransition = update => {
+    calls.push('start'); update();
+    return { finished: Promise.resolve() };
+  };
+  context.withViewTransition(() => calls.push('update'), () => calls.push('done'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, ['start', 'update', 'done']);
+
+  calls.length = 0;
+  context.matchMedia = () => ({ matches: true });
+  context.withViewTransition(() => calls.push('update'), () => calls.push('done'));
+  assert.deepEqual(calls, ['update', 'done']);
+});
+
+test('loading states render a result-shaped skeleton', () => {
+  const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+  assert.equal((html.match(/<div class="skeleton" aria-hidden="true">/g) || []).length, 2);
+  assert.doesNotMatch(html, /class="loading-spinner"/);
+  assert.ok(html.indexOf('id="loading-area"') < html.indexOf('id="result-area"'));
+});
+
 test('narrow-screen section menu is wired to the collapsible link list', () => {
   const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
   assert.match(html, /<ul class="nav-links" id="nav-links">/);

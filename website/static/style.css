@@ -373,6 +373,52 @@ code {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 .loading-text { color: var(--text-muted); font-size: 14px; }
+
+/* Result-shaped placeholder with the hero's scanning beam. */
+.loading-area:has(.skeleton) { padding: 0 0 12px; text-align: left; }
+.loading-area .loading-text { text-align: center; margin-top: 14px; }
+.skeleton { position: relative; overflow: hidden; border-radius: var(--radius); }
+.sk-banner, .sk-card {
+  background: var(--sheen), var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+}
+.sk-banner { display: flex; align-items: center; gap: 18px; padding: 24px 30px; margin-bottom: 16px; }
+.sk-circle { width: 56px; height: 56px; border-radius: 50%; flex-shrink: 0; }
+.sk-lines { flex: 1; display: flex; flex-direction: column; gap: 10px; }
+.sk-ring { width: 88px; height: 88px; border-radius: 50%; flex-shrink: 0; border: 7px solid var(--track); }
+.sk-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.sk-card { display: flex; flex-direction: column; gap: 12px; padding: 22px; }
+.skeleton i, .sk-circle {
+  display: block; height: 10px; border-radius: var(--pill);
+  background: linear-gradient(90deg, var(--fill) 0%, var(--surface-2) 50%, var(--fill) 100%);
+  background-size: 200% 100%; animation: sk-shimmer 1.6s ease-in-out infinite;
+}
+.sk-circle { height: 56px; }
+.skeleton .w-30 { width: 30%; } .skeleton .w-40 { width: 40%; } .skeleton .w-45 { width: 45%; }
+.skeleton .w-60 { width: 60%; } .skeleton .w-75 { width: 75%; } .skeleton .w-90 { width: 90%; }
+.sk-lines .w-45 { height: 14px; }
+.sk-beam {
+  position: absolute; left: 0; right: 0; top: 0; height: 60px; pointer-events: none;
+  background: linear-gradient(180deg, transparent, rgba(90,209,255,0.10) 60%, rgba(90,209,255,0.35) 97%, transparent);
+  border-bottom: 1px solid rgba(90,209,255,0.6);
+  animation: sk-sweep 2.2s cubic-bezier(0.45, 0, 0.55, 1) infinite alternate;
+}
+@keyframes sk-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+@keyframes sk-sweep { from { transform: translateY(-60px); } to { transform: translateY(330px); } }
+@media (max-width: 1024px) { .sk-cols { grid-template-columns: 1fr; } .sk-cols .sk-card:nth-child(n+2) { display: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .skeleton i, .sk-circle { animation: none; }
+  .sk-beam { display: none; }
+}
+
+/* View transitions: circular theme reveal from the toggle; short crossfade otherwise. */
+::view-transition-group(root) { animation-duration: 0.28s; }
+:root.theme-transition::view-transition-old(root),
+:root.theme-transition::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
+:root.theme-transition::view-transition-new(root) { animation: theme-reveal 0.6s var(--ease) both; }
+@keyframes theme-reveal {
+  from { clip-path: circle(0 at var(--vt-x, 50%) var(--vt-y, 0)); }
+  to   { clip-path: circle(var(--vt-r, 150vmax) at var(--vt-x, 50%) var(--vt-y, 0)); }
+}
 .hidden { display: none !important; }
 
 /* ── Disposable Check Card (always-visible result card) ──────────────────── */

@@ -22,6 +22,38 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-26 12:38 PT] — Skeleton loading states and view transitions
+
+### Why
+- Both analyzers showed a generic spinner while waiting, and the sender spinner
+  sat below the disposable-email explainer, away from where results appear.
+- Theme and tab switches changed the whole page in a single frame.
+
+### Files changed
+- `website/static/index.html` — replace both spinners with a result-shaped
+  `.skeleton` (banner, score ring, three cards, scanning beam) inside the
+  existing `#loading-area` / `#content-loading-area` (`role="status"`); move
+  `#loading-area` above `#result-area`; the theme button passes its click
+  event; `style.css?v=36`, `app.js?v=38`.
+- `website/static/style.css` — skeleton shimmer and beam (off under reduced
+  motion; one card at ≤1024 px); `::view-transition` rules for a 0.28 s
+  crossfade and a circular `theme-reveal` clip-path from `--vt-x/--vt-y`.
+- `website/static/app.js` — `withViewTransition(update, done)` wraps DOM
+  updates in `document.startViewTransition` when available and motion is
+  allowed, otherwise runs them directly; `cycleTheme(event)` reveals the new
+  theme from the toggle's centre; `switchDemoTab()` crossfades and ignores
+  clicks on the active tab.
+- `website/static/app.test.mjs` — fallback, supported, and reduced-motion
+  paths for `withViewTransition`; skeleton markup and placement.
+
+### Effect
+- Chrome 148: while a request is pending, a placeholder the shape of the result
+  appears directly under the input; switching dark → light grows the new theme
+  from the top-right toggle over 0.6 s.
+- Browsers without View Transitions, and reduced-motion users, switch
+  instantly as before.
+- `node --test website/static/*.test.mjs` 176/176.
+
 ## [2026-09-26 12:34 PT] — How It Works as a scroll-driven timeline
 
 ### Why

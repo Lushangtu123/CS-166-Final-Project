@@ -166,7 +166,7 @@ function applyTheme(mode) {
   restyleMetricsChart();
 }
 
-function cycleTheme() {
+function cycleTheme(event) {
   const order = ['auto', 'light', 'dark'];
   const root = document.documentElement;
   const current = (root && root.dataset && root.dataset.themeMode) || 'auto';
@@ -175,7 +175,27 @@ function cycleTheme() {
     if (next === 'auto') localStorage.removeItem(THEME_KEY);
     else localStorage.setItem(THEME_KEY, next);
   } catch (error) { /* storage unavailable; theme still applies for this page */ }
-  applyTheme(next);
+  const willChange = resolveTheme(next) !== (root && root.dataset && root.dataset.theme);
+  if (!willChange || !root) return applyTheme(next);
+  // Reveal the new theme as a circle growing from the toggle button.
+  const origin = event && event.currentTarget && event.currentTarget.getBoundingClientRect
+    ? event.currentTarget.getBoundingClientRect() : null;
+  const x = origin ? origin.left + origin.width / 2 : innerWidth / 2;
+  const y = origin ? origin.top + origin.height / 2 : 0;
+  root.style.setProperty('--vt-x', `${x}px`);
+  root.style.setProperty('--vt-y', `${y}px`);
+  root.style.setProperty('--vt-r', `${Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y))}px`);
+  root.classList.add('theme-transition');
+  withViewTransition(() => applyTheme(next), () => root.classList.remove('theme-transition'));
+}
+
+// Runs `update` inside a View Transition when supported and motion is allowed;
+// otherwise applies it immediately. `done` always runs afterwards.
+function withViewTransition(update, done = () => {}) {
+  if (typeof document.startViewTransition !== 'function' || prefersReducedMotion()) {
+    update(); done(); return;
+  }
+  document.startViewTransition(update).finished.finally(done);
 }
 
 function setupTheme() {
@@ -646,10 +666,14 @@ function showVerifyVerdict(overall, complete, data = {}) {
 
 // ── Demo Tab Switcher ─────────────────────────────────────────────────────────
 function switchDemoTab(tabName) {
-  document.querySelectorAll('.demo-tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.tab-panel').forEach(p => p.classList.add('hidden'));
-  document.getElementById('tab-' + tabName).classList.add('active');
-  document.getElementById('panel-' + tabName).classList.remove('hidden');
+  const tab = document.getElementById('tab-' + tabName);
+  if (tab.classList.contains('active')) return;
+  withViewTransition(() => {
+    document.querySelectorAll('.demo-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.add('hidden'));
+    tab.classList.add('active');
+    document.getElementById('panel-' + tabName).classList.remove('hidden');
+  });
 }
 
 function openFeedback(kind) { window.PhishGuardFeedback?.open(kind); }
