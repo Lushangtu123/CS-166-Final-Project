@@ -22,6 +22,29 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-26 12:34 PT] — How It Works as a scroll-driven timeline
+
+### Why
+- The six pipeline steps were identical full-width bars with a small square
+  number, giving no sense of sequence.
+
+### Files changed
+- `website/static/style.css` — `.pipeline-steps` becomes a 920 px timeline:
+  a 2 px rail through 48 px circular number nodes with the text in cards to
+  the right. Under `@supports (animation-timeline: view())` and
+  `prefers-reduced-motion: no-preference`, the rail fills via a named
+  `view-timeline: --pipeline` and each node lights up via `view()`; other
+  browsers and reduced-motion users see the completed state. Hover moves only
+  the card. Removed the now-unused `.top3-*` rules; `style.css?v=35`.
+- `website/static/index.html` — cache-busted stylesheet only; step markup is
+  unchanged.
+
+### Effect
+- Chrome 148 at 1440 px: mid-section, nodes 01–03 are lit and 04–06 are
+  muted; at the end all six are lit with the rail filled. Same behaviour at
+  390 px.
+- `node --test website/static/*.test.mjs` 174/174.
+
 ## [2026-09-26 12:32 PT] — Signals section as a bento grid with live examples
 
 ### Why
