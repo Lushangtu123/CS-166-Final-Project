@@ -22,7 +22,40 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
-## [2026-09-26 10:47 PT] — Themed form controls, upload target, and chart colours
+## [2026-09-26 10:33 PT] — Quiet local runs: case link, Vercel collectors, favicon
+
+### Why
+- On `127.0.0.1:8000` the homepage `Case login` button sent developers to the
+  production workspace, although `docs/case-workflow.md` says local work should
+  use the local `/cases`.
+- Off Vercel, `/_vercel/insights/script.js` and
+  `/_vercel/speed-insights/script.js` returned JSON 404s, producing four
+  console errors (404 + strict-MIME refusal) on every page load.
+- Neither page declared an icon, so browsers also logged `/favicon.ico` 404.
+
+### Files changed
+- `website/app.py` — `GET /_vercel/{collector}/script.js` returns an empty
+  `text/javascript` body for `insights` / `speed-insights` when `VERCEL` is
+  unset; unknown collectors and requests on Vercel still 404.
+- `website/tests/test_app_security.py` — `VercelCollectorFallbackTests` for the
+  off-platform, unknown-collector, and on-Vercel cases.
+- `website/static/app.js` — `caseLoginHref()` / `setupCaseLoginLink()` rewrite
+  the button to `/cases` only for `localhost`, `127.0.0.1`, and `[::1]`.
+- `website/static/favicon.svg` — gradient shield icon matching `.brand-mark`.
+- `website/static/index.html`, `website/static/cases.html` — `<link rel="icon">`;
+  `app.js?v=36`. The deployed `Case login` href is unchanged.
+- `website/static/app.test.mjs` — local vs. deployed host cases for the link.
+
+### Effect
+- Local server with cache disabled: 0 console errors on `/` (previously 5);
+  `Case login` resolves to `/cases`; both collector paths return 200 with an
+  empty script.
+- Deployed hosts, including preview `*.vercel.app` and `localhost.example`, keep
+  the stable production URL.
+- Backend `python3 -m unittest discover -s tests`: 598 tests OK (9 skipped);
+  frontend 173/173.
+
+## [2026-09-26 10:29 PT] — Themed form controls, upload target, and chart colours
 
 ### Why
 - `:root` declared no `color-scheme`, so native select menus, checkboxes and
@@ -55,7 +88,7 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
   the content upload area shows a tinted, solid-border target.
 - `node --test website/static/*.test.mjs` 172/172.
 
-## [2026-09-26 10:36 PT] — Mobile section menu and stacked benchmark cards
+## [2026-09-26 10:27 PT] — Mobile section menu and stacked benchmark cards
 
 ### Why
 - At ≤900 px `.nav-links` was hidden with no replacement, so phones could not
