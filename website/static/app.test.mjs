@@ -467,6 +467,58 @@ test('homepage uses SVG icons instead of glyphs and links the renamed repository
   assert.match(html, /class="case-login-link" href="https:\/\/phishguard-email-analyzer\.vercel\.app\/cases"/);
 });
 
+test('score breakdown reproduces the sender score and hides on drift', () => {
+  const { context, elements } = loadFrontend();
+  const indicators = [
+    { level: 'medium', msg: 'Unrecognized provider' },
+    { level: 'high', msg: 'Homoglyph <b>paypa1</b>' },
+    { level: 'low', msg: 'Hyphen in domain' },
+    { level: 'info', msg: 'Plus alias' },
+  ];
+  const breakdown = context.senderScoreBreakdown({ risk_indicators: indicators, risk_score: 41 });
+  assert.equal(breakdown.raw, 41);
+  assert.equal(breakdown.consistent, true);
+  assert.deepEqual(Array.from(breakdown.rows, row => row.points), [28, 10, 3]);
+
+  context.renderScoreBreakdown({ risk_indicators: indicators, risk_score: 41 });
+  assert.equal(elements.get('score-breakdown').hidden, false);
+  assert.match(elements.get('score-breakdown-list').innerHTML, /Homoglyph &lt;b&gt;paypa1&lt;\/b&gt;/);
+  assert.match(elements.get('score-breakdown-formula').textContent, /1 high × 28 \+ 1 medium × 10 \+ 1 low × 3 = 41\./);
+
+  const capped = Array.from({ length: 4 }, () => ({ level: 'high', msg: 'x' }));
+  context.renderScoreBreakdown({ risk_indicators: capped, risk_score: 100 });
+  assert.match(elements.get('score-breakdown-formula').textContent, /= 112, capped at 100\./);
+
+  context.renderScoreBreakdown({ risk_indicators: indicators, risk_score: 55 });
+  assert.equal(elements.get('score-breakdown').hidden, true);
+});
+
+test('copy summaries describe the result without HTML and carry the disclaimer', async () => {
+  let copied = '';
+  const { context } = loadFrontend({
+    navigator: { clipboard: { writeText: async text => { copied = text; } } },
+    setTimeout: () => 0, clearTimeout: () => {},
+  });
+  context.renderResult({
+    email: 'a@paypa1-verify.xyz', verdict: 'critical', label: 'Critical Sender Risk', risk_score: 100,
+    risk_indicators: [{ level: 'high', msg: 'Homoglyph attack' }, { level: 'info', msg: 'note' }],
+    feature_breakdown: [], high_risk_count: 1, med_risk_count: 0, phish_feature_count: 1,
+    disposable_status: 'no_known_match',
+  });
+  const label = { textContent: 'Copy summary' };
+  await context.copySummary('sender', { querySelector: () => label });
+  assert.match(copied, /^PhishGuard sender check: a@paypa1-verify\.xyz\nVerdict: Critical Sender Risk \(100\/100\)/);
+  assert.match(copied, /- \[high\] Homoglyph attack/);
+  assert.doesNotMatch(copied, /note/);
+  assert.match(copied, /does not prove a message is safe or malicious/);
+  assert.equal(label.textContent, 'Copied');
+
+  assert.match(context.contentSummaryText({
+    risk_label: 'High Risk', combined_phishing_score: 72.4, total_score: 9,
+    category_results: [{ label: 'Urgency', level: 'high', count: 2 }], extra_indicators: [],
+  }), /Verdict: High Risk \(72% risk\)\nCategories:\n- Urgency \(high, 2 signals\)/);
+});
+
 test('narrow-screen section menu is wired to the collapsible link list', () => {
   const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
   assert.match(html, /<ul class="nav-links" id="nav-links">/);

@@ -276,6 +276,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupInputEvents();
   setupMobileNav();
   setupCaseLoginLink();
+  setupShortcuts();
   await loadPublicConfig();
   await loadMetrics();
   setupSmoothScroll();
@@ -818,6 +819,7 @@ function renderSenderHistory(data, prefix = '') {
 
 // ── Render Result ─────────────────────────────────────────────────────────────
 function renderResult(data) {
+  lastResults.sender = data;
   const isHighRisk = data.verdict === 'high' || data.verdict === 'critical';
   const isSuspect = data.verdict === 'medium';
   const area = document.getElementById('result-area');
@@ -958,6 +960,7 @@ function renderResult(data) {
     countEl.textContent = '';
     riskList.innerHTML = '<div class="sender-no-risk">No sender risk indicators detected. Message safety is not established.</div>';
   }
+  renderScoreBreakdown(data);
 
   // Feature breakdown
   const fbList = document.getElementById('feature-breakdown-list');
@@ -978,6 +981,136 @@ function renderResult(data) {
 
   area.classList.remove('hidden');
   area.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// ── Score breakdown ──────────────────────────────────────────────────────────
+// Mirrors `_analyze_sender_address` in app.py. The breakdown is shown only when
+// these weights reproduce the server's score, so drift hides it instead of lying.
+const SENDER_WEIGHTS = { high: 28, medium: 10, low: 3 };
+
+function senderScoreBreakdown(data) {
+  const rows = (data.risk_indicators || [])
+    .filter(r => SENDER_WEIGHTS[r.level])
+    .map(r => ({ level: r.level, msg: r.msg, points: SENDER_WEIGHTS[r.level] }))
+    .sort((a, b) => b.points - a.points);
+  const raw = rows.reduce((sum, row) => sum + row.points, 0);
+  const total = Math.min(100, raw);
+  return { rows, raw, total, consistent: total === data.risk_score };
+}
+
+function renderScoreBreakdown(data) {
+  const box = document.getElementById('score-breakdown');
+  const { rows, raw, consistent } = senderScoreBreakdown(data);
+  box.open = false;
+  box.hidden = !consistent || rows.length === 0;
+  if (box.hidden) return;
+  document.getElementById('score-breakdown-list').innerHTML = rows.map(row => `
+    <li class="sb-row sb-${row.level}">
+      <span class="sb-points">+${row.points}</span>
+      <span class="sb-msg">${escapeHtml(row.msg)}</span>
+    </li>
+  `).join('');
+  const count = level => rows.filter(row => row.level === level).length;
+  document.getElementById('score-breakdown-formula').textContent =
+    `${count('high')} high × 28 + ${count('medium')} medium × 10 + ${count('low')} low × 3 = ${raw}` +
+    (raw > 100 ? ', capped at 100.' : '.') + ' Informational notes add nothing.';
+}
+
+// ── Copy summary ─────────────────────────────────────────────────────────────
+const lastResults = { sender: null, content: null };
+const MAILBOX_LABELS = {
+  known_disposable_provider: 'Known disposable-email provider',
+  privacy_relay: 'Privacy relay / masked address',
+  suspicious_mailbox_pattern: 'Suspicious mailbox pattern (not confirmed)',
+  suspicious_domain_pattern: 'Disposable-style domain (not confirmed)',
+  no_known_match: 'No known disposable-provider match',
+};
+const SUMMARY_DISCLAIMER = 'Heuristic result from PhishGuard; it does not prove a message is safe or malicious.';
+
+function senderSummaryText(data) {
+  const indicators = (data.risk_indicators || []).filter(r => r.level !== 'info');
+  return [
+    `PhishGuard sender check: ${data.email}`,
+    `Verdict: ${data.label} (${data.risk_score}/100)`,
+    `Mailbox type: ${MAILBOX_LABELS[data.disposable_status] || 'Unknown'}`,
+    indicators.length ? 'Indicators:' : 'Indicators: none detected',
+    ...indicators.map(r => `- [${r.level}] ${r.msg}`),
+    '', SUMMARY_DISCLAIMER,
+  ].join('\n');
+}
+
+function contentSummaryText(data) {
+  const score = data.combined_phishing_score != null
+    ? `${Math.round(data.combined_phishing_score)}% risk`
+    : `heuristic score ${data.total_score}`;
+  const categories = data.category_results || [];
+  const extras = data.extra_indicators || [];
+  return [
+    'PhishGuard content check',
+    `Verdict: ${data.risk_label} (${score})`,
+    categories.length ? 'Categories:' : 'Categories: none matched',
+    ...categories.map(c => `- ${c.label} (${c.level}, ${c.count} signal${c.count === 1 ? '' : 's'})`),
+    ...(extras.length ? ['Technical indicators:', ...extras.map(r => `- [${r.level}] ${r.msg}`)] : []),
+    '', SUMMARY_DISCLAIMER,
+  ].join('\n');
+}
+
+function copyWithSelection(text) {
+  if (!document.body || typeof document.execCommand !== 'function') return false;
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.setAttribute('readonly', '');
+  area.className = 'copy-buffer';
+  document.body.appendChild(area);
+  area.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (error) { ok = false; }
+  area.remove();
+  return ok;
+}
+
+async function copySummary(kind, button) {
+  const data = lastResults[kind];
+  if (!data) return;
+  const text = kind === 'sender' ? senderSummaryText(data) : contentSummaryText(data);
+  const label = button && button.querySelector('.copy-label');
+  let message = 'Copied';
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (error) {
+    // navigator.clipboard is missing on non-secure origins (e.g. a LAN IP over http).
+    if (!copyWithSelection(text)) message = 'Copy failed';
+  }
+  if (!label) return;
+  label.textContent = message;
+  clearTimeout(button._copyTimer);
+  button._copyTimer = setTimeout(() => { label.textContent = 'Copy summary'; }, 1800);
+}
+
+// ── Keyboard shortcuts ───────────────────────────────────────────────────────
+function isTypingTarget(el) {
+  return Boolean(el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName || '')));
+}
+
+function setupShortcuts() {
+  document.addEventListener('keydown', event => {
+    if (event.key !== '/' || event.metaKey || event.ctrlKey || event.altKey) return;
+    if (isTypingTarget(event.target) || document.querySelector('dialog[open]')) return;
+    event.preventDefault();
+    const contentActive = !document.getElementById('panel-email-content').classList.contains('hidden');
+    const field = document.getElementById(contentActive ? 'content-body' : 'email-input');
+    field.focus({ preventScroll: true });
+    field.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'center' });
+  });
+  const analyzeOnModEnter = event => {
+    if (event.key !== 'Enter' || !(event.metaKey || event.ctrlKey)) return;
+    event.preventDefault();
+    if (!document.getElementById('content-analyze-btn').disabled) runContentAnalysis();
+  };
+  ['content-subject', 'content-body'].forEach(id => {
+    const field = document.getElementById(id);
+    if (field) field.addEventListener('keydown', analyzeOnModEnter);
+  });
 }
 
 function animateBar(id, pct) {
@@ -1255,6 +1388,7 @@ const RISK_CONFIG = {
 };
 
 function renderContentResult(data) {
+  lastResults.content = data;
   const cfg = RISK_CONFIG[data.risk_level] || RISK_CONFIG.medium;
   const imageOnly = data.input_mode === 'image-evidence';
 

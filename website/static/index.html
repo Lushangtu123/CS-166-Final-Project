@@ -18,7 +18,7 @@
     })();
   </script>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="/static/style.css?v=37" />
+  <link rel="stylesheet" href="/static/style.css?v=39" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -186,6 +186,7 @@
         <button class="example-tag disp-tag" onclick="setExample('user@mailinator.com')" title="Confirmed disposable">mailinator.com</button>
         <button class="example-tag susp-tag" onclick="setExample('oncw3kjobqxb@randominbox.net')" title="Suspected disposable (auto-generated username)">Suspected disposable</button>
       </div>
+      <p class="kbd-hint">Press <kbd>/</kbd> to jump to the input</p>
     </div>
 
     <!-- Loading -->
@@ -204,7 +205,10 @@
 
     <!-- Result Area -->
     <div id="result-area" class="result-area hidden">
-      <div class="result-report" hidden><button type="button" class="report-trigger" onclick="openFeedback('sender')">Report an issue <span aria-hidden="true">↗</span></button></div>
+      <div class="result-actions">
+        <button type="button" class="report-trigger copy-trigger" onclick="copySummary('sender', this)"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8.5" y="8.5" width="11" height="11" rx="2.5"/><path d="M15.5 8.5V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7.5a2 2 0 0 0 2 2h2.5"/></svg> <span class="copy-label">Copy summary</span></button>
+        <div class="result-report" hidden><button type="button" class="report-trigger" onclick="openFeedback('sender')">Report an issue <span aria-hidden="true">↗</span></button></div>
+      </div>
 
       <div class="verdict-banner" id="verdict-banner">
         <div class="vb-left">
@@ -226,6 +230,14 @@
           <div class="vb-prob-label" id="vb-prob-label">Sender Risk Score</div>
         </div>
       </div>
+
+      <details class="score-breakdown" id="score-breakdown" hidden>
+        <summary>Why this score?</summary>
+        <div class="sb-body">
+          <ul class="sb-list" id="score-breakdown-list"></ul>
+          <p class="sb-formula" id="score-breakdown-formula"></p>
+        </div>
+      </details>
 
       <div class="result-cols">
 
@@ -489,6 +501,7 @@
           Remove unrelated personal content before submitting an email.
         </p>
         <div class="content-input-actions">
+          <p class="kbd-hint kbd-hint-inline"><kbd>Ctrl</kbd> / <kbd>⌘</kbd> + <kbd>Enter</kbd> to analyze</p>
           <button id="cancel-content-scan" type="button" class="btn btn-ghost" hidden>Cancel scan</button>
           <button class="btn-ghost" onclick="clearContent()">Clear</button>
           <button class="btn btn-primary btn-analyze" id="content-analyze-btn" onclick="runContentAnalysis()">
@@ -509,7 +522,10 @@
 
       <!-- Content Result Area -->
       <div id="content-result-area" class="content-result-area hidden">
-        <div class="result-report" hidden><button type="button" class="report-trigger" onclick="openFeedback('content')">Report an issue <span aria-hidden="true">↗</span></button></div>
+        <div class="result-actions">
+          <button type="button" class="report-trigger copy-trigger" onclick="copySummary('content', this)"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8.5" y="8.5" width="11" height="11" rx="2.5"/><path d="M15.5 8.5V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7.5a2 2 0 0 0 2 2h2.5"/></svg> <span class="copy-label">Copy summary</span></button>
+          <div class="result-report" hidden><button type="button" class="report-trigger" onclick="openFeedback('content')">Report an issue <span aria-hidden="true">↗</span></button></div>
+        </div>
         <section id="visual-evidence" class="visual-evidence" hidden></section>
 
         <!-- Risk Banner -->
@@ -954,7 +970,7 @@
 <script src="/static/file-intake.js?v=1"></script>
 <script src="/static/confirm-dialog.js?v=1"></script>
 <script src="/static/feedback.js?v=8"></script>
-<script src="/static/app.js?v=39"></script>
+<script src="/static/app.js?v=41"></script>
 <!-- Vercel's same-origin page-view and web-vitals collectors. No email input is sent as a custom event. -->
 <script>
   window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };

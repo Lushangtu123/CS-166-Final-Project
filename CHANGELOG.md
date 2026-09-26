@@ -22,6 +22,39 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-26 12:53 PT] — Score breakdown, copy summary, and keyboard shortcuts
+
+### Why
+- The sender score (e.g. `100/100`) gave no indication of how it was reached.
+- Results could not be shared without retyping them.
+- Power users had no keyboard path to the inputs or to submit content.
+
+### Files changed
+- `website/static/index.html` — `#score-breakdown` disclosure (“Why this
+  score?”) under the sender verdict; `.result-actions` rows with a
+  `Copy summary` button beside the existing `Report an issue` for both
+  analyzers; `/` and `Ctrl/⌘ + Enter` hints; `style.css?v=39`, `app.js?v=41`.
+- `website/static/app.js` — `senderScoreBreakdown()` / `renderScoreBreakdown()`
+  mirror the server weights (high 28, medium 10, low 3, capped at 100) from
+  `_analyze_sender_address` and hide the breakdown if they do not reproduce
+  `risk_score`; `senderSummaryText()` / `contentSummaryText()` build a
+  plain-text summary with a disclaimer; `copySummary()` uses the Clipboard API
+  with an `execCommand('copy')` fallback for non-secure origins;
+  `setupShortcuts()` focuses the active input on `/` (not while typing or with
+  a dialog open) and submits content on `Ctrl/⌘ + Enter` when idle.
+- `website/static/style.css` — breakdown, action row, and `kbd` styles; hints
+  are hidden on touch-only devices.
+- `website/static/app.test.mjs` — breakdown arithmetic, HTML escaping, cap and
+  drift hiding; sender/content summary text and copy feedback.
+
+### Effect
+- `security-alert@paypa1-verify.xyz`: “Why this score?” lists 4 × +28,
+  3 × +10, 2 × +3 and `= 148, capped at 100.`
+- `Copy summary` places `PhishGuard sender check: … Verdict: Critical Sender
+  Risk (100/100) …` on the clipboard; `/` focuses `#email-input`;
+  `Ctrl + Enter` in the body runs content analysis.
+- `node --test website/static/*.test.mjs` 182/182.
+
 ## [2026-09-26 12:47 PT] — Hero capability stats, footer, SVG glyphs, and balanced text
 
 ### Why
