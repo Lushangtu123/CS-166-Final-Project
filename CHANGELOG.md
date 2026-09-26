@@ -22,6 +22,36 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-26 10:24 PT] — Balance sender and content result layouts
+
+### Why
+- The sender result stacked four cards (evidence, mailbox type, sender history,
+  verification) in the left column while the middle column held one short
+  card; running verification stretched the left column to ~1,000 px beside
+  two-thirds empty width.
+- The content result's `Technical Indicators` list was clipped by a 340 px
+  inner scroll and the bottom row left an empty third column.
+
+### Files changed
+- `website/static/index.html` — move `#sender-history-card` under Risk
+  Indicators; move `#verify-card` out of the columns into a full-width
+  `.verify-card-wide` card whose Mailbox / Policy / Domain sections sit in a
+  `.verify-groups` grid with a `.verify-footer` holding the verdict and Re-run;
+  `style.css?v=31`.
+- `website/static/style.css` — add `.verify-card-wide`, `.verify-groups`
+  (3 columns, 1 column ≤1024 px), `.verify-footer`; switch
+  `.content-bottom-row` from `auto-fill` to `auto-fit` and drop the inner
+  scroll on its risk list.
+
+### Effect
+- 1440 px desktop, `security-alert@paypa1-verify.xyz`: columns now hold 2 / 2 / 1
+  cards; the finished verification renders as three side-by-side groups
+  (~340 px tall instead of ~900 px in a single 360 px column).
+- `Account suspension phish` content example: all 6 technical indicators are
+  visible without inner scrolling and the method note fills the remaining width.
+- Element IDs are unchanged; `node --test website/static/*.test.mjs` 169/169.
+
+
 ## [2026-09-20 17:52 PT] — Record model build dependencies and pin serving versions
 
 ### Why

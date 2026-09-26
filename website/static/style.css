@@ -902,8 +902,10 @@ code {
   padding: 3px 11px; border-radius: var(--pill); cursor: help;
 }
 
-/* Bottom row: technical indicators + safety signals + method note */
-.content-bottom-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px,1fr)); gap: 16px; }
+/* Bottom row: technical indicators + safety signals + method note.
+   auto-fit collapses tracks of hidden cards so the visible ones fill the row. */
+.content-bottom-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px,1fr)); gap: 16px; align-items: start; }
+.content-bottom-row .risk-list { max-height: none; overflow: visible; }
 .safety-list { display: flex; flex-direction: column; gap: 8px; }
 .safety-item { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; }
 .safety-dot { color: var(--accent2); font-weight: 700; flex-shrink: 0; }
@@ -920,7 +922,17 @@ code {
   font-size: 13px; font-weight: 600; cursor: pointer; transition: background 0.2s, transform 0.3s var(--ease);
 }
 .btn-verify:hover { background: rgba(90,209,255,0.18); transform: translateY(-1px); }
-.btn-verify-sm { padding: 6px 13px; font-size: 12px; margin-top: 12px; }
+.btn-verify-sm { padding: 6px 13px; font-size: 12px; }
+
+/* Full-width verification card below the result columns */
+.verify-card-wide { margin-top: 16px; animation: fadeSlideIn 0.6s var(--ease); }
+.verify-card-wide .verify-idle { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.verify-card-wide .verify-idle .verify-desc { margin-bottom: 0; max-width: 720px; }
+.verify-card-wide .btn-verify { flex-shrink: 0; }
+.verify-groups { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px 22px; align-items: start; }
+.verify-group .verify-section-title { border-top: none; margin-top: 0; padding-top: 0; }
+.verify-footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; padding-top: 14px; border-top: 1px solid var(--border); }
+.verify-footer .verify-verdict { flex: 1 1 320px; margin-top: 0; }
 
 .verify-loading {
   display: flex; align-items: center; gap: 10px;
@@ -1230,6 +1242,7 @@ code {
   .hero-visual { display: none; }
   .hero-stats { grid-template-columns: repeat(2,1fr); }
   .result-cols { grid-template-columns: 1fr; }
+  .verify-groups { grid-template-columns: 1fr; }
   .charts-row { grid-template-columns: 1fr; }
   .feature-cards-grid { grid-template-columns: 1fr; }
   .top3-grid { grid-template-columns: 1fr; }
@@ -1248,6 +1261,7 @@ code {
   .btn-analyze { width: 100%; justify-content: center; padding: 14px 24px; }
   .content-input-actions .btn-analyze { width: auto; flex: 1 1 100%; }
   .content-input-actions .btn-ghost { flex: 0 1 auto; }
+  .verify-card-wide .verify-idle { flex-direction: column; align-items: flex-start; }
   .verdict-banner { flex-direction: column; gap: 12px; text-align: center; }
   .vb-left { flex-direction: column; text-align: center; }
   .vb-right { text-align: center; }
