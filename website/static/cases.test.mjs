@@ -74,6 +74,23 @@ test('closing the only row on a filtered last page returns to the last valid pag
   assert.equal(ui.el('case-list').children[0].className, 'case-row');
 });
 
+test('programmatic submits without a submitter still run and the filter summary counts active filters', async () => {
+  const ui = setup(standard);
+  ui.el('token').value = 'synthetic-access-token-at-least-32-characters';
+  ui.el('login-form').listeners.submit({preventDefault() {}, submitter: null}); await tick();
+  assert.equal(ui.el('workspace').hidden, false);
+  assert.equal(ui.el('actor').textContent, 'alice');
+
+  ui.el('filter-kind').value = 'all';
+  ui.el('filters').listeners.submit({preventDefault() {}, submitter: null}); await tick();
+  assert.equal(ui.el('filter-summary').textContent, 'All records');
+
+  ui.el('filter-kind').value = 'case'; ui.el('filter-risk').value = 'high'; ui.el('filter-from').value = '2026-09-01';
+  ui.el('filters').listeners.submit({preventDefault() {}, submitter: null}); await tick();
+  assert.equal(ui.el('filter-summary').textContent, '3 active');
+  assert(ui.calls.some(call => call.url.startsWith('/api/cases?') && call.url.includes('risk=high')));
+});
+
 test('a corrected page request cannot overwrite a newer filter or its review draft', async () => {
   let shrink = false, release; let loads = 0;
   const ui = setup(async url => {

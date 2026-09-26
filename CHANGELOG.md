@@ -22,6 +22,45 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-26 10:41 PT] — Align the case workspace with the homepage and reduce density
+
+### Why
+- `/cases` used a separate visual language (Avenir font, 6–8 px radii,
+  monochrome white primary buttons, `◈ ▤ ⌕ ◇` text glyphs as icons), so the
+  analyst workspace and the analyzer looked like different products.
+- The detail panel was `position: sticky` with its own `max-height` scroll,
+  nesting a second scroll region inside the page.
+- Always-open filters, four large zero-count feedback cards, and a ~120-word
+  Jev data-handling paragraph pushed the queue and assessment down.
+- `action(event.submitter, …)` threw `TypeError: Cannot set properties of null`
+  when a form was submitted without a submitter (e.g. `requestSubmit()`).
+
+### Files changed
+- `website/static/cases.html` — SVG shield brand mark, inbox/search nav icons,
+  key access icon, upload icon in the drop zone; filters wrapped in
+  `<details id="filters-disclosure">` with `#filter-summary`; Jev notice moved
+  into a `.jev-disclosure`; `cases.css?v=12`, `cases.js?v=21`.
+- `website/static/cases.css` — homepage font stack and brand tokens
+  (`--brand-a/-b`, `--brand-grad`, `--on-brand`, 12 / 8 px radii) for both
+  themes; gradient `.primary`; gradient-drawn select chevrons (the page CSP
+  forbids `data:` images); detail panel flows with the page while the
+  height-bounded queue is sticky above 1120 px; feedback overview as one
+  4-cell strip; grid upload field with hover/drag states; two-column review
+  selects.
+- `website/static/cases.js` — `action()` tolerates a null button;
+  `renderFilterSummary()` shows `All records` or `N active` on filter submit.
+- `website/static/cases.test.mjs` — null-submitter login/filter submits and the
+  active-filter count.
+
+### Effect
+- 1440 px: filters collapse to a 40 px bar (`All records` / `3 active`); the
+  feedback overview drops from ~96 px cards to a ~44 px strip; `.detail` is
+  `position: static; overflow: visible`, and the queue stays pinned at
+  `top: 68px` while reading a long case.
+- `Human verdict` no longer truncates to "Not reviewe"; programmatic
+  `requestSubmit()` sign-in works.
+- `node --test website/static/*.test.mjs` 174/174.
+
 ## [2026-09-26 10:33 PT] — Quiet local runs: case link, Vercel collectors, favicon
 
 ### Why

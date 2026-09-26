@@ -160,11 +160,18 @@
     }
     return data;
   }
+  // `button` may be null when a form is submitted programmatically (requestSubmit() without a submitter).
   async function action(button, work) {
-    const current = epoch; button.disabled = true;
+    const current = epoch; if (button) button.disabled = true;
     try { await work(); }
     catch (error) { if (current === epoch || error.status === 401) notice(error.message || 'Request failed. Reload to check whether your last operation completed.', true); }
-    finally { button.disabled = false; $('previous').disabled = offset === 0; $('next').disabled = offset + PAGE_SIZE >= total; }
+    finally { if (button) button.disabled = false; $('previous').disabled = offset === 0; $('next').disabled = offset + PAGE_SIZE >= total; }
+  }
+  function renderFilterSummary() {
+    const kind = $('filter-kind').value;
+    const count = ['filter-status', 'filter-risk', 'filter-verdict', 'filter-feedback-reason', 'filter-from', 'filter-to']
+      .filter(id => $(id).value).length + (kind && kind !== 'all' ? 1 : 0);
+    $('filter-summary').textContent = count ? `${count} active` : 'All records';
   }
   async function loadList(requestedOffset = offset) {
     const turn = ++listEpoch;
@@ -632,7 +639,7 @@
     $('filter-feedback-reason-field').hidden = !feedback;
     if (!feedback) $('filter-feedback-reason').value = '';
   });
-  $('filters').addEventListener('submit', event => { event.preventDefault(); action(event.submitter, () => loadList(0)); });
+  $('filters').addEventListener('submit', event => { event.preventDefault(); renderFilterSummary(); action(event.submitter, () => loadList(0)); });
   $('refresh').addEventListener('click', event => action(event.currentTarget, async () => { await refreshJev(); await loadList(); }));
   $('reload-case').addEventListener('click', event => { if (selected) {
     const id = selected.id, kind = selected.kind, turn = detailEpoch;
