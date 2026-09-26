@@ -163,6 +163,7 @@ function applyTheme(mode) {
   root.dataset.themeMode = mode;
   const toggle = document.getElementById('theme-toggle');
   if (toggle) toggle.title = `Theme: ${mode}`;
+  restyleMetricsChart();
 }
 
 function cycleTheme() {
@@ -977,46 +978,85 @@ function renderMetricsTable(metrics) {
   }).join('');
 }
 
+const CHART_PALETTES = {
+  dark:  ['79,209,255', '63,213,143', '240,192,90', '180,140,255'],
+  light: ['10,127,214', '21,154,99', '183,134,11', '124,77,219'],
+};
+
+// Chart.js draws on a canvas, so CSS variables do not reach it; read the
+// current theme's tokens and pass them in explicitly.
+function chartTheme() {
+  const root = document.documentElement;
+  const css = root && typeof getComputedStyle === 'function' ? getComputedStyle(root) : null;
+  const token = (name, fallback) => (css && css.getPropertyValue(name).trim()) || fallback;
+  const light = Boolean(root && root.dataset && root.dataset.theme === 'light');
+  return {
+    palette: CHART_PALETTES[light ? 'light' : 'dark'],
+    text: token('--text-muted', '#9aa3b2'),
+    title: token('--text', '#f3f5f9'),
+    grid: token('--line', 'rgba(255,255,255,0.08)'),
+    tooltipBg: token('--bg-card2', '#121826'),
+    tooltipBorder: token('--border-hi', 'rgba(255,255,255,0.16)'),
+  };
+}
+
+// Accepts either a Chart instance or its constructor config (same data/options shape).
+function applyChartTheme(chart) {
+  const theme = chartTheme();
+  chart.data.datasets.forEach((dataset, i) => {
+    const rgb = theme.palette[i % theme.palette.length];
+    dataset.backgroundColor = `rgba(${rgb},0.80)`;
+    dataset.borderColor = `rgba(${rgb},1)`;
+  });
+  const { plugins, scales } = chart.options;
+  plugins.legend.labels.color = theme.text;
+  Object.assign(plugins.tooltip, {
+    backgroundColor: theme.tooltipBg, borderColor: theme.tooltipBorder,
+    titleColor: theme.title, bodyColor: theme.text,
+  });
+  scales.y.ticks.color = theme.text;
+  scales.y.grid.color = theme.grid;
+  scales.x.ticks.color = theme.text;
+}
+
+function restyleMetricsChart() {
+  if (!metricsChart) return;
+  applyChartTheme(metricsChart);
+  metricsChart.update('none');
+}
+
 function renderMetricsChart(metrics) {
   const ctx = document.getElementById('metricsChart').getContext('2d');
   const classifiers = Object.keys(metrics);
   const metricKeys = ['Accuracy', 'Precision', 'Recall', 'F1', 'ROC_AUC'];
   const labels = ['Accuracy', 'Precision', 'Recall', 'F1', 'ROC AUC'];
-  const colors = [
-    'rgba(79,209,255,0.80)', 'rgba(63,213,143,0.80)',
-    'rgba(240,192,90,0.80)', 'rgba(180,140,255,0.80)',
-  ];
-  const datasets = classifiers.map((clf, i) => ({
+  const datasets = classifiers.map(clf => ({
     label: clf,
     data: metricKeys.map(k => metrics[clf][k]),
-    backgroundColor: colors[i],
-    borderColor: colors[i].replace('0.80', '1'),
     borderWidth: 1.5,
     borderRadius: 4,
   }));
   if (metricsChart) metricsChart.destroy();
-  metricsChart = new Chart(ctx, {
+  const config = {
     type: 'bar',
     data: { labels, datasets },
     options: {
       responsive: true,
       plugins: {
-        legend: { position: 'bottom', labels: { color: '#8da2bd', font: { size: 11 }, boxWidth: 12, boxHeight: 12 } },
+        legend: { position: 'bottom', labels: { font: { size: 11 }, boxWidth: 12, boxHeight: 12 } },
         tooltip: {
-          backgroundColor: 'rgba(12,18,32,0.95)',
-          borderColor: 'rgba(79,209,255,0.35)',
           borderWidth: 1,
-          titleColor: '#e3ecf7',
-          bodyColor: '#8da2bd',
           callbacks: { label: c => `${c.dataset.label}: ${c.parsed.y.toFixed(4)}` },
         },
       },
       scales: {
-        y: { min: 0.88, max: 1.0, ticks: { color: '#8da2bd' }, grid: { color: 'rgba(122,170,255,0.08)' } },
-        x: { ticks: { color: '#8da2bd' }, grid: { display: false } },
+        y: { min: 0.88, max: 1.0, ticks: {}, grid: {} },
+        x: { ticks: {}, grid: { display: false } },
       },
     },
-  });
+  };
+  applyChartTheme(config);
+  metricsChart = new Chart(ctx, config);
 }
 
 // ── Email Content Analysis ────────────────────────────────────────────────────

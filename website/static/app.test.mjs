@@ -393,6 +393,29 @@ test('benchmark cells carry column labels for the stacked phone layout', () => {
   assert.doesNotMatch(html, /data-label="ROC_AUC"/);
 });
 
+test('benchmark chart colours follow the active theme', () => {
+  const { context } = loadFrontend();
+  const config = () => ({
+    data: { datasets: [{}, {}] },
+    options: {
+      plugins: { legend: { labels: {} }, tooltip: {} },
+      scales: { y: { ticks: {}, grid: {} }, x: { ticks: {} } },
+    },
+  });
+  const dark = config();
+  context.applyChartTheme(dark);
+  assert.equal(dark.data.datasets[0].backgroundColor, 'rgba(79,209,255,0.80)');
+
+  const tokens = { '--text-muted': '#56627a', '--text': '#0f172a' };
+  context.document.documentElement = { dataset: { theme: 'light' } };
+  context.getComputedStyle = () => ({ getPropertyValue: name => tokens[name] || '' });
+  const light = config();
+  context.applyChartTheme(light);
+  assert.equal(light.data.datasets[0].backgroundColor, 'rgba(10,127,214,0.80)');
+  assert.equal(light.options.scales.x.ticks.color, '#56627a');
+  assert.equal(light.options.plugins.tooltip.titleColor, '#0f172a');
+});
+
 test('narrow-screen section menu is wired to the collapsible link list', () => {
   const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
   assert.match(html, /<ul class="nav-links" id="nav-links">/);

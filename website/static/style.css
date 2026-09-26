@@ -9,6 +9,7 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
+  color-scheme: dark;
   --bg:        #06080f;
   --bg-card:   #0d111b;
   --bg-card2:  #121826;
@@ -1346,3 +1347,43 @@ code {
 
 .ocr-language-select { width: 100%; min-height: 44px; padding: 12px; border: 1px solid var(--border-hi); border-radius: var(--radius-sm); background: var(--field-bg); color: var(--text); font: inherit; }
 .ocr-language-select:focus-visible { outline: 2px solid var(--accent, #5ad1ff); outline-offset: 3px; }
+
+/* Themed selects: the chevron is drawn with gradients so no image source is needed. */
+.ocr-language-select, .feedback-dialog select {
+  -webkit-appearance: none; appearance: none; cursor: pointer;
+  padding-right: 42px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--text-muted) 50%),
+    linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
+  background-position: calc(100% - 21px) 52%, calc(100% - 16px) 52%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  transition: border-color 0.25s, box-shadow 0.25s;
+}
+.ocr-language-select:hover, .feedback-dialog select:hover { border-color: rgba(90,209,255,0.5); }
+.ocr-language-select:focus, .feedback-dialog select:focus { border-color: rgba(90,209,255,0.6); box-shadow: 0 0 0 4px rgba(90,209,255,0.12); outline: none; }
+.ocr-language-select option, .feedback-dialog select option { background: var(--bg-card2); color: var(--text); }
+
+/* Upload drop target */
+.content-input-card .file-dropzone {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 14px; align-items: center;
+  padding: 18px 20px; background: var(--fill-soft);
+  transition: border-color 0.25s, background 0.25s, box-shadow 0.25s;
+}
+.content-input-card .file-dropzone > :not(.drop-icon):not(.file-drop-hint) { grid-column: 1 / -1; }
+.content-input-card .file-dropzone .file-drop-hint { margin: 0; }
+.content-input-card .file-dropzone .content-label { margin-top: 16px; }
+.content-input-card .file-dropzone:hover { border-color: rgba(90,209,255,0.45); }
+.content-input-card .file-dropzone.drag-active {
+  border-style: solid; border-color: var(--accent); outline: none;
+  background: rgba(90,209,255,0.08); box-shadow: 0 0 0 4px rgba(90,209,255,0.12);
+}
+.drop-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 44px; height: 44px; border-radius: 14px; color: var(--accent);
+  background: rgba(90,209,255,0.10); border: 1px solid rgba(90,209,255,0.22);
+  transition: transform 0.35s var(--ease);
+}
+.drop-icon .ico { width: 22px; height: 22px; vertical-align: 0; }
+.file-dropzone.drag-active .drop-icon { transform: translateY(-2px) scale(1.06); }
+.raw-email-file { cursor: pointer; }

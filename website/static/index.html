@@ -17,7 +17,7 @@
       document.documentElement.dataset.themeMode = stored || 'auto';
     })();
   </script>
-  <link rel="stylesheet" href="/static/style.css?v=32" />
+  <link rel="stylesheet" href="/static/style.css?v=33" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -438,6 +438,7 @@
 
       <div class="content-input-card">
         <div class="raw-email-upload-row file-dropzone" id="content-file-dropzone" tabindex="0" role="group" aria-label="Screenshot upload area" aria-describedby="content-drop-help">
+          <span class="drop-icon" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15.5V4.5"/><path d="m7.5 9 4.5-4.5L16.5 9"/><path d="M4.5 14.5v3a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-3"/></svg></span>
           <p id="content-drop-help" class="file-drop-hint">Drop a screenshot or email here, or click this area and paste a screenshot (Ctrl / ⌘ + V). One file, up to 2 MiB. Then click Analyze Content.</p>
           <label class="content-label" for="raw-email-file">Email or image file</label>
           <input id="raw-email-file" class="raw-email-file" type="file" accept=".eml,.png,.jpg,.jpeg,.webp,message/rfc822,image/png,image/jpeg,image/webp" />
@@ -858,7 +859,7 @@
 <script src="/static/vision.js?v=4"></script>
 <script src="/static/file-intake.js?v=1"></script>
 <script src="/static/feedback.js?v=7"></script>
-<script src="/static/app.js?v=34"></script>
+<script src="/static/app.js?v=35"></script>
 <!-- Vercel's same-origin page-view and web-vitals collectors. No email input is sent as a custom event. -->
 <script>
   window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };

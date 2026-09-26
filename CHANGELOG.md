@@ -22,6 +22,34 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-26 10:36 PT] — Mobile section menu and stacked benchmark cards
+
+### Why
+- At ≤900 px `.nav-links` was hidden with no replacement, so phones could not
+  jump to Live Demo / Performance / Features / How It Works.
+- At 390 px the benchmark table scrolled sideways and cut off Recall, F1 and
+  ROC AUC.
+
+### Files changed
+- `website/static/index.html` — add `#nav-menu-toggle` (menu/close SVG,
+  `aria-expanded`, `aria-controls="nav-links"`); give the list `id="nav-links"`;
+  `style.css?v=32`, `app.js?v=34`.
+- `website/static/app.js` — `setupMobileNav()` opens/closes `.navbar.menu-open`,
+  closes on link click, Escape (returns focus), outside click, and widths
+  >900 px; `renderMetricsTable()` writes `data-label` on each metric cell.
+- `website/static/style.css` — toggle button and opaque dropdown panel for
+  ≤900 px (reduced-motion safe); ≤640 px benchmark rows render as cards with
+  a 3-column label/value grid.
+- `website/static/app.test.mjs` — cover metric `data-label`s and the menu's
+  ARIA wiring.
+
+### Effect
+- 390 px: the menu button opens a 4-link panel; choosing `Performance`
+  scrolls there and closes the panel; the button is `display: none` at 1440 px.
+- 390 px benchmark: table width 356 px = container width (was 552 px), all
+  five metrics visible per classifier.
+- `node --test website/static/*.test.mjs` 171/171.
+
 ## [2026-09-26 10:24 PT] — Balance sender and content result layouts
 
 ### Why
