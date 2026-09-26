@@ -255,10 +255,25 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupCountUps();
   setupInputEvents();
   setupMobileNav();
+  setupCaseLoginLink();
   await loadPublicConfig();
   await loadMetrics();
   setupSmoothScroll();
 });
+
+// Deployed pages link to the stable production workspace (docs/case-workflow.md);
+// a local server should open its own /cases instead.
+const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+
+function caseLoginHref(hostname, deployedHref) {
+  return LOCAL_HOSTNAMES.has(hostname) ? '/cases' : deployedHref;
+}
+
+function setupCaseLoginLink() {
+  const link = document.querySelector('.case-login');
+  if (!link || typeof location === 'undefined') return;
+  link.setAttribute('href', caseLoginHref(location.hostname, link.getAttribute('href')));
+}
 
 // ── Mobile section menu ──────────────────────────────────────────────────────
 function setupMobileNav() {

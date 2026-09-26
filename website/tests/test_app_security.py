@@ -850,5 +850,27 @@ class ContentModelArtifactTests(unittest.TestCase):
         self.assertNotIn("/api/predict", route_paths)
 
 
+class VercelCollectorFallbackTests(unittest.TestCase):
+    def test_off_platform_collectors_return_empty_javascript(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("VERCEL", None)
+            for collector in ("insights", "speed-insights"):
+                with self.subTest(collector=collector):
+                    response = asyncio.run(app.local_vercel_collector(collector))
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(response.body, b"")
+                    self.assertTrue(response.media_type.startswith("text/javascript"))
+
+    def test_unknown_collectors_and_vercel_runtime_keep_404(self):
+        with self.assertRaises(HTTPException) as unknown:
+            asyncio.run(app.local_vercel_collector("anything-else"))
+        self.assertEqual(unknown.exception.status_code, 404)
+
+        with patch.dict(os.environ, {"VERCEL": "1"}):
+            with self.assertRaises(HTTPException) as on_vercel:
+                asyncio.run(app.local_vercel_collector("insights"))
+        self.assertEqual(on_vercel.exception.status_code, 404)
+
+
 if __name__ == "__main__":
     unittest.main()

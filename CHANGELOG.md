@@ -22,6 +22,39 @@ Format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-26 10:47 PT] — Themed form controls, upload target, and chart colours
+
+### Why
+- `:root` declared no `color-scheme`, so native select menus, checkboxes and
+  scrollbars rendered in light mode on the dark theme; selects used the
+  platform chevron.
+- The content upload area was a plain dashed box with a one-line hint and no
+  visible drag state beyond an outline.
+- Chart.js colours were hard-coded for dark mode (`#8da2bd` ticks, dark
+  tooltip) and did not change when the theme toggled.
+
+### Files changed
+- `website/static/style.css` — `color-scheme: dark` on `:root`; gradient-drawn
+  chevrons and focus rings for `.ocr-language-select` and feedback selects;
+  grid-based `.file-dropzone` with `.drop-icon`, hover and solid-accent
+  `drag-active` states; `style.css?v=33`.
+- `website/static/index.html` — upload icon inside `#content-file-dropzone`;
+  `app.js?v=35`.
+- `website/static/app.js` — `chartTheme()` reads `--text-muted`, `--text`,
+  `--line`, `--bg-card2`, `--border-hi`; `applyChartTheme()` sets per-theme bar
+  palettes and axis/legend/tooltip colours before the chart is built;
+  `applyTheme()` calls `restyleMetricsChart()` (`update('none')`, no
+  re-animation).
+- `website/static/app.test.mjs` — dark and light palette/token assertions.
+
+### Effect
+- Toggling to light re-colours the benchmark chart in place (bars
+  `rgba(10,127,214,…)`, ticks `#56627a`); back to dark restores
+  `rgba(79,209,255,…)` / `#9aa3b2`.
+- Selects and the feedback checkboxes match each theme; dragging a file over
+  the content upload area shows a tinted, solid-border target.
+- `node --test website/static/*.test.mjs` 172/172.
+
 ## [2026-09-26 10:36 PT] — Mobile section menu and stacked benchmark cards
 
 ### Why

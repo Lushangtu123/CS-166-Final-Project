@@ -41,7 +41,7 @@ warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
 from config import load_settings
@@ -1268,6 +1268,21 @@ async def private_case_responses(request: Request, call_next):
 @app.get('/cases', include_in_schema=False)
 async def serve_cases():
     return FileResponse(str(BASE_DIR / 'static' / 'cases.html'))
+
+
+VERCEL_COLLECTORS = frozenset({'insights', 'speed-insights'})
+
+
+@app.get('/_vercel/{collector}/script.js', include_in_schema=False)
+async def local_vercel_collector(collector: str):
+    """Answer the page's Vercel collector tags off-platform instead of 404ing.
+
+    On Vercel the platform serves these paths itself; if a request still reaches
+    the app there, keep the original 404 so a misconfiguration stays visible.
+    """
+    if os.getenv('VERCEL') or collector not in VERCEL_COLLECTORS:
+        raise HTTPException(status_code=404, detail='Not Found')
+    return Response('', media_type='text/javascript', headers={'Cache-Control': 'no-store'})
 
 
 # ── Static files ──────────────────────────────────────────────────────────────

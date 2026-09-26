@@ -416,6 +416,19 @@ test('benchmark chart colours follow the active theme', () => {
   assert.equal(light.options.plugins.tooltip.titleColor, '#0f172a');
 });
 
+test('case login stays on the stable deployment except on a local server', () => {
+  const { context } = loadFrontend();
+  const deployed = 'https://phishguard-email-analyzer.vercel.app/cases';
+  for (const host of ['localhost', '127.0.0.1', '[::1]']) {
+    assert.equal(context.caseLoginHref(host, deployed), '/cases');
+  }
+  for (const host of ['phishguard-email-analyzer.vercel.app', 'preview-abc.vercel.app', 'localhost.example']) {
+    assert.equal(context.caseLoginHref(host, deployed), deployed);
+  }
+  const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+  assert.match(html, /class="case-login" href="https:\/\/phishguard-email-analyzer\.vercel\.app\/cases"/);
+});
+
 test('narrow-screen section menu is wired to the collapsible link list', () => {
   const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
   assert.match(html, /<ul class="nav-links" id="nav-links">/);
