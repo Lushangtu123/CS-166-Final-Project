@@ -253,10 +253,32 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupScrollReveal();
   setupCountUps();
   setupInputEvents();
+  setupMobileNav();
   await loadPublicConfig();
   await loadMetrics();
   setupSmoothScroll();
 });
+
+// ── Mobile section menu ──────────────────────────────────────────────────────
+function setupMobileNav() {
+  const navbar = document.querySelector('.navbar');
+  const toggle = document.getElementById('nav-menu-toggle');
+  if (!navbar || !toggle) return;
+  const setOpen = open => {
+    navbar.classList.toggle('menu-open', open);
+    toggle.setAttribute('aria-expanded', String(open));
+    toggle.setAttribute('aria-label', open ? 'Close section menu' : 'Open section menu');
+  };
+  toggle.addEventListener('click', () => setOpen(!navbar.classList.contains('menu-open')));
+  document.querySelectorAll('.nav-links a').forEach(link => link.addEventListener('click', () => setOpen(false)));
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && navbar.classList.contains('menu-open')) { setOpen(false); toggle.focus(); }
+  });
+  document.addEventListener('click', event => {
+    if (navbar.classList.contains('menu-open') && !navbar.contains(event.target)) setOpen(false);
+  });
+  window.addEventListener('resize', () => { if (window.innerWidth > 900) setOpen(false); }, { passive: true });
+}
 
 // ── Scroll reveal ────────────────────────────────────────────────────────────
 // Elements fade/slide in the first time they enter the viewport. Without
@@ -939,6 +961,7 @@ function renderMetricsTable(metrics) {
   const tbody = document.getElementById('metrics-tbody');
   const classifiers = Object.keys(metrics);
   const cols = ['Accuracy', 'Precision', 'Recall', 'F1', 'ROC_AUC'];
+  const colLabels = { ROC_AUC: 'ROC AUC' };
   const best = {};
   cols.forEach(col => { best[col] = Math.max(...classifiers.map(c => metrics[c][col])); });
 
@@ -948,7 +971,7 @@ function renderMetricsTable(metrics) {
     return `
       <tr class="${isRF ? 'row-best' : ''}">
         <td class="clf-name">${clf}${isRF ? ` <span class="best-badge">${icon('award')} Best</span>` : ''}</td>
-        ${cols.map(col => `<td class="${m[col] === best[col] ? 'cell-best' : ''}">${m[col].toFixed(4)}</td>`).join('')}
+        ${cols.map(col => `<td class="${m[col] === best[col] ? 'cell-best' : ''}" data-label="${colLabels[col] || col}">${m[col].toFixed(4)}</td>`).join('')}
       </tr>
     `;
   }).join('');

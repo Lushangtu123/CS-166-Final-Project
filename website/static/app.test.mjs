@@ -381,6 +381,24 @@ test('content analysis copy does not describe model output as probability', () =
   assert.match(html, /group-isolated model score/i);
 });
 
+test('benchmark cells carry column labels for the stacked phone layout', () => {
+  const { context, elements } = loadFrontend();
+  context.renderMetricsTable({
+    'Random Forest': { Accuracy: 0.97, Precision: 0.96, Recall: 0.95, F1: 0.94, ROC_AUC: 0.99 },
+  });
+  const html = elements.get('metrics-tbody').innerHTML;
+  for (const label of ['Accuracy', 'Precision', 'Recall', 'F1', 'ROC AUC']) {
+    assert.match(html, new RegExp(`data-label="${label}"`));
+  }
+  assert.doesNotMatch(html, /data-label="ROC_AUC"/);
+});
+
+test('narrow-screen section menu is wired to the collapsible link list', () => {
+  const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+  assert.match(html, /<ul class="nav-links" id="nav-links">/);
+  assert.match(html, /id="nav-menu-toggle"[^>]*aria-expanded="false"[^>]*aria-controls="nav-links"/);
+});
+
 test('HTML page loads enabled Vercel observability scripts from this site', () => {
   const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
   assert.match(html, /window\.va\s*=\s*window\.va\s*\|\|/);
